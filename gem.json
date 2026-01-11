@@ -1,0 +1,34 @@
+{
+    "gem_name": "O3DESharp",
+    "version": "1.0.0",
+    "display_name": "O3DESharp",
+    "license": "Apache-2.0",
+    "license_url": "https://github.com/o3de/o3de/blob/development/LICENSE.txt",
+    "origin": "WD Studios Corp.",
+    "origin_url": "https://wdstudios.tech",
+    "type": "Code",
+    "summary": "Adds C# Support to O3DE.",
+    "canonical_tags": [
+        "Gem"
+    ],
+    "user_tags": [
+        "O3DESharp"
+    ],
+    "platforms": [
+        "Linux","Windows"
+    ],
+    "icon_path": "",
+    "requirements": "This requires the .NET SDK. Install it over here: https://dotnet.microsoft.com/en-us/download",
+    "documentation_url": "",
+    "dependencies": [
+        "Atom_RPI",
+        "Atom",
+        "EditorPythonBindings",
+        "QtForPython"
+    ],
+    "repo_uri": "",
+    "compatible_engines": [
+    ],
+    "engine_api_dependencies":[
+    ]
+}

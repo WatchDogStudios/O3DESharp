@@ -1,0 +1,1343 @@
+<?xml version="1.0"?>
+<doc>
+    <assembly>
+        <name>O3DE.Core</name>
+    </assembly>
+    <members>
+        <member name="T:O3DE.Debug">
+            <summary>
+            Debug logging utilities for O3DE scripting.
+            Messages are forwarded to the O3DE logging system.
+            </summary>
+        </member>
+        <member name="M:O3DE.Debug.Log(System.String)">
+            <summary>
+            Logs an informational message to the O3DE console.
+            </summary>
+            <param name="message">The message to log</param>
+        </member>
+        <member name="M:O3DE.Debug.Log(System.Object)">
+            <summary>
+            Logs an informational message to the O3DE console.
+            </summary>
+            <param name="obj">The object to log (ToString() will be called)</param>
+        </member>
+        <member name="M:O3DE.Debug.Log(System.String,System.Object[])">
+            <summary>
+            Logs a formatted informational message to the O3DE console.
+            </summary>
+            <param name="format">The format string</param>
+            <param name="args">The format arguments</param>
+        </member>
+        <member name="M:O3DE.Debug.LogWarning(System.String)">
+            <summary>
+            Logs a warning message to the O3DE console.
+            </summary>
+            <param name="message">The warning message</param>
+        </member>
+        <member name="M:O3DE.Debug.LogWarning(System.Object)">
+            <summary>
+            Logs a warning message to the O3DE console.
+            </summary>
+            <param name="obj">The object to log (ToString() will be called)</param>
+        </member>
+        <member name="M:O3DE.Debug.LogWarning(System.String,System.Object[])">
+            <summary>
+            Logs a formatted warning message to the O3DE console.
+            </summary>
+            <param name="format">The format string</param>
+            <param name="args">The format arguments</param>
+        </member>
+        <member name="M:O3DE.Debug.LogError(System.String)">
+            <summary>
+            Logs an error message to the O3DE console.
+            </summary>
+            <param name="message">The error message</param>
+        </member>
+        <member name="M:O3DE.Debug.LogError(System.Object)">
+            <summary>
+            Logs an error message to the O3DE console.
+            </summary>
+            <param name="obj">The object to log (ToString() will be called)</param>
+        </member>
+        <member name="M:O3DE.Debug.LogError(System.String,System.Object[])">
+            <summary>
+            Logs a formatted error message to the O3DE console.
+            </summary>
+            <param name="format">The format string</param>
+            <param name="args">The format arguments</param>
+        </member>
+        <member name="M:O3DE.Debug.LogException(System.Exception)">
+            <summary>
+            Logs an exception to the O3DE console.
+            </summary>
+            <param name="exception">The exception to log</param>
+        </member>
+        <member name="M:O3DE.Debug.Assert(System.Boolean,System.String)">
+            <summary>
+            Asserts that a condition is true. If false, logs an error with the specified message.
+            </summary>
+            <param name="condition">The condition to assert</param>
+            <param name="message">The message to log if the assertion fails</param>
+        </member>
+        <member name="M:O3DE.Debug.LogWithCaller(System.String,System.String,System.Int32,System.String)">
+            <summary>
+            Logs a message with caller information for debugging.
+            </summary>
+            <param name="message">The message to log</param>
+            <param name="callerFilePath">Auto-filled by compiler</param>
+            <param name="callerLineNumber">Auto-filled by compiler</param>
+            <param name="callerMemberName">Auto-filled by compiler</param>
+        </member>
+        <member name="M:O3DE.Debug.LogDebug(System.String)">
+            <summary>
+            Logs a message only in debug builds.
+            </summary>
+            <param name="message">The message to log</param>
+        </member>
+        <member name="M:O3DE.Debug.LogDebug(System.String,System.Object[])">
+            <summary>
+            Logs a formatted message only in debug builds.
+            </summary>
+            <param name="format">The format string</param>
+            <param name="args">The format arguments</param>
+        </member>
+        <member name="T:O3DE.Entity">
+            <summary>
+            Represents an O3DE Entity in managed code.
+            An entity is a container for components that define its behavior and properties.
+            </summary>
+        </member>
+        <member name="F:O3DE.Entity.InvalidId">
+            <summary>
+            Invalid entity ID constant
+            </summary>
+        </member>
+        <member name="F:O3DE.Entity.m_id">
+            <summary>
+            The native entity ID
+            </summary>
+        </member>
+        <member name="F:O3DE.Entity.m_transform">
+            <summary>
+            Cached transform component (lazily initialized)
+            </summary>
+        </member>
+        <member name="M:O3DE.Entity.#ctor(System.UInt64)">
+            <summary>
+            Creates a new Entity wrapper for the specified entity ID
+            </summary>
+            <param name="entityId">The native entity ID</param>
+        </member>
+        <member name="M:O3DE.Entity.#ctor">
+            <summary>
+            Creates an invalid entity wrapper
+            </summary>
+        </member>
+        <member name="P:O3DE.Entity.Id">
+            <summary>
+            Gets the native entity ID
+            </summary>
+        </member>
+        <member name="P:O3DE.Entity.IsValid">
+            <summary>
+            Gets whether this entity reference is valid (exists in the engine)
+            </summary>
+        </member>
+        <member name="P:O3DE.Entity.Name">
+            <summary>
+            Gets or sets the name of this entity
+            </summary>
+        </member>
+        <member name="P:O3DE.Entity.IsActive">
+            <summary>
+            Gets whether this entity is currently active
+            </summary>
+        </member>
+        <member name="P:O3DE.Entity.Transform">
+            <summary>
+            Gets the Transform component of this entity.
+            This is cached for performance.
+            </summary>
+        </member>
+        <member name="M:O3DE.Entity.Activate">
+            <summary>
+            Activates this entity (enables all components)
+            </summary>
+        </member>
+        <member name="M:O3DE.Entity.Deactivate">
+            <summary>
+            Deactivates this entity (disables all components)
+            </summary>
+        </member>
+        <member name="M:O3DE.Entity.HasComponent(System.String)">
+            <summary>
+            Checks if this entity has a component of the specified type
+            </summary>
+            <param name="componentTypeName">The fully qualified component type name</param>
+            <returns>True if the entity has the component</returns>
+        </member>
+        <member name="M:O3DE.Entity.HasComponent``1">
+            <summary>
+            Checks if this entity has a component of type T
+            </summary>
+            <typeparam name="T">The component type to check for</typeparam>
+            <returns>True if the entity has the component</returns>
+        </member>
+        <member name="M:O3DE.Entity.FromId(System.UInt64)">
+            <summary>
+            Creates an Entity wrapper from a native entity ID
+            </summary>
+            <param name="entityId">The native entity ID</param>
+            <returns>An Entity wrapper, or null if the ID is invalid</returns>
+        </member>
+        <member name="P:O3DE.Entity.Null">
+            <summary>
+            Returns an invalid entity reference
+            </summary>
+        </member>
+        <member name="M:O3DE.Entity.op_Implicit(O3DE.Entity)~System.Boolean">
+            <summary>
+            Implicit conversion from Entity to bool (checks validity)
+            </summary>
+        </member>
+        <member name="M:O3DE.Entity.op_Implicit(System.UInt64)~O3DE.Entity">
+            <summary>
+            Implicit conversion from ulong to Entity
+            </summary>
+        </member>
+        <member name="M:O3DE.Entity.op_Implicit(O3DE.Entity)~System.UInt64">
+            <summary>
+            Implicit conversion from Entity to ulong
+            </summary>
+        </member>
+        <member name="T:O3DE.InternalCalls">
+             <summary>
+             Internal calls to native O3DE C++ functions.
+             These are static function pointer fields that Coral binds to native code at runtime.
+            
+             DO NOT call these directly - use the wrapper classes (Debug, Entity, Transform, etc.)
+             </summary>
+        </member>
+        <member name="T:O3DE.RaycastHit">
+            <summary>
+            Raycast hit result structure.
+            Must match the layout of InteropRaycastHit in C++.
+            </summary>
+        </member>
+        <member name="F:O3DE.RaycastHit.Hit">
+            <summary>
+            Whether the raycast hit anything
+            </summary>
+        </member>
+        <member name="F:O3DE.RaycastHit.Point">
+            <summary>
+            The point where the ray hit
+            </summary>
+        </member>
+        <member name="F:O3DE.RaycastHit.Normal">
+            <summary>
+            The normal of the surface at the hit point
+            </summary>
+        </member>
+        <member name="F:O3DE.RaycastHit.Distance">
+            <summary>
+            The distance from the ray origin to the hit point
+            </summary>
+        </member>
+        <member name="F:O3DE.RaycastHit.EntityId">
+            <summary>
+            The entity ID of the object that was hit
+            </summary>
+        </member>
+        <member name="M:O3DE.RaycastHit.GetEntity">
+            <summary>
+            Get the entity that was hit
+            </summary>
+        </member>
+        <member name="T:O3DE.Quaternion">
+            <summary>
+            A quaternion representing a rotation.
+            Layout matches O3DESharp::InteropQuaternion in C++ for seamless interop.
+            </summary>
+        </member>
+        <member name="F:O3DE.Quaternion.X">
+            <summary>X component of the quaternion</summary>
+        </member>
+        <member name="F:O3DE.Quaternion.Y">
+            <summary>Y component of the quaternion</summary>
+        </member>
+        <member name="F:O3DE.Quaternion.Z">
+            <summary>Z component of the quaternion</summary>
+        </member>
+        <member name="F:O3DE.Quaternion.W">
+            <summary>W component of the quaternion (scalar part)</summary>
+        </member>
+        <member name="P:O3DE.Quaternion.Identity">
+            <summary>Returns the identity quaternion (no rotation)</summary>
+        </member>
+        <member name="M:O3DE.Quaternion.#ctor(System.Single,System.Single,System.Single,System.Single)">
+            <summary>
+            Create a new Quaternion with the specified components
+            </summary>
+        </member>
+        <member name="P:O3DE.Quaternion.Magnitude">
+            <summary>
+            Returns the length (magnitude) of this quaternion
+            </summary>
+        </member>
+        <member name="P:O3DE.Quaternion.SqrMagnitude">
+            <summary>
+            Returns the squared length of this quaternion (faster than Magnitude)
+            </summary>
+        </member>
+        <member name="P:O3DE.Quaternion.Normalized">
+            <summary>
+            Returns this quaternion with a magnitude of 1
+            </summary>
+        </member>
+        <member name="P:O3DE.Quaternion.Conjugate">
+            <summary>
+            Returns the conjugate of this quaternion
+            </summary>
+        </member>
+        <member name="P:O3DE.Quaternion.Inverse">
+            <summary>
+            Returns the inverse of this quaternion
+            </summary>
+        </member>
+        <member name="P:O3DE.Quaternion.EulerAngles">
+            <summary>
+            Returns the euler angles (in degrees) representing this rotation
+            </summary>
+        </member>
+        <member name="M:O3DE.Quaternion.Normalize">
+            <summary>
+            Normalizes this quaternion in place
+            </summary>
+        </member>
+        <member name="M:O3DE.Quaternion.Set(System.Single,System.Single,System.Single,System.Single)">
+            <summary>
+            Set all components of this quaternion
+            </summary>
+        </member>
+        <member name="M:O3DE.Quaternion.FromEuler(System.Single,System.Single,System.Single)">
+            <summary>
+            Creates a quaternion from euler angles (in degrees)
+            </summary>
+        </member>
+        <member name="M:O3DE.Quaternion.FromEuler(O3DE.Vector3)">
+            <summary>
+            Creates a quaternion from euler angles (in degrees)
+            </summary>
+        </member>
+        <member name="M:O3DE.Quaternion.AngleAxis(System.Single,O3DE.Vector3)">
+            <summary>
+            Creates a quaternion representing a rotation around an axis
+            </summary>
+            <param name="axis">The axis to rotate around (should be normalized)</param>
+            <param name="angleDegrees">The angle in degrees</param>
+        </member>
+        <member name="M:O3DE.Quaternion.FromToRotation(O3DE.Vector3,O3DE.Vector3)">
+            <summary>
+            Creates a quaternion that rotates from one direction to another
+            </summary>
+        </member>
+        <member name="M:O3DE.Quaternion.LookRotation(O3DE.Vector3,O3DE.Vector3)">
+            <summary>
+            Creates a rotation that looks in the specified direction
+            </summary>
+        </member>
+        <member name="M:O3DE.Quaternion.LookRotation(O3DE.Vector3)">
+            <summary>
+            Creates a rotation that looks in the specified direction with up as Vector3.Up
+            </summary>
+        </member>
+        <member name="M:O3DE.Quaternion.Dot(O3DE.Quaternion,O3DE.Quaternion)">
+            <summary>
+            Returns the dot product of two quaternions
+            </summary>
+        </member>
+        <member name="M:O3DE.Quaternion.Angle(O3DE.Quaternion,O3DE.Quaternion)">
+            <summary>
+            Returns the angle in degrees between two rotations
+            </summary>
+        </member>
+        <member name="M:O3DE.Quaternion.Slerp(O3DE.Quaternion,O3DE.Quaternion,System.Single)">
+            <summary>
+            Spherically interpolates between two quaternions
+            </summary>
+        </member>
+        <member name="M:O3DE.Quaternion.SlerpUnclamped(O3DE.Quaternion,O3DE.Quaternion,System.Single)">
+            <summary>
+            Spherically interpolates between two quaternions without clamping t
+            </summary>
+        </member>
+        <member name="M:O3DE.Quaternion.Lerp(O3DE.Quaternion,O3DE.Quaternion,System.Single)">
+            <summary>
+            Linearly interpolates between two quaternions (not recommended, use Slerp)
+            </summary>
+        </member>
+        <member name="M:O3DE.Quaternion.RotatePoint(O3DE.Vector3)">
+            <summary>
+            Rotates a point by this quaternion
+            </summary>
+        </member>
+        <member name="T:O3DE.Vector3">
+            <summary>
+            A 3D vector with float components.
+            Layout matches O3DESharp::InteropVector3 in C++ for seamless interop.
+            </summary>
+        </member>
+        <member name="F:O3DE.Vector3.X">
+            <summary>X component of the vector</summary>
+        </member>
+        <member name="F:O3DE.Vector3.Y">
+            <summary>Y component of the vector</summary>
+        </member>
+        <member name="F:O3DE.Vector3.Z">
+            <summary>Z component of the vector</summary>
+        </member>
+        <member name="P:O3DE.Vector3.Zero">
+            <summary>Returns Vector3(0, 0, 0)</summary>
+        </member>
+        <member name="P:O3DE.Vector3.One">
+            <summary>Returns Vector3(1, 1, 1)</summary>
+        </member>
+        <member name="P:O3DE.Vector3.Right">
+            <summary>Returns Vector3(1, 0, 0) - Right in O3DE coordinate system</summary>
+        </member>
+        <member name="P:O3DE.Vector3.Left">
+            <summary>Returns Vector3(-1, 0, 0)</summary>
+        </member>
+        <member name="P:O3DE.Vector3.Forward">
+            <summary>Returns Vector3(0, 1, 0) - Forward in O3DE coordinate system</summary>
+        </member>
+        <member name="P:O3DE.Vector3.Back">
+            <summary>Returns Vector3(0, -1, 0)</summary>
+        </member>
+        <member name="P:O3DE.Vector3.Up">
+            <summary>Returns Vector3(0, 0, 1) - Up in O3DE coordinate system</summary>
+        </member>
+        <member name="P:O3DE.Vector3.Down">
+            <summary>Returns Vector3(0, 0, -1)</summary>
+        </member>
+        <member name="M:O3DE.Vector3.#ctor(System.Single,System.Single,System.Single)">
+            <summary>
+            Create a new Vector3 with the specified components
+            </summary>
+        </member>
+        <member name="M:O3DE.Vector3.#ctor(System.Single)">
+            <summary>
+            Create a new Vector3 with all components set to the same value
+            </summary>
+        </member>
+        <member name="P:O3DE.Vector3.Magnitude">
+            <summary>
+            Returns the length (magnitude) of this vector
+            </summary>
+        </member>
+        <member name="P:O3DE.Vector3.SqrMagnitude">
+            <summary>
+            Returns the squared length of this vector (faster than Magnitude)
+            </summary>
+        </member>
+        <member name="P:O3DE.Vector3.Normalized">
+            <summary>
+            Returns this vector with a magnitude of 1
+            </summary>
+        </member>
+        <member name="M:O3DE.Vector3.Normalize">
+            <summary>
+            Normalizes this vector in place
+            </summary>
+        </member>
+        <member name="M:O3DE.Vector3.Set(System.Single,System.Single,System.Single)">
+            <summary>
+            Set all components of this vector
+            </summary>
+        </member>
+        <member name="M:O3DE.Vector3.Dot(O3DE.Vector3,O3DE.Vector3)">
+            <summary>
+            Returns the dot product of two vectors
+            </summary>
+        </member>
+        <member name="M:O3DE.Vector3.Cross(O3DE.Vector3,O3DE.Vector3)">
+            <summary>
+            Returns the cross product of two vectors
+            </summary>
+        </member>
+        <member name="M:O3DE.Vector3.Distance(O3DE.Vector3,O3DE.Vector3)">
+            <summary>
+            Returns the distance between two points
+            </summary>
+        </member>
+        <member name="M:O3DE.Vector3.SqrDistance(O3DE.Vector3,O3DE.Vector3)">
+            <summary>
+            Returns the squared distance between two points (faster than Distance)
+            </summary>
+        </member>
+        <member name="M:O3DE.Vector3.Lerp(O3DE.Vector3,O3DE.Vector3,System.Single)">
+            <summary>
+            Linearly interpolates between two vectors
+            </summary>
+        </member>
+        <member name="M:O3DE.Vector3.LerpUnclamped(O3DE.Vector3,O3DE.Vector3,System.Single)">
+            <summary>
+            Linearly interpolates between two vectors without clamping t
+            </summary>
+        </member>
+        <member name="M:O3DE.Vector3.Min(O3DE.Vector3,O3DE.Vector3)">
+            <summary>
+            Returns a vector with the minimum components of both vectors
+            </summary>
+        </member>
+        <member name="M:O3DE.Vector3.Max(O3DE.Vector3,O3DE.Vector3)">
+            <summary>
+            Returns a vector with the maximum components of both vectors
+            </summary>
+        </member>
+        <member name="M:O3DE.Vector3.Angle(O3DE.Vector3,O3DE.Vector3)">
+            <summary>
+            Returns the angle in degrees between two vectors
+            </summary>
+        </member>
+        <member name="M:O3DE.Vector3.Project(O3DE.Vector3,O3DE.Vector3)">
+            <summary>
+            Projects a vector onto another vector
+            </summary>
+        </member>
+        <member name="M:O3DE.Vector3.ProjectOnPlane(O3DE.Vector3,O3DE.Vector3)">
+            <summary>
+            Projects a vector onto a plane defined by a normal
+            </summary>
+        </member>
+        <member name="M:O3DE.Vector3.Reflect(O3DE.Vector3,O3DE.Vector3)">
+            <summary>
+            Reflects a vector off a surface with the specified normal
+            </summary>
+        </member>
+        <member name="M:O3DE.Vector3.ClampMagnitude(O3DE.Vector3,System.Single)">
+            <summary>
+            Clamps the magnitude of a vector
+            </summary>
+        </member>
+        <member name="T:O3DE.Physics">
+            <summary>
+            Provides access to physics-related functionality in O3DE.
+            This class wraps the PhysX physics system queries.
+            </summary>
+        </member>
+        <member name="F:O3DE.Physics.DefaultMaxDistance">
+            <summary>
+            Default maximum distance for raycasts
+            </summary>
+        </member>
+        <member name="M:O3DE.Physics.Raycast(O3DE.Vector3,O3DE.Vector3,System.Single)">
+            <summary>
+            Casts a ray from origin in the specified direction and returns information about what was hit.
+            </summary>
+            <param name="origin">The starting point of the ray in world space</param>
+            <param name="direction">The direction of the ray (will be normalized)</param>
+            <param name="maxDistance">The maximum distance the ray should travel</param>
+            <returns>A RaycastHit containing information about what was hit, or a hit with Hit=false if nothing was hit</returns>
+        </member>
+        <member name="M:O3DE.Physics.RaycastCheck(O3DE.Vector3,O3DE.Vector3,System.Single)">
+            <summary>
+            Casts a ray from origin in the specified direction and returns whether anything was hit.
+            </summary>
+            <param name="origin">The starting point of the ray in world space</param>
+            <param name="direction">The direction of the ray (will be normalized)</param>
+            <param name="maxDistance">The maximum distance the ray should travel</param>
+            <returns>True if the ray hit something, false otherwise</returns>
+        </member>
+        <member name="M:O3DE.Physics.Raycast(O3DE.Vector3,O3DE.Vector3,O3DE.RaycastHit@,System.Single)">
+            <summary>
+            Casts a ray from origin in the specified direction and outputs the hit information.
+            </summary>
+            <param name="origin">The starting point of the ray in world space</param>
+            <param name="direction">The direction of the ray (will be normalized)</param>
+            <param name="hit">Output parameter containing hit information</param>
+            <param name="maxDistance">The maximum distance the ray should travel</param>
+            <returns>True if the ray hit something, false otherwise</returns>
+        </member>
+        <member name="M:O3DE.Physics.Linecast(O3DE.Vector3,O3DE.Vector3)">
+            <summary>
+            Casts a ray from one point to another and returns whether anything was hit.
+            Useful for line-of-sight checks.
+            </summary>
+            <param name="from">The starting point of the ray</param>
+            <param name="to">The end point of the ray</param>
+            <returns>True if something is blocking the path, false if the path is clear</returns>
+        </member>
+        <member name="M:O3DE.Physics.Linecast(O3DE.Vector3,O3DE.Vector3,O3DE.RaycastHit@)">
+            <summary>
+            Casts a ray from one point to another and outputs the hit information.
+            </summary>
+            <param name="from">The starting point of the ray</param>
+            <param name="to">The end point of the ray</param>
+            <param name="hit">Output parameter containing hit information</param>
+            <returns>True if something was hit, false otherwise</returns>
+        </member>
+        <member name="M:O3DE.Physics.GroundCheck(O3DE.Vector3,System.Single)">
+            <summary>
+            Casts a ray downward from the specified position to find the ground.
+            </summary>
+            <param name="position">The position to cast from</param>
+            <param name="maxDistance">Maximum distance to check for ground</param>
+            <returns>The hit result, or a miss if no ground was found</returns>
+        </member>
+        <member name="M:O3DE.Physics.GetGroundHeight(O3DE.Vector3,System.Single@,System.Single)">
+            <summary>
+            Casts a ray downward from the specified position to find the ground height.
+            </summary>
+            <param name="position">The position to cast from</param>
+            <param name="groundHeight">Output parameter for the ground height (Y coordinate)</param>
+            <param name="maxDistance">Maximum distance to check for ground</param>
+            <returns>True if ground was found, false otherwise</returns>
+        </member>
+        <member name="M:O3DE.Physics.HasLineOfSight(O3DE.Vector3,O3DE.Vector3)">
+            <summary>
+            Checks if there is a clear line of sight between two points.
+            </summary>
+            <param name="from">The starting point</param>
+            <param name="to">The target point</param>
+            <returns>True if there is a clear line of sight, false if something is blocking</returns>
+        </member>
+        <member name="M:O3DE.Physics.HasLineOfSight(O3DE.Entity,O3DE.Entity)">
+            <summary>
+            Checks if there is a clear line of sight between two entities.
+            </summary>
+            <param name="fromEntity">The source entity</param>
+            <param name="toEntity">The target entity</param>
+            <returns>True if there is a clear line of sight, false if something is blocking</returns>
+        </member>
+        <member name="M:O3DE.Physics.RaycastForward(O3DE.Entity,System.Single)">
+            <summary>
+            Casts a ray from an entity in its forward direction.
+            </summary>
+            <param name="entity">The entity to cast from</param>
+            <param name="maxDistance">Maximum distance for the raycast</param>
+            <returns>The raycast hit result</returns>
+        </member>
+        <member name="M:O3DE.Physics.DistanceToNearest(O3DE.Vector3,O3DE.Vector3,System.Single)">
+            <summary>
+            Gets the distance to the nearest object in the specified direction.
+            </summary>
+            <param name="origin">The starting point</param>
+            <param name="direction">The direction to check</param>
+            <param name="maxDistance">Maximum distance to check</param>
+            <returns>The distance to the nearest object, or maxDistance if nothing was hit</returns>
+        </member>
+        <member name="T:O3DE.Reflection.ReflectionInternalCalls">
+            <summary>
+            Internal calls for the reflection system.
+            These map directly to C++ functions in GenericDispatcher.
+            Coral populates these function pointer fields at runtime via AddInternalCall().
+            </summary>
+        </member>
+        <member name="T:O3DE.Reflection.NativeReflection">
+             <summary>
+             Provides access to O3DE's BehaviorContext reflection system from C#.
+            
+             This allows C# code to:
+             - Query available classes, methods, and properties
+             - Create instances of reflected types
+             - Invoke methods and access properties dynamically
+             - Broadcast and send EBus events
+            
+             This is the "Option B" automated reflection approach where any type
+             reflected to BehaviorContext becomes accessible from C# automatically.
+             </summary>
+        </member>
+        <member name="M:O3DE.Reflection.NativeReflection.GetClassNames">
+            <summary>
+            Get all class names reflected to BehaviorContext.
+            Results are cached for performance.
+            </summary>
+        </member>
+        <member name="M:O3DE.Reflection.NativeReflection.GetMethodNames(System.String)">
+            <summary>
+            Get all method names for a reflected class.
+            Results are cached for performance.
+            </summary>
+            <param name="className">The class name to query</param>
+        </member>
+        <member name="M:O3DE.Reflection.NativeReflection.GetPropertyNames(System.String)">
+            <summary>
+            Get all property names for a reflected class.
+            Results are cached for performance.
+            </summary>
+            <param name="className">The class name to query</param>
+        </member>
+        <member name="M:O3DE.Reflection.NativeReflection.GetEBusNames">
+            <summary>
+            Get all EBus names reflected to BehaviorContext.
+            Results are cached for performance.
+            </summary>
+        </member>
+        <member name="M:O3DE.Reflection.NativeReflection.GetEBusEventNames(System.String)">
+            <summary>
+            Get all event names for a reflected EBus.
+            Results are cached for performance.
+            </summary>
+            <param name="busName">The EBus name to query</param>
+        </member>
+        <member name="M:O3DE.Reflection.NativeReflection.ClassExists(System.String)">
+            <summary>
+            Check if a class is reflected to BehaviorContext.
+            </summary>
+            <param name="className">The class name to check</param>
+        </member>
+        <member name="M:O3DE.Reflection.NativeReflection.MethodExists(System.String,System.String)">
+            <summary>
+            Check if a method exists on a reflected class.
+            </summary>
+            <param name="className">The class name</param>
+            <param name="methodName">The method name to check</param>
+        </member>
+        <member name="M:O3DE.Reflection.NativeReflection.ClearCache">
+            <summary>
+            Clear all cached reflection data.
+            Call this after hot-reload to refresh the cache.
+            </summary>
+        </member>
+        <member name="M:O3DE.Reflection.NativeReflection.InvokeStaticMethod(System.String,System.String,System.Object[])">
+            <summary>
+            Invoke a static method on a reflected class.
+            </summary>
+            <param name="className">The class name</param>
+            <param name="methodName">The method name</param>
+            <param name="args">Arguments to pass to the method</param>
+            <returns>The result as a dynamic object, or null for void methods</returns>
+        </member>
+        <member name="M:O3DE.Reflection.NativeReflection.InvokeInstanceMethod(O3DE.Reflection.NativeObject,System.String,System.Object[])">
+            <summary>
+            Invoke an instance method on a native object.
+            </summary>
+            <param name="instance">The native object wrapper</param>
+            <param name="methodName">The method name</param>
+            <param name="args">Arguments to pass to the method</param>
+            <returns>The result as a dynamic object, or null for void methods</returns>
+        </member>
+        <member name="M:O3DE.Reflection.NativeReflection.InvokeGlobalMethod(System.String,System.Object[])">
+            <summary>
+            Invoke a global method (not part of any class).
+            </summary>
+            <param name="methodName">The method name</param>
+            <param name="args">Arguments to pass to the method</param>
+            <returns>The result as a dynamic object, or null for void methods</returns>
+        </member>
+        <member name="M:O3DE.Reflection.NativeReflection.GetProperty``1(O3DE.Reflection.NativeObject,System.String)">
+            <summary>
+            Get a property value from a native object.
+            </summary>
+            <typeparam name="T">The expected type of the property</typeparam>
+            <param name="instance">The native object wrapper</param>
+            <param name="propertyName">The property name</param>
+            <returns>The property value</returns>
+        </member>
+        <member name="M:O3DE.Reflection.NativeReflection.SetProperty(O3DE.Reflection.NativeObject,System.String,System.Object)">
+            <summary>
+            Set a property value on a native object.
+            </summary>
+            <param name="instance">The native object wrapper</param>
+            <param name="propertyName">The property name</param>
+            <param name="value">The value to set</param>
+        </member>
+        <member name="M:O3DE.Reflection.NativeReflection.GetGlobalProperty``1(System.String)">
+            <summary>
+            Get a global property value.
+            </summary>
+            <typeparam name="T">The expected type of the property</typeparam>
+            <param name="propertyName">The property name</param>
+            <returns>The property value</returns>
+        </member>
+        <member name="M:O3DE.Reflection.NativeReflection.SetGlobalProperty(System.String,System.Object)">
+            <summary>
+            Set a global property value.
+            </summary>
+            <param name="propertyName">The property name</param>
+            <param name="value">The value to set</param>
+        </member>
+        <member name="M:O3DE.Reflection.NativeReflection.BroadcastEBusEvent(System.String,System.String,System.Object[])">
+            <summary>
+            Broadcast an event on an EBus (sends to all handlers).
+            </summary>
+            <param name="busName">The EBus name</param>
+            <param name="eventName">The event name</param>
+            <param name="args">Arguments for the event</param>
+            <returns>The result if the event has a return value</returns>
+        </member>
+        <member name="M:O3DE.Reflection.NativeReflection.SendEBusEvent(System.String,System.String,System.UInt64,System.Object[])">
+            <summary>
+            Send an event to a specific address on an EBus.
+            </summary>
+            <param name="busName">The EBus name</param>
+            <param name="eventName">The event name</param>
+            <param name="entityId">The entity ID to send to</param>
+            <param name="args">Arguments for the event</param>
+            <returns>The result if the event has a return value</returns>
+        </member>
+        <member name="M:O3DE.Reflection.NativeReflection.SendEBusEvent(System.String,System.String,O3DE.Entity,System.Object[])">
+            <summary>
+            Send an event to a specific entity on an EBus.
+            </summary>
+            <param name="busName">The EBus name</param>
+            <param name="eventName">The event name</param>
+            <param name="entity">The entity to send to</param>
+            <param name="args">Arguments for the event</param>
+            <returns>The result if the event has a return value</returns>
+        </member>
+        <member name="M:O3DE.Reflection.NativeReflection.CreateInstance(System.String,System.Object[])">
+            <summary>
+            Create an instance of a reflected native class.
+            </summary>
+            <param name="className">The class name to instantiate</param>
+            <param name="constructorArgs">Arguments for the constructor</param>
+            <returns>A NativeObject wrapper for the created instance</returns>
+        </member>
+        <member name="M:O3DE.Reflection.NativeReflection.DestroyInstance(O3DE.Reflection.NativeObject)">
+            <summary>
+            Destroy a native object instance.
+            </summary>
+            <param name="instance">The object to destroy</param>
+        </member>
+        <member name="T:O3DE.Reflection.NativeObject">
+            <summary>
+            Represents a native O3DE object created through reflection.
+            This is a wrapper around a native pointer that allows method invocation
+            and property access through the reflection system.
+            </summary>
+        </member>
+        <member name="P:O3DE.Reflection.NativeObject.Handle">
+            <summary>
+            The native handle (pointer) to the object
+            </summary>
+        </member>
+        <member name="P:O3DE.Reflection.NativeObject.TypeName">
+            <summary>
+            The type name of the native class
+            </summary>
+        </member>
+        <member name="P:O3DE.Reflection.NativeObject.IsValid">
+            <summary>
+            Whether this object reference is valid
+            </summary>
+        </member>
+        <member name="P:O3DE.Reflection.NativeObject.IsDisposed">
+            <summary>
+            Whether this object has been disposed
+            </summary>
+        </member>
+        <member name="M:O3DE.Reflection.NativeObject.#ctor(System.String,System.Int64)">
+            <summary>
+            Create a new NativeObject wrapper
+            </summary>
+            <param name="typeName">The native type name</param>
+            <param name="handle">The native handle</param>
+        </member>
+        <member name="M:O3DE.Reflection.NativeObject.InvokeMethod(System.String,System.Object[])">
+            <summary>
+            Invoke a method on this object
+            </summary>
+            <param name="methodName">The method name</param>
+            <param name="args">Method arguments</param>
+            <returns>The return value, or null for void methods</returns>
+        </member>
+        <member name="M:O3DE.Reflection.NativeObject.InvokeMethod``1(System.String,System.Object[])">
+            <summary>
+            Invoke a method with a typed return value
+            </summary>
+            <typeparam name="T">The return type</typeparam>
+            <param name="methodName">The method name</param>
+            <param name="args">Method arguments</param>
+            <returns>The return value</returns>
+        </member>
+        <member name="M:O3DE.Reflection.NativeObject.GetProperty``1(System.String)">
+            <summary>
+            Get a property value
+            </summary>
+            <typeparam name="T">The property type</typeparam>
+            <param name="propertyName">The property name</param>
+            <returns>The property value</returns>
+        </member>
+        <member name="M:O3DE.Reflection.NativeObject.SetProperty(System.String,System.Object)">
+            <summary>
+            Set a property value
+            </summary>
+            <param name="propertyName">The property name</param>
+            <param name="value">The value to set</param>
+        </member>
+        <member name="M:O3DE.Reflection.NativeObject.Invalidate">
+            <summary>
+            Mark this object as invalid (called after destruction)
+            </summary>
+        </member>
+        <member name="M:O3DE.Reflection.NativeObject.Dispose">
+            <summary>
+            Dispose of the native object
+            </summary>
+        </member>
+        <member name="T:O3DE.ScriptComponent">
+             <summary>
+             Base class for all C# scripts that can be attached to O3DE entities.
+            
+             To create a script, inherit from this class and override the lifecycle methods:
+             - OnCreate(): Called when the component is activated
+             - OnUpdate(float deltaTime): Called every frame
+             - OnDestroy(): Called when the component is deactivated
+             - OnTransformChanged(): Called when the entity's transform changes
+            
+             Example:
+             <code>
+             namespace MyGame
+             {
+                 public class PlayerController : ScriptComponent
+                 {
+                     private float speed = 10.0f;
+            
+                     public override void OnCreate()
+                     {
+                         Debug.Log("PlayerController created!");
+                     }
+            
+                     public override void OnUpdate(float deltaTime)
+                     {
+                         // Move forward
+                         Transform.Translate(Transform.Forward * speed * deltaTime);
+                     }
+            
+                     public override void OnDestroy()
+                     {
+                         Debug.Log("PlayerController destroyed!");
+                     }
+                 }
+             }
+             </code>
+             </summary>
+        </member>
+        <member name="F:O3DE.ScriptComponent.m_entityId">
+            <summary>
+            The native entity ID. This field is set by the C++ CSharpScriptComponent.
+            DO NOT modify this field manually.
+            </summary>
+        </member>
+        <member name="F:O3DE.ScriptComponent.m_entity">
+            <summary>
+            Cached Entity wrapper (lazily initialized)
+            </summary>
+        </member>
+        <member name="F:O3DE.ScriptComponent.m_transform">
+            <summary>
+            Cached Transform wrapper (lazily initialized)
+            </summary>
+        </member>
+        <member name="P:O3DE.ScriptComponent.Entity">
+            <summary>
+            Gets the Entity this script is attached to.
+            </summary>
+        </member>
+        <member name="P:O3DE.ScriptComponent.Transform">
+            <summary>
+            Gets the Transform of the entity this script is attached to.
+            This is a shortcut for Entity.Transform.
+            </summary>
+        </member>
+        <member name="P:O3DE.ScriptComponent.EntityId">
+            <summary>
+            Gets the native entity ID.
+            </summary>
+        </member>
+        <member name="P:O3DE.ScriptComponent.Name">
+            <summary>
+            Gets the name of the entity this script is attached to.
+            </summary>
+        </member>
+        <member name="P:O3DE.ScriptComponent.IsActive">
+            <summary>
+            Gets whether the entity is currently active.
+            </summary>
+        </member>
+        <member name="M:O3DE.ScriptComponent.OnCreate">
+            <summary>
+            Called when the script component is first activated.
+            Use this for initialization logic.
+            </summary>
+        </member>
+        <member name="M:O3DE.ScriptComponent.OnUpdate(System.Single)">
+            <summary>
+            Called every frame while the component is active.
+            </summary>
+            <param name="deltaTime">The time in seconds since the last frame</param>
+        </member>
+        <member name="M:O3DE.ScriptComponent.OnDestroy">
+            <summary>
+            Called when the script component is deactivated.
+            Use this for cleanup logic.
+            </summary>
+        </member>
+        <member name="M:O3DE.ScriptComponent.OnTransformChanged">
+            <summary>
+            Called when the entity's transform changes (position, rotation, or scale).
+            Override this to react to transform changes.
+            </summary>
+        </member>
+        <member name="M:O3DE.ScriptComponent.OnEnable">
+            <summary>
+            Called when the component is enabled (after being disabled).
+            </summary>
+        </member>
+        <member name="M:O3DE.ScriptComponent.OnDisable">
+            <summary>
+            Called when the component is disabled.
+            </summary>
+        </member>
+        <member name="M:O3DE.ScriptComponent.Log(System.String)">
+            <summary>
+            Logs an informational message to the O3DE console.
+            Shortcut for Debug.Log().
+            </summary>
+            <param name="message">The message to log</param>
+        </member>
+        <member name="M:O3DE.ScriptComponent.Log(System.String,System.Object[])">
+            <summary>
+            Logs a formatted informational message to the O3DE console.
+            </summary>
+            <param name="format">The format string</param>
+            <param name="args">The format arguments</param>
+        </member>
+        <member name="M:O3DE.ScriptComponent.LogWarning(System.String)">
+            <summary>
+            Logs a warning message to the O3DE console.
+            </summary>
+            <param name="message">The warning message</param>
+        </member>
+        <member name="M:O3DE.ScriptComponent.LogError(System.String)">
+            <summary>
+            Logs an error message to the O3DE console.
+            </summary>
+            <param name="message">The error message</param>
+        </member>
+        <member name="M:O3DE.ScriptComponent.HasComponent(System.String)">
+            <summary>
+            Checks if the entity has a component of the specified type.
+            </summary>
+            <param name="componentTypeName">The fully qualified component type name</param>
+            <returns>True if the entity has the component</returns>
+        </member>
+        <member name="M:O3DE.ScriptComponent.ActivateEntity">
+            <summary>
+            Activates the entity this script is attached to.
+            </summary>
+        </member>
+        <member name="M:O3DE.ScriptComponent.DeactivateEntity">
+            <summary>
+            Deactivates the entity this script is attached to.
+            </summary>
+        </member>
+        <member name="M:O3DE.ScriptComponent.ToString">
+            <summary>
+            Returns a string representation of this script component.
+            </summary>
+        </member>
+        <member name="T:O3DE.Time">
+            <summary>
+            Provides access to time-related functionality in O3DE.
+            All time values are in seconds unless otherwise specified.
+            </summary>
+        </member>
+        <member name="P:O3DE.Time.DeltaTime">
+            <summary>
+            Gets the time in seconds since the last frame (delta time).
+            Use this to make movement and other updates frame-rate independent.
+            </summary>
+        </member>
+        <member name="P:O3DE.Time.TotalTime">
+            <summary>
+            Gets the total time in seconds since the application started.
+            </summary>
+        </member>
+        <member name="P:O3DE.Time.TimeScale">
+            <summary>
+            Gets or sets the time scale (simulation speed multiplier).
+            A value of 1.0 is normal speed, 0.5 is half speed, 2.0 is double speed.
+            Setting this to 0 effectively pauses the simulation.
+            </summary>
+        </member>
+        <member name="P:O3DE.Time.FrameCount">
+            <summary>
+            Gets the current frame count since the application started.
+            </summary>
+        </member>
+        <member name="P:O3DE.Time.ScaledDeltaTime">
+            <summary>
+            Gets the scaled delta time (DeltaTime * TimeScale).
+            This is useful for time-scaled gameplay logic.
+            </summary>
+        </member>
+        <member name="P:O3DE.Time.UnscaledDeltaTime">
+            <summary>
+            Gets the unscaled delta time (not affected by TimeScale).
+            Use this for UI and other elements that shouldn't be affected by time scale.
+            </summary>
+        </member>
+        <member name="P:O3DE.Time.FPS">
+            <summary>
+            Gets the frames per second based on the current delta time.
+            </summary>
+        </member>
+        <member name="M:O3DE.Time.Pause">
+            <summary>
+            Pauses the simulation by setting TimeScale to 0.
+            </summary>
+        </member>
+        <member name="M:O3DE.Time.Resume">
+            <summary>
+            Resumes the simulation by setting TimeScale to 1.
+            </summary>
+        </member>
+        <member name="P:O3DE.Time.IsPaused">
+            <summary>
+            Checks if the simulation is paused (TimeScale is 0).
+            </summary>
+        </member>
+        <member name="M:O3DE.Time.SmoothDamp(System.Single,System.Single,System.Single)">
+            <summary>
+            Smoothly interpolates a value over time (useful for frame-rate independent lerping).
+            </summary>
+            <param name="current">The current value</param>
+            <param name="target">The target value</param>
+            <param name="smoothTime">The approximate time it takes to reach the target</param>
+            <returns>The smoothed value</returns>
+        </member>
+        <member name="M:O3DE.Time.PingPong(System.Single)">
+            <summary>
+            Returns a value that oscillates between 0 and 1 over time using a sine wave.
+            </summary>
+            <param name="frequency">The frequency of oscillation (cycles per second)</param>
+            <returns>A value between 0 and 1</returns>
+        </member>
+        <member name="M:O3DE.Time.PingPong(System.Single,System.Single,System.Single)">
+            <summary>
+            Returns a value that oscillates between min and max over time.
+            </summary>
+            <param name="min">The minimum value</param>
+            <param name="max">The maximum value</param>
+            <param name="frequency">The frequency of oscillation (cycles per second)</param>
+            <returns>A value between min and max</returns>
+        </member>
+        <member name="M:O3DE.Time.HasElapsed(System.Single,System.Single)">
+            <summary>
+            Checks if a certain amount of time has passed since a given start time.
+            </summary>
+            <param name="startTime">The start time (from TotalTime)</param>
+            <param name="duration">The duration to check</param>
+            <returns>True if the duration has passed</returns>
+        </member>
+        <member name="M:O3DE.Time.ElapsedSince(System.Single)">
+            <summary>
+            Gets the elapsed time since a given start time.
+            </summary>
+            <param name="startTime">The start time (from TotalTime)</param>
+            <returns>The elapsed time in seconds</returns>
+        </member>
+        <member name="M:O3DE.Time.RemainingTime(System.Single,System.Single)">
+            <summary>
+            Gets the remaining time until a deadline.
+            </summary>
+            <param name="startTime">The start time (from TotalTime)</param>
+            <param name="duration">The total duration</param>
+            <returns>The remaining time in seconds (0 if past deadline)</returns>
+        </member>
+        <member name="M:O3DE.Time.Progress(System.Single,System.Single)">
+            <summary>
+            Gets the progress (0 to 1) of a duration since a start time.
+            </summary>
+            <param name="startTime">The start time (from TotalTime)</param>
+            <param name="duration">The total duration</param>
+            <returns>A value from 0 (start) to 1 (complete)</returns>
+        </member>
+        <member name="T:O3DE.Transform">
+             <summary>
+             Provides access to an entity's transform (position, rotation, scale).
+             This class wraps the native TransformBus functionality.
+            
+             O3DE uses a right-handed coordinate system:
+             - X is Right
+             - Y is Forward
+             - Z is Up
+             </summary>
+        </member>
+        <member name="F:O3DE.Transform.m_entity">
+            <summary>
+            The entity this transform belongs to
+            </summary>
+        </member>
+        <member name="M:O3DE.Transform.#ctor(O3DE.Entity)">
+            <summary>
+            Creates a new Transform wrapper for the specified entity
+            </summary>
+            <param name="entity">The entity to wrap</param>
+        </member>
+        <member name="M:O3DE.Transform.#ctor(System.UInt64)">
+            <summary>
+            Creates a new Transform wrapper for the specified entity ID
+            </summary>
+            <param name="entityId">The entity ID</param>
+        </member>
+        <member name="P:O3DE.Transform.Entity">
+            <summary>
+            Gets the entity this transform belongs to
+            </summary>
+        </member>
+        <member name="P:O3DE.Transform.IsValid">
+            <summary>
+            Gets whether this transform is valid (entity exists)
+            </summary>
+        </member>
+        <member name="P:O3DE.Transform.Position">
+            <summary>
+            Gets or sets the world position of this entity
+            </summary>
+        </member>
+        <member name="P:O3DE.Transform.LocalPosition">
+            <summary>
+            Gets or sets the local position of this entity (relative to parent)
+            </summary>
+        </member>
+        <member name="P:O3DE.Transform.Rotation">
+            <summary>
+            Gets or sets the world rotation of this entity as a quaternion
+            </summary>
+        </member>
+        <member name="P:O3DE.Transform.EulerAngles">
+            <summary>
+            Gets or sets the world rotation of this entity as euler angles (in degrees)
+            </summary>
+        </member>
+        <member name="P:O3DE.Transform.LocalScale">
+            <summary>
+            Gets or sets the local scale of this entity
+            </summary>
+        </member>
+        <member name="P:O3DE.Transform.UniformScale">
+            <summary>
+            Gets or sets the uniform local scale of this entity
+            </summary>
+        </member>
+        <member name="P:O3DE.Transform.Forward">
+            <summary>
+            Gets the forward direction of this entity (Y-axis in O3DE)
+            </summary>
+        </member>
+        <member name="P:O3DE.Transform.Right">
+            <summary>
+            Gets the right direction of this entity (X-axis in O3DE)
+            </summary>
+        </member>
+        <member name="P:O3DE.Transform.Up">
+            <summary>
+            Gets the up direction of this entity (Z-axis in O3DE)
+            </summary>
+        </member>
+        <member name="P:O3DE.Transform.Back">
+            <summary>
+            Gets the backward direction of this entity (negative Y-axis)
+            </summary>
+        </member>
+        <member name="P:O3DE.Transform.Left">
+            <summary>
+            Gets the left direction of this entity (negative X-axis)
+            </summary>
+        </member>
+        <member name="P:O3DE.Transform.Down">
+            <summary>
+            Gets the down direction of this entity (negative Z-axis)
+            </summary>
+        </member>
+        <member name="P:O3DE.Transform.Parent">
+            <summary>
+            Gets the parent entity of this entity, or null if no parent
+            </summary>
+        </member>
+        <member name="M:O3DE.Transform.SetParent(O3DE.Entity)">
+            <summary>
+            Sets the parent of this entity
+            </summary>
+            <param name="parent">The new parent entity, or null to unparent</param>
+        </member>
+        <member name="M:O3DE.Transform.ClearParent">
+            <summary>
+            Removes this entity's parent (makes it a root entity)
+            </summary>
+        </member>
+        <member name="M:O3DE.Transform.Translate(O3DE.Vector3)">
+            <summary>
+            Moves the entity by the specified offset in world space
+            </summary>
+            <param name="translation">The offset to apply</param>
+        </member>
+        <member name="M:O3DE.Transform.TranslateLocal(O3DE.Vector3)">
+            <summary>
+            Moves the entity by the specified offset in local space
+            </summary>
+            <param name="translation">The offset to apply in local coordinates</param>
+        </member>
+        <member name="M:O3DE.Transform.Rotate(O3DE.Vector3)">
+            <summary>
+            Rotates the entity by the specified euler angles (in degrees)
+            </summary>
+            <param name="eulerAngles">The rotation to apply (in degrees)</param>
+        </member>
+        <member name="M:O3DE.Transform.RotateAround(O3DE.Vector3,System.Single)">
+            <summary>
+            Rotates the entity around an axis by the specified angle
+            </summary>
+            <param name="axis">The axis to rotate around</param>
+            <param name="angleDegrees">The angle in degrees</param>
+        </member>
+        <member name="M:O3DE.Transform.LookAt(O3DE.Vector3,System.Nullable{O3DE.Vector3})">
+            <summary>
+            Rotates the entity to look at a target position
+            </summary>
+            <param name="target">The position to look at</param>
+            <param name="worldUp">The up direction (defaults to Vector3.Up)</param>
+        </member>
+        <member name="M:O3DE.Transform.LookAt(O3DE.Entity,System.Nullable{O3DE.Vector3})">
+            <summary>
+            Rotates the entity to look at another entity
+            </summary>
+            <param name="target">The entity to look at</param>
+            <param name="worldUp">The up direction (defaults to Vector3.Up)</param>
+        </member>
+        <member name="M:O3DE.Transform.TransformPoint(O3DE.Vector3)">
+            <summary>
+            Transforms a point from local space to world space
+            </summary>
+            <param name="localPoint">The point in local space</param>
+            <returns>The point in world space</returns>
+        </member>
+        <member name="M:O3DE.Transform.InverseTransformPoint(O3DE.Vector3)">
+            <summary>
+            Transforms a point from world space to local space
+            </summary>
+            <param name="worldPoint">The point in world space</param>
+            <returns>The point in local space</returns>
+        </member>
+        <member name="M:O3DE.Transform.TransformDirection(O3DE.Vector3)">
+            <summary>
+            Transforms a direction from local space to world space (ignores position and scale)
+            </summary>
+            <param name="localDirection">The direction in local space</param>
+            <returns>The direction in world space</returns>
+        </member>
+        <member name="M:O3DE.Transform.InverseTransformDirection(O3DE.Vector3)">
+            <summary>
+            Transforms a direction from world space to local space (ignores position and scale)
+            </summary>
+            <param name="worldDirection">The direction in world space</param>
+            <returns>The direction in local space</returns>
+        </member>
+    </members>
+</doc>

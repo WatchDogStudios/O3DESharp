@@ -1,0 +1,15 @@
+F:\northstar\Gems\O3DESharp\Assets\Scripts\O3DE.Core\bin\debug\net8.0\O3DE.Core.deps.json
+F:\northstar\Gems\O3DESharp\Assets\Scripts\O3DE.Core\bin\debug\net8.0\O3DE.Core.dll
+F:\northstar\Gems\O3DESharp\Assets\Scripts\O3DE.Core\bin\debug\net8.0\O3DE.Core.pdb
+F:\northstar\Gems\O3DESharp\Assets\Scripts\O3DE.Core\bin\debug\net8.0\O3DE.Core.xml
+F:\northstar\Gems\O3DESharp\Assets\Scripts\O3DE.Core\obj\debug\net8.0\O3DE.Core.GeneratedMSBuildEditorConfig.editorconfig
+F:\northstar\Gems\O3DESharp\Assets\Scripts\O3DE.Core\obj\debug\net8.0\O3DE.Core.AssemblyInfoInputs.cache
+F:\northstar\Gems\O3DESharp\Assets\Scripts\O3DE.Core\obj\debug\net8.0\O3DE.Core.AssemblyInfo.cs
+F:\northstar\Gems\O3DESharp\Assets\Scripts\O3DE.Core\obj\debug\net8.0\O3DE.Core.csproj.CoreCompileInputs.cache
+F:\northstar\Gems\O3DESharp\Assets\Scripts\O3DE.Core\obj\debug\net8.0\O3DE.Core.sourcelink.json
+F:\northstar\Gems\O3DESharp\Assets\Scripts\O3DE.Core\obj\debug\net8.0\O3DE.Core.dll
+F:\northstar\Gems\O3DESharp\Assets\Scripts\O3DE.Core\obj\debug\net8.0\refint\O3DE.Core.dll
+F:\northstar\Gems\O3DESharp\Assets\Scripts\O3DE.Core\obj\debug\net8.0\O3DE.Core.xml
+F:\northstar\Gems\O3DESharp\Assets\Scripts\O3DE.Core\obj\debug\net8.0\O3DE.Core.pdb
+F:\northstar\Gems\O3DESharp\Assets\Scripts\O3DE.Core\obj\debug\net8.0\ref\O3DE.Core.dll
+F:\northstar\Gems\O3DESharp\Assets\Scripts\O3DE.Core\obj\Debug\net8.0\O3DE.Core.csproj.AssemblyReference.cache

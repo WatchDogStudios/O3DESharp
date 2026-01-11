@@ -1,0 +1,57 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net9.0</TargetFramework>
+    <ImplicitUsings>disable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <LangVersion>latest</LangVersion>
+
+    <!-- Assembly Information -->
+    <AssemblyName>O3DE.Core</AssemblyName>
+    <RootNamespace>O3DE</RootNamespace>
+    <Version>1.0.0</Version>
+    <Authors>WD Studios Corp.</Authors>
+    <Company>WD Studios Corp.</Company>
+    <Product>O3DE C# Scripting API</Product>
+    <Description>Core C# API for O3DE scripting via Coral .NET Host</Description>
+    <Copyright>Copyright (c) Contributors to the Open 3D Engine Project</Copyright>
+
+    <!-- Output Configuration -->
+    <OutputType>Library</OutputType>
+    <GenerateDocumentationFile>true</GenerateDocumentationFile>
+    <NoWarn>$(NoWarn);CS1591</NoWarn>
+
+    <!-- Build Configuration -->
+    <Deterministic>true</Deterministic>
+    <DebugType>portable</DebugType>
+    <DebugSymbols>true</DebugSymbols>
+
+    <!-- Optimization -->
+    <Optimize Condition="'$(Configuration)' == 'Release'">true</Optimize>
+    <Optimize Condition="'$(Configuration)' == 'Debug'">false</Optimize>
+  </PropertyGroup>
+
+  <PropertyGroup Condition="'$(Configuration)' == 'Debug'">
+    <DefineConstants>DEBUG;TRACE;O3DE_DEBUG</DefineConstants>
+  </PropertyGroup>
+
+  <PropertyGroup Condition="'$(Configuration)' == 'Release'">
+    <DefineConstants>TRACE;O3DE_RELEASE</DefineConstants>
+  </PropertyGroup>
+
+  <!-- Reference to Coral.Managed for interop support -->
+  <ItemGroup>
+    <Reference Include="Coral.Managed">
+      <!-- Use the Coral.Managed.dll from the gem's bin folder -->
+      <HintPath>..\..\..\bin\Coral\Coral.Managed.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+  </ItemGroup>
+
+  <!-- 
+    Note: .NET SDK projects automatically include all *.cs files in the project directory.
+    Do NOT add explicit <Compile Include="..." /> items - this causes NETSDK1022 duplicate errors.
+  -->
+
+</Project>
