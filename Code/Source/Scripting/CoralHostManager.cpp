@@ -101,7 +101,23 @@ namespace O3DESharp
         m_coreContext = m_hostInstance->CreateAssemblyLoadContext("O3DECoreContext");
 
         // User context: holds user game assemblies - can be unloaded for hot-reload
+        // NOTE: We intentionally do NOT pass the O3DE.Core directory here.
+        // Coral's path separator on Windows breaks paths with drive letters (C:\).
+        // Instead, we'll load O3DE.Core.dll into the user context as well.
         m_userContext = m_hostInstance->CreateAssemblyLoadContext("O3DEUserContext");
+
+        // Warn if there's a stale O3DE.Core.dll in the Coral directory
+        // This can cause assembly resolution issues since Coral looks there first
+#if !defined(AZ_RELEASE_BUILD)
+        AZ::IO::FixedMaxPath staleCorePath = AZ::IO::FixedMaxPath(m_config.coralDirectory.c_str()) / "O3DE.Core.dll";
+        if (AZ::IO::FileIOBase::GetInstance()->Exists(staleCorePath.c_str()))
+        {
+            AZ::IO::FixedMaxPath projectPath = AZ::Utils::GetProjectPath();
+            AZ::IO::FixedMaxPath expectedPath = projectPath / "Bin" / "Scripts";
+            AZLOG_WARN("CoralHostManager: Found O3DE.Core.dll in Coral directory: %s", staleCorePath.c_str());
+            AZLOG_WARN("CoralHostManager: This file should be deleted. O3DE.Core.dll should only exist at: %s/O3DE.Core.dll", expectedPath.c_str());
+        }
+#endif
 
         // Load the core API assembly
         if (!LoadCoreAssembly())
@@ -215,6 +231,9 @@ namespace O3DESharp
         m_userAssembly = nullptr;
 
         // Create a new user context
+        // NOTE: We don't pass a DLL search path here because Coral's path separator
+        // on Windows breaks paths with drive letters (C:\). O3DE.Core.dll will be
+        // loaded into the context by LoadUserAssembly() before the user assembly.
         m_userContext = m_hostInstance->CreateAssemblyLoadContext("O3DEUserContext");
 
         // Reload the user assembly
@@ -322,6 +341,11 @@ namespace O3DESharp
         if (!AZ::IO::FileIOBase::GetInstance()->Exists(m_config.coreApiAssemblyPath.c_str()))
         {
             AZLOG_ERROR("CoralHostManager: Core API assembly not found: %s", m_config.coreApiAssemblyPath.c_str());
+#if !defined(AZ_RELEASE_BUILD)
+            AZLOG_ERROR("CoralHostManager: O3DE.Core.dll must be deployed to: <ProjectPath>/Bin/Scripts/O3DE.Core.dll");
+            AZLOG_ERROR("CoralHostManager: To deploy, use the C# Project Manager tool or run:");
+            AZLOG_ERROR("  python -c \"from Gems.O3DESharp.Editor.Scripts.csharp_project_manager import CSharpProjectManager; CSharpProjectManager().deploy_o3de_core()\"");
+#endif
             return false;
         }
 
@@ -346,6 +370,11 @@ namespace O3DESharp
         {
             AZLOG_ERROR("CoralHostManager: CRITICAL - Assembly name mismatch! Expected 'O3DE.Core', got '%s'", assembly.GetName().data());
             AZLOG_ERROR("CoralHostManager: This will cause internal call registration to fail!");
+#if !defined(AZ_RELEASE_BUILD)
+            AZLOG_ERROR("CoralHostManager: The file at '%s' is not the correct O3DE.Core assembly.", m_config.coreApiAssemblyPath.c_str());
+            AZLOG_ERROR("CoralHostManager: Please ensure O3DE.Core.dll is correctly deployed.");
+            AZLOG_ERROR("CoralHostManager: If you have a custom CoreApiAssemblyPath in your .setreg, remove it.");
+#endif
         }
 
         return true;
@@ -366,6 +395,21 @@ namespace O3DESharp
         {
             AZLOG_ERROR("CoralHostManager: User assembly not found: %s", m_config.userAssemblyPath.c_str());
             return false;
+        }
+
+        // Load O3DE.Core.dll into the user context BEFORE loading user assembly
+        // This allows the user assembly to resolve its O3DE.Core dependency
+        // We need to do this because Coral's assembly resolution in separate contexts
+        // doesn't automatically find assemblies from other contexts
+        if (!m_config.coreApiAssemblyPath.empty() && 
+            AZ::IO::FileIOBase::GetInstance()->Exists(m_config.coreApiAssemblyPath.c_str()))
+        {
+            AZLOG_INFO("CoralHostManager: Pre-loading O3DE.Core.dll into user context for dependency resolution");
+            Coral::ManagedAssembly& userContextCoreAssembly = m_userContext.LoadAssembly(std::string(m_config.coreApiAssemblyPath.c_str()));
+            if (userContextCoreAssembly.GetLoadStatus() != Coral::AssemblyLoadStatus::Success)
+            {
+                AZLOG_WARN("CoralHostManager: Failed to pre-load O3DE.Core.dll into user context. User assembly may fail to load.");
+            }
         }
 
         Coral::ManagedAssembly& assembly = m_userContext.LoadAssembly(std::string(m_config.userAssemblyPath.c_str()));

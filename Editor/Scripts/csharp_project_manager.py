@@ -132,10 +132,84 @@ class CSharpProjectManager:
         self.scripts_path = self._get_scripts_path()
         self.is_installed = self._check_if_installed()
         self._settings = self._load_settings()
-        self.managed_assembly_path = self._get_managed_assembly_path()
+        # Path to Coral.Managed.dll - used for C# project references (NOT the O3DE.Core runtime API)
+        self.coral_managed_path = self._get_coral_managed_path()
         self.user_assembly_path = self._get_user_assembly_path()
-        # Alias for backward compatibility
-        self.o3de_core_path = self.managed_assembly_path
+        
+        # Automatically ensure runtime dependencies are deployed
+        self._auto_deploy_runtime()
+    
+    def _auto_deploy_runtime(self):
+        """
+        Automatically deploy Coral and O3DE.Core if they are not already deployed.
+        This runs silently during initialization to ensure the C# scripting system works.
+        """
+        try:
+            # Check and deploy Coral if needed
+            coral_status = self.check_coral_deployment()
+            if not coral_status["deployed"]:
+                coral_result = self.deploy_coral()
+                if coral_result["success"]:
+                    print(f"O3DESharp: Auto-deployed Coral to {coral_result.get('deploy_path', 'project')}")
+            
+            # Check and deploy O3DE.Core if needed
+            core_status = self.check_o3de_core_deployment()
+            if not core_status["deployed"]:
+                core_result = self.deploy_o3de_core()
+                if core_result["success"]:
+                    print(f"O3DESharp: Auto-deployed O3DE.Core to {core_result.get('deploy_path', 'project')}")
+        except Exception as e:
+            # Don't fail initialization if auto-deploy fails
+            print(f"O3DESharp: Auto-deployment warning: {e}")
+    
+    def ensure_runtime_deployed(self) -> Dict[str, Any]:
+        """
+        Ensure both Coral and O3DE.Core are deployed to the project.
+        
+        This method checks if the required runtime files are present and
+        deploys them if they are missing. Call this before operations that
+        require the C# runtime (building, running scripts, etc.).
+        
+        Returns:
+            Dict with 'success', 'coral_deployed', 'core_deployed', and 'message' keys
+        """
+        results = {
+            "success": True,
+            "coral_deployed": False,
+            "core_deployed": False,
+            "messages": []
+        }
+        
+        # Check and deploy Coral
+        coral_status = self.check_coral_deployment()
+        if not coral_status["deployed"]:
+            coral_result = self.deploy_coral()
+            if coral_result["success"]:
+                results["coral_deployed"] = True
+                results["messages"].append(f"Deployed Coral: {coral_result['message']}")
+            else:
+                results["success"] = False
+                results["messages"].append(f"Failed to deploy Coral: {coral_result['message']}")
+        else:
+            results["coral_deployed"] = True
+            results["messages"].append("Coral already deployed")
+        
+        # Check and deploy O3DE.Core
+        core_status = self.check_o3de_core_deployment()
+        if not core_status["deployed"]:
+            core_result = self.deploy_o3de_core()
+            if core_result["success"]:
+                results["core_deployed"] = True
+                results["messages"].append(f"Deployed O3DE.Core: {core_result['message']}")
+            else:
+                results["success"] = False
+                results["messages"].append(f"Failed to deploy O3DE.Core: {core_result['message']}")
+        else:
+            results["core_deployed"] = True
+            results["messages"].append("O3DE.Core already deployed")
+        
+        results["message"] = "; ".join(results["messages"])
+        return results
         
     def _get_project_path(self) -> Path:
         """Get the current O3DE project's source path."""
@@ -185,14 +259,17 @@ class CSharpProjectManager:
         except Exception as e:
             print(f"Failed to save O3DESharp settings: {e}")
     
-    def _get_managed_assembly_path(self) -> str:
+    def _get_coral_managed_path(self) -> str:
         """
-        Get the path to the managed assembly (Coral.Managed/O3DE.Core.dll).
+        Get the path to Coral.Managed.dll (the managed host library).
+        
+        This is NOT the O3DE.Core API assembly - that's deployed separately.
+        Coral.Managed.dll is referenced by user C# projects.
         
         Checks settings first, then auto-detects from common locations.
         """
         # Check if user has configured a custom path
-        custom_path = self._settings.get("managed_assembly_path")
+        custom_path = self._settings.get("coral_managed_path")
         if custom_path:
             path = Path(custom_path)
             if path.exists():
@@ -221,16 +298,19 @@ class CSharpProjectManager:
         # Return the default Coral.Managed path even if it doesn't exist yet
         return str(possible_paths[0])
     
-    def get_managed_assembly_path(self) -> str:
-        """Get the current managed assembly path."""
-        return self.managed_assembly_path
+    def get_coral_managed_path(self) -> str:
+        """Get the current Coral.Managed.dll path (for C# project references)."""
+        return self.coral_managed_path
     
-    def set_managed_assembly_path(self, path: str) -> Dict[str, Any]:
+    def set_coral_managed_path(self, path: str) -> Dict[str, Any]:
         """
-        Set a custom path for the managed assembly.
+        Set a custom path for Coral.Managed.dll.
+        
+        This is the managed host library that C# projects reference.
+        NOT to be confused with O3DE.Core.dll which is deployed separately.
         
         Args:
-            path: Path to Coral.Managed.dll or O3DE.Core.dll
+            path: Path to Coral.Managed.dll
             
         Returns:
             Dict with 'success' and 'message' keys
@@ -249,26 +329,24 @@ class CSharpProjectManager:
                 "message": "File must be a .dll assembly"
             }
         
-        self._settings["managed_assembly_path"] = str(path_obj.resolve())
+        self._settings["coral_managed_path"] = str(path_obj.resolve())
         self._save_settings()
-        self.managed_assembly_path = str(path_obj.resolve())
-        self.o3de_core_path = self.managed_assembly_path
+        self.coral_managed_path = str(path_obj.resolve())
         
         # Update the settings registry for C++ code
         self._update_settings_registry()
         
         return {
             "success": True,
-            "message": f"Managed assembly path set to: {path}"
+            "message": f"Coral.Managed path set to: {path}"
         }
     
-    def clear_managed_assembly_path(self):
-        """Clear the custom managed assembly path and revert to auto-detection."""
-        if "managed_assembly_path" in self._settings:
-            del self._settings["managed_assembly_path"]
+    def clear_coral_managed_path(self):
+        """Clear the custom Coral.Managed path and revert to auto-detection."""
+        if "coral_managed_path" in self._settings:
+            del self._settings["coral_managed_path"]
             self._save_settings()
-        self.managed_assembly_path = self._get_managed_assembly_path()
-        self.o3de_core_path = self.managed_assembly_path
+        self.coral_managed_path = self._get_coral_managed_path()
         self._update_settings_registry()
     
     def _get_user_assembly_path(self) -> str:
@@ -376,9 +454,9 @@ class CSharpProjectManager:
             if "coral_directory" in self._settings:
                 settings["O3DE"]["O3DESharp"]["CoralDirectory"] = self._settings["coral_directory"]
             
-            # Add Core API path if customized
-            if "managed_assembly_path" in self._settings:
-                settings["O3DE"]["O3DESharp"]["CoreApiAssemblyPath"] = self._settings["managed_assembly_path"]
+            # NOTE: CoreApiAssemblyPath is NOT written here.
+            # O3DE.Core.dll path is computed by C++ code based on project path.
+            # coral_managed_path is for Coral.Managed.dll (C# project references only).
             
             # Only write if there are settings to save
             if settings["O3DE"]["O3DESharp"]:
@@ -417,9 +495,9 @@ class CSharpProjectManager:
             # User-configured path directory
         ]
         
-        # If user has configured a managed assembly path, check its directory too
-        if self.managed_assembly_path:
-            managed_dir = Path(self.managed_assembly_path).parent
+        # If user has configured a coral managed path, check its directory too
+        if self.coral_managed_path:
+            managed_dir = Path(self.coral_managed_path).parent
             search_roots.insert(0, managed_dir)
         
         # Files we need to find
@@ -822,6 +900,15 @@ class CSharpProjectManager:
         Returns:
             Dict with 'success', 'message', and 'project_path' keys
         """
+        # Ensure runtime dependencies are deployed first
+        deploy_result = self.ensure_runtime_deployed()
+        if not deploy_result["success"]:
+            return {
+                "success": False,
+                "message": f"Failed to deploy runtime dependencies: {deploy_result['message']}",
+                "project_path": None
+            }
+        
         if namespace is None:
             namespace = project_name
             
@@ -960,6 +1047,15 @@ class CSharpProjectManager:
         Returns:
             Dict with 'success', 'message', and 'output_path' keys
         """
+        # Ensure runtime dependencies are deployed first
+        deploy_result = self.ensure_runtime_deployed()
+        if not deploy_result["success"]:
+            return {
+                "success": False,
+                "message": f"Failed to deploy runtime dependencies: {deploy_result['message']}",
+                "output_path": None
+            }
+        
         project_path = Path(project_path)
         
         # Find .csproj file
@@ -1062,8 +1158,6 @@ class CSharpProjectManager:
                 })
         
         return projects
-        
-        return projects
     
     def list_scripts(self, project_path: Path) -> List[Dict[str, Any]]:
         """List all C# scripts in a project."""
@@ -1101,6 +1195,69 @@ class CSharpProjectManager:
         pattern = rf'class\s+{class_name}\s*:\s*(\w+)'
         match = re.search(pattern, content)
         return match.group(1) if match else None
+    
+    def get_available_script_classes(self) -> List[str]:
+        """
+        Get all available C# script component classes across all projects.
+        
+        Scans all C# projects and returns a list of fully qualified class names
+        (namespace.classname) for classes that inherit from ScriptComponent.
+        
+        Returns:
+            List of fully qualified class names (e.g., ["MyGame.PlayerController", "MyGame.EnemyAI"])
+        """
+        script_classes = []
+        
+        try:
+            projects = self.list_projects()
+            
+            for project in projects:
+                project_path = Path(project["path"])
+                scripts = self.list_scripts(project_path)
+                
+                for script in scripts:
+                    # Only include classes that inherit from ScriptComponent
+                    if script.get("is_script_component", False):
+                        full_name = script.get("full_name", "")
+                        if full_name:
+                            script_classes.append(full_name)
+            
+            # Sort alphabetically for better UX
+            script_classes.sort()
+            
+        except Exception as e:
+            print(f"Error scanning for script classes: {e}")
+        
+        return script_classes
+    
+    def get_script_class_info(self, full_class_name: str) -> Optional[Dict[str, Any]]:
+        """
+        Get detailed information about a specific script class.
+        
+        Args:
+            full_class_name: Fully qualified class name (e.g., "MyGame.PlayerController")
+        
+        Returns:
+            Dict with class info including path, namespace, base_class, etc.
+            Returns None if class not found.
+        """
+        try:
+            projects = self.list_projects()
+            
+            for project in projects:
+                project_path = Path(project["path"])
+                scripts = self.list_scripts(project_path)
+                
+                for script in scripts:
+                    if script.get("full_name") == full_class_name:
+                        # Add project info to the script data
+                        script["project_name"] = project["name"]
+                        script["project_path"] = project["path"]
+                        return script
+        except Exception as e:
+            print(f"Error looking up script class: {e}")
+        
+        return None
 
 
 def get_project_manager() -> CSharpProjectManager:

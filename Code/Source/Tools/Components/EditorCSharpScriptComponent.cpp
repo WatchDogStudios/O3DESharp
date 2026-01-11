@@ -13,6 +13,8 @@
 #include <AzCore/IO/FileIO.h>
 #include <AzCore/IO/Path/Path.h>
 #include <AzCore/Settings/SettingsRegistryMergeUtils.h>
+#include <AzCore/JSON/rapidjson.h>
+#include <AzCore/JSON/document.h>
 #include <AzFramework/API/ApplicationAPI.h>
 #include <AzToolsFramework/API/EditorPythonRunnerRequestsBus.h>
 #include <AzToolsFramework/API/ToolsApplicationAPI.h>
@@ -42,6 +44,7 @@ namespace O3DESharp
 
             if (AZ::EditContext* editContext = serializeContext->GetEditContext())
             {
+                // Define the config fields here - they will be shown via ShowChildrenOnly
                 editContext->Class<EditorCSharpScriptConfig>("C# Script Configuration", "Configuration for a C# script component")
                     ->ClassElement(AZ::Edit::ClassElements::EditorData, "")
                         ->Attribute(AZ::Edit::Attributes::AutoExpand, true)
@@ -49,7 +52,6 @@ namespace O3DESharp
                         "Script Class", "The fully qualified C# class name (e.g., MyGame.PlayerController)")
                     ->DataElement(AZ::Edit::UIHandlers::Default, &EditorCSharpScriptConfig::m_assemblyPath,
                         "Assembly Path", "Optional: Path to the assembly containing the script (leave empty for default)")
-                    // Note: m_validationStatus is NOT shown here because O3DE requires editable fields to be serializable
                     ;
             }
         }
@@ -83,9 +85,12 @@ namespace O3DESharp
                         ->Attribute(AZ::Edit::Attributes::ViewportIcon, "Icons/Components/Viewport/Script.svg")
                         ->Attribute(AZ::Edit::Attributes::AppearsInAddComponentMenu, AZ_CRC_CE("Game"))
                         ->Attribute(AZ::Edit::Attributes::AutoExpand, true)
-                        ->Attribute(AZ::Edit::Attributes::HelpPageURL, "https://docs.o3de.org/docs/user-guide/components/reference/scripting/csharp-script/")
-
-                    // Embed the configuration - it has its own EditContext
+                    // TODO(Mikael A.): Will need to be filled out once we work with sig-docs-community. Talk to JT [SCB_GameDesign] in the O3DF server.
+                        ->Attribute(AZ::Edit::Attributes::HelpPageURL, "")
+                    // Script Selection group with embedded config
+                    ->ClassElement(AZ::Edit::ClassElements::Group, "Script Selection")
+                        ->Attribute(AZ::Edit::Attributes::AutoExpand, true)
+                    
                     ->DataElement(AZ::Edit::UIHandlers::Default, &EditorCSharpScriptComponent::m_config, "Configuration", "")
                         ->Attribute(AZ::Edit::Attributes::Visibility, AZ::Edit::PropertyVisibility::ShowChildrenOnly)
                         ->Attribute(AZ::Edit::Attributes::ChangeNotify, &EditorCSharpScriptComponent::OnScriptClassNameChanged)
@@ -182,9 +187,17 @@ namespace O3DESharp
         AzToolsFramework::EditorPythonRunnerRequestBus::Broadcast(
             &AzToolsFramework::EditorPythonRunnerRequestBus::Events::ExecuteByString,
             R"(
-import azlmbr.editor as editor
+import sys
+import os
+import azlmbr.paths
+
+# Add O3DESharp Editor/Scripts to Python path if not already there
+o3desharp_scripts_path = os.path.join(azlmbr.paths.engroot, 'Gems', 'O3DESharp', 'Editor', 'Scripts')
+if o3desharp_scripts_path not in sys.path:
+    sys.path.insert(0, o3desharp_scripts_path)
+
 try:
-    from O3DESharp.Editor.Scripts import csharp_editor_tools
+    import csharp_editor_tools
     dialog = csharp_editor_tools.ScriptBrowserDialog()
     if dialog.exec_():
         selected_class = dialog.get_selected_class()
@@ -207,9 +220,17 @@ except ImportError as e:
         AzToolsFramework::EditorPythonRunnerRequestBus::Broadcast(
             &AzToolsFramework::EditorPythonRunnerRequestBus::Events::ExecuteByString,
             R"(
-import azlmbr.editor as editor
+import sys
+import os
+import azlmbr.paths
+
+# Add O3DESharp Editor/Scripts to Python path if not already there
+o3desharp_scripts_path = os.path.join(azlmbr.paths.engroot, 'Gems', 'O3DESharp', 'Editor', 'Scripts')
+if o3desharp_scripts_path not in sys.path:
+    sys.path.insert(0, o3desharp_scripts_path)
+
 try:
-    from O3DESharp.Editor.Scripts import csharp_editor_tools
+    import csharp_editor_tools
     dialog = csharp_editor_tools.CreateScriptDialog()
     if dialog.exec_():
         class_name = dialog.get_created_class_name()
@@ -235,12 +256,18 @@ except ImportError as e:
         // Call Python script to open the script in the IDE
         AZStd::string pythonScript = AZStd::string::format(
             R"(
-import azlmbr.editor as editor
+import sys
 import os
 import subprocess
+import azlmbr.paths
+
+# Add O3DESharp Editor/Scripts to Python path if not already there
+o3desharp_scripts_path = os.path.join(azlmbr.paths.engroot, 'Gems', 'O3DESharp', 'Editor', 'Scripts')
+if o3desharp_scripts_path not in sys.path:
+    sys.path.insert(0, o3desharp_scripts_path)
 
 try:
-    from O3DESharp.Editor.Scripts import csharp_project_manager
+    import csharp_project_manager
     
     manager = csharp_project_manager.CSharpProjectManager()
     class_name = "%s"
@@ -325,6 +352,101 @@ except Exception as e:
         // TODO: Implement actual assembly inspection using Coral
         // For now, return true to allow runtime validation
         return true;
+    }
+
+    AZStd::vector<AZStd::string> EditorCSharpScriptComponent::GetAvailableScriptClasses() const
+    {
+        AZStd::vector<AZStd::string> scriptClasses;
+        
+        // Add an empty option at the beginning for "no selection"
+        scriptClasses.push_back("");
+        
+        // Use Python to scan for available C# script classes
+        // We capture the result via a static variable since Python execution is synchronous
+        static AZStd::vector<AZStd::string> s_cachedScriptClasses;
+        static bool s_cacheValid = false;
+        
+        // Execute Python to get the list of script classes
+        AzToolsFramework::EditorPythonRunnerRequestBus::Broadcast(
+            &AzToolsFramework::EditorPythonRunnerRequestBus::Events::ExecuteByString,
+            R"(
+import sys
+import os
+import azlmbr.paths
+import azlmbr.bus as bus
+
+# Add O3DESharp Editor/Scripts to Python path if not already there
+o3desharp_scripts_path = os.path.join(azlmbr.paths.engroot, 'Gems', 'O3DESharp', 'Editor', 'Scripts')
+if o3desharp_scripts_path not in sys.path:
+    sys.path.insert(0, o3desharp_scripts_path)
+
+try:
+    import csharp_project_manager
+    manager = csharp_project_manager.get_project_manager()
+    classes = manager.get_available_script_classes()
+    
+    # Store the result in a file that C++ can read
+    import json
+    cache_file = os.path.join(azlmbr.paths.projectroot, 'user', '.csharp_classes_cache.json')
+    os.makedirs(os.path.dirname(cache_file), exist_ok=True)
+    with open(cache_file, 'w') as f:
+        json.dump(classes, f)
+except Exception as e:
+    print(f"Error getting script classes: {e}")
+)",
+            false
+        );
+        
+        // Read the cached result from the file
+        AZ::IO::Path projectPath;
+        if (auto* settingsRegistry = AZ::SettingsRegistry::Get())
+        {
+            settingsRegistry->Get(projectPath.Native(), AZ::SettingsRegistryMergeUtils::FilePathKey_ProjectPath);
+        }
+        
+        AZ::IO::Path cachePath = projectPath / "user" / ".csharp_classes_cache.json";
+        
+        if (AZ::IO::FileIOBase* fileIO = AZ::IO::FileIOBase::GetInstance())
+        {
+            if (fileIO->Exists(cachePath.c_str()))
+            {
+                AZ::IO::HandleType fileHandle;
+                if (fileIO->Open(cachePath.c_str(), AZ::IO::OpenMode::ModeRead, fileHandle) == AZ::IO::ResultCode::Success)
+                {
+                    AZ::u64 fileSize = 0;
+                    fileIO->Size(fileHandle, fileSize);
+                    
+                    if (fileSize > 0 && fileSize < 1024 * 1024) // Sanity check: max 1MB
+                    {
+                        AZStd::vector<char> buffer(fileSize + 1);
+                        fileIO->Read(fileHandle, buffer.data(), fileSize);
+                        buffer[fileSize] = '\0';
+                        fileIO->Close(fileHandle);
+                        
+                        // Parse JSON array
+                        rapidjson::Document doc;
+                        doc.Parse(buffer.data());
+                        
+                        if (doc.IsArray())
+                        {
+                            for (const auto& item : doc.GetArray())
+                            {
+                                if (item.IsString())
+                                {
+                                    scriptClasses.push_back(item.GetString());
+                                }
+                            }
+                        }
+                    }
+                    else
+                    {
+                        fileIO->Close(fileHandle);
+                    }
+                }
+            }
+        }
+        
+        return scriptClasses;
     }
 
     void EditorCSharpScriptComponent::Init()

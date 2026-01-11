@@ -92,6 +92,9 @@ namespace O3DESharp
 
         //! Callback when script class name changes
         AZ::Crc32 OnScriptClassNameChanged();
+        
+        //! Get list of available C# script classes for the ComboBox
+        AZStd::vector<AZStd::string> GetAvailableScriptClasses() const;
 
     protected:
         // AZ::Component

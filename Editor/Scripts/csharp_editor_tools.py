@@ -22,7 +22,7 @@ if str(_SCRIPT_DIR) not in sys.path:
 
 from PySide2 import QtWidgets, QtCore, QtGui
 from PySide2.QtWidgets import (
-    QDialog, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit, 
+    QApplication, QDialog, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit, 
     QPushButton, QComboBox, QTextEdit, QGroupBox, QFormLayout,
     QFileDialog, QMessageBox, QListWidget, QListWidgetItem,
     QTabWidget, QWidget, QSplitter, QTreeWidget, QTreeWidgetItem,
@@ -325,6 +325,7 @@ class ScriptBrowserDialog(QDialog):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.project_manager = get_project_manager()
+        self._selected_class = None  # Store the selected class name
         self.setup_ui()
         self._populate_tree()
         
@@ -428,7 +429,8 @@ class ScriptBrowserDialog(QDialog):
                 script_item.setData(0, Qt.UserRole, {"type": "script", "data": script})
                 
                 if script["is_script_component"]:
-                    script_item.setIcon(0, self.style().standardIcon(QtWidgets.QStyle.SP_FileIcon))
+                    # Use QApplication.style() instead of self.style() to avoid deleted object issues
+                    script_item.setIcon(0, QApplication.style().standardIcon(QtWidgets.QStyle.SP_FileIcon))
                     
                 project_item.addChild(script_item)
             
@@ -478,8 +480,13 @@ class ScriptBrowserDialog(QDialog):
         if items:
             item_data = items[0].data(0, Qt.UserRole)
             if item_data and item_data["type"] == "script":
-                self.script_selected.emit(item_data["data"]["full_name"])
+                self._selected_class = item_data["data"]["full_name"]
+                self.script_selected.emit(self._selected_class)
                 self.accept()
+    
+    def get_selected_class(self) -> str:
+        """Get the fully qualified name of the selected script class."""
+        return self._selected_class
                 
     def _create_project(self):
         dialog = CreateProjectDialog(self)
@@ -616,7 +623,7 @@ class CSharpProjectManagerWindow(QDialog):
         assembly_layout = QHBoxLayout()
         self.assembly_path_edit = QLineEdit()
         self.assembly_path_edit.setPlaceholderText("Auto-detected")
-        self.assembly_path_edit.setText(self.project_manager.get_managed_assembly_path())
+        self.assembly_path_edit.setText(self.project_manager.get_coral_managed_path())
         self.assembly_path_edit.setReadOnly(True)
         assembly_layout.addWidget(self.assembly_path_edit)
         
@@ -807,8 +814,8 @@ class CSharpProjectManagerWindow(QDialog):
                 source_dir = QFileDialog.getExistingDirectory(
                     self,
                     "Select Coral.Managed Build Output Directory",
-                    str(Path(self.project_manager.managed_assembly_path).parent) 
-                        if self.project_manager.managed_assembly_path else ""
+                    str(Path(self.project_manager.coral_managed_path).parent) 
+                        if self.project_manager.coral_managed_path else ""
                 )
                 if source_dir:
                     result = self.project_manager.deploy_coral(source_dir)
@@ -984,7 +991,7 @@ Status: {status['message']}"""
         
     def _open_script(self, item):
         script = item.data(Qt.UserRole)
-        if script:
+        if script and isinstance(script, dict) and "path" in script:
             import subprocess
             import sys
             
@@ -1062,7 +1069,7 @@ Status: {status['message']}"""
         )
         
         if file_path:
-            result = self.project_manager.set_managed_assembly_path(file_path)
+            result = self.project_manager.set_coral_managed_path(file_path)
             if result["success"]:
                 self.assembly_path_edit.setText(file_path)
                 self.status_label.setText(result["message"])
@@ -1071,10 +1078,10 @@ Status: {status['message']}"""
     
     def _clear_managed_assembly(self):
         """Reset managed assembly path to auto-detected value."""
-        self.project_manager.clear_managed_assembly_path()
-        new_path = self.project_manager.get_managed_assembly_path()
+        self.project_manager.clear_coral_managed_path()
+        new_path = self.project_manager.get_coral_managed_path()
         self.assembly_path_edit.setText(new_path)
-        self.status_label.setText("Managed assembly path reset to auto-detected value")
+        self.status_label.setText("Coral.Managed path reset to auto-detected value")
 
 
 # Entry points for O3DE Editor menus
