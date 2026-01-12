@@ -11,34 +11,74 @@
 #include <AzCore/Console/ILogger.h>
 #include <AzCore/IO/FileIO.h>
 #include <AzCore/IO/Path/Path.h>
-#include <AzCore/Utils/Utils.h>
 #include <AzCore/StringFunc/StringFunc.h>
+#include <AzCore/Utils/Utils.h>
 
 namespace O3DESharp
 {
     // Static callback functions for Coral
     void CoralHostManager::CoralMessageCallback(std::string_view message, Coral::MessageLevel level)
     {
+        // Truncate long messages to avoid buffer overflow in AZLOG
+        // The fixed_string buffer is 1000 bytes, so we limit the message to ~900 to leave room for prefix
+        constexpr size_t maxMessageLength = 900;
+        const int printLength = static_cast<int>(message.size() > maxMessageLength ? maxMessageLength : message.size());
+        const bool truncated = message.size() > maxMessageLength;
+
         switch (level)
         {
         case Coral::MessageLevel::Info:
-            AZLOG_INFO("[Coral] %.*s", static_cast<int>(message.size()), message.data());
+            if (truncated)
+            {
+                AZLOG_INFO("[Coral] %.*s... (truncated)", printLength, message.data());
+            }
+            else
+                AZLOG_INFO("[Coral] %.*s", printLength, message.data());
             break;
         case Coral::MessageLevel::Warning:
-            AZLOG_WARN("[Coral] %.*s", static_cast<int>(message.size()), message.data());
+            if (truncated)
+            {
+                AZLOG_WARN("[Coral] %.*s... (truncated)", printLength, message.data());
+            }
+            else
+                AZLOG_WARN("[Coral] %.*s", printLength, message.data());
             break;
         case Coral::MessageLevel::Error:
-            AZLOG_ERROR("[Coral] %.*s", static_cast<int>(message.size()), message.data());
+            if (truncated)
+            {
+                AZLOG_ERROR("[Coral] %.*s... (truncated)", printLength, message.data());
+            }
+            else
+                AZLOG_ERROR("[Coral] %.*s", printLength, message.data());
             break;
         default:
-            AZLOG_INFO("[Coral] %.*s", static_cast<int>(message.size()), message.data());
+            if (truncated)
+            {
+                AZLOG_INFO("[Coral] %.*s... (truncated)", printLength, message.data());
+            }
+            else
+                AZLOG_INFO("[Coral] %.*s", printLength, message.data());
             break;
         }
     }
 
     void CoralHostManager::CoralExceptionCallback(std::string_view message)
     {
-        AZLOG_ERROR("[Coral Exception] %.*s", static_cast<int>(message.size()), message.data());
+        // Truncate long exception messages to avoid buffer overflow in AZLOG
+        // The fixed_string buffer is 1000 bytes, so we limit the message to ~900 to leave room for prefix
+        constexpr size_t maxMessageLength = 900;
+        if (message.size() > maxMessageLength)
+        {
+            AZLOG_ERROR(
+                "[Coral Exception] %.*s... (truncated, full length: %zu)",
+                static_cast<int>(maxMessageLength),
+                message.data(),
+                message.size());
+        }
+        else
+        {
+            AZLOG_ERROR("[Coral Exception] %.*s", static_cast<int>(message.size()), message.data());
+        }
     }
 
     CoralHostManager::CoralHostManager()
@@ -96,15 +136,16 @@ namespace O3DESharp
             return CoralHostStatus::CoralInitError;
         }
 
-        // Create assembly load contexts
-        // Core context: holds O3DE.Core.dll - never unloaded during runtime
-        m_coreContext = m_hostInstance->CreateAssemblyLoadContext("O3DECoreContext");
-
-        // User context: holds user game assemblies - can be unloaded for hot-reload
-        // NOTE: We intentionally do NOT pass the O3DE.Core directory here.
-        // Coral's path separator on Windows breaks paths with drive letters (C:\).
-        // Instead, we'll load O3DE.Core.dll into the user context as well.
-        m_userContext = m_hostInstance->CreateAssemblyLoadContext("O3DEUserContext");
+        // Create a single unified assembly load context
+        // NOTE: We use a single context for both O3DE.Core and user assemblies because:
+        // 1. Coral uses MemoryMappedFile which locks DLL files, preventing loading the same file twice
+        // 2. Assemblies in the same context can reference each other directly
+        // For hot-reload, we'll unload and recreate the entire context
+        m_coreContext = m_hostInstance->CreateAssemblyLoadContext("O3DEContext");
+        
+        // User context is the same as core context - single unified context
+        // This pointer alias simplifies code that expects separate contexts
+        m_userContext = m_coreContext;
 
         // Warn if there's a stale O3DE.Core.dll in the Coral directory
         // This can cause assembly resolution issues since Coral looks there first
@@ -115,7 +156,9 @@ namespace O3DESharp
             AZ::IO::FixedMaxPath projectPath = AZ::Utils::GetProjectPath();
             AZ::IO::FixedMaxPath expectedPath = projectPath / "Bin" / "Scripts";
             AZLOG_WARN("CoralHostManager: Found O3DE.Core.dll in Coral directory: %s", staleCorePath.c_str());
-            AZLOG_WARN("CoralHostManager: This file should be deleted. O3DE.Core.dll should only exist at: %s/O3DE.Core.dll", expectedPath.c_str());
+            AZLOG_WARN(
+                "CoralHostManager: This file should be deleted. O3DE.Core.dll should only exist at: %s/O3DE.Core.dll",
+                expectedPath.c_str());
         }
 #endif
 
@@ -159,18 +202,12 @@ namespace O3DESharp
         m_coreTypeCache.clear();
         m_userTypeCache.clear();
 
-        // Unload user context first (allows hot-reload cleanup)
-        if (m_userAssembly != nullptr)
-        {
-            m_hostInstance->UnloadAssemblyLoadContext(m_userContext);
-            m_userAssembly = nullptr;
-        }
-
-        // Unload core context
-        if (m_coreAssembly != nullptr)
+        // Unload the unified context (contains both O3DE.Core and user assemblies)
+        if (m_coreAssembly != nullptr || m_userAssembly != nullptr)
         {
             m_hostInstance->UnloadAssemblyLoadContext(m_coreContext);
             m_coreAssembly = nullptr;
+            m_userAssembly = nullptr;
         }
 
         // Shutdown the .NET runtime
@@ -223,18 +260,28 @@ namespace O3DESharp
 
         AZLOG_INFO("CoralHostManager: Reloading user assemblies...");
 
-        // Clear user type cache
+        // Clear type caches - both need to be cleared since we're reloading everything
         m_userTypeCache.clear();
+        m_coreTypeCache.clear();
 
-        // Unload the current user context
-        m_hostInstance->UnloadAssemblyLoadContext(m_userContext);
+        // Unload the unified context (which contains both O3DE.Core and user assemblies)
+        m_hostInstance->UnloadAssemblyLoadContext(m_coreContext);
+        m_coreAssembly = nullptr;
         m_userAssembly = nullptr;
 
-        // Create a new user context
-        // NOTE: We don't pass a DLL search path here because Coral's path separator
-        // on Windows breaks paths with drive letters (C:\). O3DE.Core.dll will be
-        // loaded into the context by LoadUserAssembly() before the user assembly.
-        m_userContext = m_hostInstance->CreateAssemblyLoadContext("O3DEUserContext");
+        // Create a new unified context
+        m_coreContext = m_hostInstance->CreateAssemblyLoadContext("O3DEContext");
+        m_userContext = m_coreContext;  // Same context
+
+        // Reload O3DE.Core first
+        if (!LoadCoreAssembly())
+        {
+            AZLOG_ERROR("CoralHostManager: Failed to reload O3DE.Core assembly");
+            return false;
+        }
+
+        // Re-register internal calls for the new context
+        RegisterInternalCalls();
 
         // Reload the user assembly
         if (!m_config.userAssemblyPath.empty())
@@ -337,17 +384,24 @@ namespace O3DESharp
 
         AZLOG_INFO("CoralHostManager: Loading core API assembly: %s", m_config.coreApiAssemblyPath.c_str());
 
-        // Check if file exists
+        // Check if file exists and get its size for debugging
+        AZ::u64 fileSize = 0;
         if (!AZ::IO::FileIOBase::GetInstance()->Exists(m_config.coreApiAssemblyPath.c_str()))
         {
             AZLOG_ERROR("CoralHostManager: Core API assembly not found: %s", m_config.coreApiAssemblyPath.c_str());
 #if !defined(AZ_RELEASE_BUILD)
             AZLOG_ERROR("CoralHostManager: O3DE.Core.dll must be deployed to: <ProjectPath>/Bin/Scripts/O3DE.Core.dll");
             AZLOG_ERROR("CoralHostManager: To deploy, use the C# Project Manager tool or run:");
-            AZLOG_ERROR("  python -c \"from Gems.O3DESharp.Editor.Scripts.csharp_project_manager import CSharpProjectManager; CSharpProjectManager().deploy_o3de_core()\"");
+            AZLOG_ERROR(
+                "  python -c \"from Gems.O3DESharp.Editor.Scripts.csharp_project_manager import CSharpProjectManager; "
+                "CSharpProjectManager().deploy_o3de_core()\"");
 #endif
             return false;
         }
+
+        // Get file size for debugging
+        AZ::IO::FileIOBase::GetInstance()->Size(m_config.coreApiAssemblyPath.c_str(), fileSize);
+        AZLOG_INFO("CoralHostManager: File size of O3DE.Core.dll: %llu bytes", fileSize);
 
         Coral::ManagedAssembly& assembly = m_coreContext.LoadAssembly(std::string(m_config.coreApiAssemblyPath.c_str()));
 
@@ -358,13 +412,13 @@ namespace O3DESharp
         }
 
         m_coreAssembly = &assembly;
-        
+
         // Debug: Log detailed assembly info
         AZLOG_INFO("CoralHostManager: Core API assembly loaded:");
         AZLOG_INFO("  - Assembly Name: '%s'", assembly.GetName().data());
         AZLOG_INFO("  - Assembly ID: %d", assembly.GetAssemblyID());
         AZLOG_INFO("  - Assembly Path: %s", m_config.coreApiAssemblyPath.c_str());
-        
+
         // Verify the assembly name is correct
         if (assembly.GetName() != "O3DE.Core")
         {
@@ -397,20 +451,9 @@ namespace O3DESharp
             return false;
         }
 
-        // Load O3DE.Core.dll into the user context BEFORE loading user assembly
-        // This allows the user assembly to resolve its O3DE.Core dependency
-        // We need to do this because Coral's assembly resolution in separate contexts
-        // doesn't automatically find assemblies from other contexts
-        if (!m_config.coreApiAssemblyPath.empty() && 
-            AZ::IO::FileIOBase::GetInstance()->Exists(m_config.coreApiAssemblyPath.c_str()))
-        {
-            AZLOG_INFO("CoralHostManager: Pre-loading O3DE.Core.dll into user context for dependency resolution");
-            Coral::ManagedAssembly& userContextCoreAssembly = m_userContext.LoadAssembly(std::string(m_config.coreApiAssemblyPath.c_str()));
-            if (userContextCoreAssembly.GetLoadStatus() != Coral::AssemblyLoadStatus::Success)
-            {
-                AZLOG_WARN("CoralHostManager: Failed to pre-load O3DE.Core.dll into user context. User assembly may fail to load.");
-            }
-        }
+        // NOTE: O3DE.Core.dll is already loaded in the same unified context (m_userContext == m_coreContext)
+        // so the user assembly can resolve its O3DE.Core dependency automatically.
+        // We don't need to pre-load it separately.
 
         Coral::ManagedAssembly& assembly = m_userContext.LoadAssembly(std::string(m_config.userAssemblyPath.c_str()));
 
@@ -449,5 +492,4 @@ namespace O3DESharp
 
         AZLOG_INFO("CoralHostManager: Internal calls will be registered by ScriptBindings");
     }
-
 } // namespace O3DESharp

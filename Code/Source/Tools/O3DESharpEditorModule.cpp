@@ -1,28 +1,29 @@
 
 #include <O3DESharp/O3DESharpTypeIds.h>
-#include <AzCore/Memory/Memory.h>
-#include <AzCore/Module/Module.h>
+#include <O3DESharpModuleInterface.h>
 #include "O3DESharpEditorSystemComponent.h"
 #include "Components/EditorO3DESharpComponent.h"
 #include "Components/EditorCSharpScriptComponent.h"
 
 namespace O3DESharp
 {
-    //! Editor module for O3DESharp - only registers Editor-specific components
-    //! Runtime components (CSharpScriptComponent, etc.) are registered by the runtime module
+    //! Editor module for O3DESharp
+    //! Inherits from O3DESharpModuleInterface to get runtime component registrations
+    //! (needed for Asset Processor to serialize runtime components when BuildGameEntity is called)
     class O3DESharpEditorModule
-        : public AZ::Module
+        : public O3DESharpModuleInterface
     {
     public:
-        AZ_RTTI(O3DESharpEditorModule, O3DESharpEditorModuleTypeId, AZ::Module);
+        AZ_RTTI(O3DESharpEditorModule, O3DESharpEditorModuleTypeId, O3DESharpModuleInterface);
         AZ_CLASS_ALLOCATOR(O3DESharpEditorModule, AZ::SystemAllocator);
 
         O3DESharpEditorModule()
         {
-            // Only register Editor-specific component descriptors here.
-            // Runtime components are registered by O3DESharpModule (the runtime module).
-            // Do NOT register CSharpScriptComponent here - it causes UUID duplication errors
-            // when both runtime and editor modules are loaded.
+            // Base class (O3DESharpModuleInterface) already registers:
+            // - O3DESharpSystemComponent
+            // - CSharpScriptComponent (runtime - needed for Asset Processor to serialize spawnables)
+            //
+            // Here we add Editor-specific component descriptors.
             m_descriptors.insert(m_descriptors.end(), {
                 O3DESharpEditorSystemComponent::CreateDescriptor(),
                 EditorO3DESharpComponent::CreateDescriptor(),

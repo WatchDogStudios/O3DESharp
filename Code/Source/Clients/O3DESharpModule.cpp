@@ -1,7 +1,6 @@
 
 #include <O3DESharp/O3DESharpTypeIds.h>
 #include <O3DESharpModuleInterface.h>
-#include "O3DESharpSystemComponent.h"
 
 #include <AzCore/RTTI/RTTI.h>
 
@@ -18,17 +17,17 @@ namespace O3DESharp
 
         O3DESharpModule()
         {
+            // Base class (O3DESharpModuleInterface) already registers:
+            // - O3DESharpSystemComponent
+            // - CSharpScriptComponent
+            // Only add additional runtime-specific components here.
             m_descriptors.insert(m_descriptors.end(),
                 {
-                    O3DESharpSystemComponent::CreateDescriptor(),
                     O3DESharpComponent::CreateDescriptor(),
                 });
         }
 
-        AZ::ComponentTypeList GetRequiredSystemComponents() const
-        {
-            return AZ::ComponentTypeList{ azrtti_typeid<O3DESharpSystemComponent>() };
-        }
+        // Use base class GetRequiredSystemComponents() which returns O3DESharpSystemComponent
     };
 }// namespace O3DESharp
 

@@ -62,35 +62,43 @@ namespace O3DESharp
 
         if (auto* serializeContext = azrtti_cast<AZ::SerializeContext*>(context))
         {
-            serializeContext->Class<CSharpScriptComponent, AZ::Component>()
-                ->Version(1)
-                ->Field("Configuration", &CSharpScriptComponent::m_config)
-                ;
-
-            if (AZ::EditContext* editContext = serializeContext->GetEditContext())
+            // Guard against double-reflection (can happen when both runtime and editor modules load)
+            if (!serializeContext->FindClassData(azrtti_typeid<CSharpScriptComponent>()))
             {
-                editContext->Class<CSharpScriptComponent>("C# Script", "Attaches a C# script to this entity")
-                    ->ClassElement(AZ::Edit::ClassElements::EditorData, "")
-                        ->Attribute(AZ::Edit::Attributes::Category, "Scripting")
-                        ->Attribute(AZ::Edit::Attributes::Icon, "Icons/Components/Script.svg")
-                        ->Attribute(AZ::Edit::Attributes::ViewportIcon, "Icons/Components/Viewport/Script.svg")
-                        ->Attribute(AZ::Edit::Attributes::AppearsInAddComponentMenu, AZ_CRC_CE("Game"))
-                        ->Attribute(AZ::Edit::Attributes::AutoExpand, true)
-                        ->Attribute(AZ::Edit::Attributes::HelpPageURL, "")
-                    ->DataElement(AZ::Edit::UIHandlers::Default, &CSharpScriptComponent::m_config, "Configuration", "")
-                        ->Attribute(AZ::Edit::Attributes::Visibility, AZ::Edit::PropertyVisibility::ShowChildrenOnly)
+                serializeContext->Class<CSharpScriptComponent, AZ::Component>()
+                    ->Version(1)
+                    ->Field("Configuration", &CSharpScriptComponent::m_config)
                     ;
+
+                if (AZ::EditContext* editContext = serializeContext->GetEditContext())
+                {
+                    editContext->Class<CSharpScriptComponent>("C# Script", "Attaches a C# script to this entity")
+                        ->ClassElement(AZ::Edit::ClassElements::EditorData, "")
+                            ->Attribute(AZ::Edit::Attributes::Category, "Scripting")
+                            ->Attribute(AZ::Edit::Attributes::Icon, "Icons/Components/Script.svg")
+                            ->Attribute(AZ::Edit::Attributes::ViewportIcon, "Icons/Components/Viewport/Script.svg")
+                            ->Attribute(AZ::Edit::Attributes::AppearsInAddComponentMenu, AZ_CRC_CE("Game"))
+                            ->Attribute(AZ::Edit::Attributes::AutoExpand, true)
+                            ->Attribute(AZ::Edit::Attributes::HelpPageURL, "")
+                        ->DataElement(AZ::Edit::UIHandlers::Default, &CSharpScriptComponent::m_config, "Configuration", "")
+                            ->Attribute(AZ::Edit::Attributes::Visibility, AZ::Edit::PropertyVisibility::ShowChildrenOnly)
+                        ;
+                }
             }
         }
 
         if (auto* behaviorContext = azrtti_cast<AZ::BehaviorContext*>(context))
         {
-            behaviorContext->Class<CSharpScriptComponent>("CSharpScriptComponent")
-                ->Attribute(AZ::Script::Attributes::Module, "scripting")
-                ->Attribute(AZ::Script::Attributes::Scope, AZ::Script::Attributes::ScopeFlags::Common)
-                ->Method("IsScriptValid", &CSharpScriptComponent::IsScriptValid)
-                ->Method("ReloadScript", &CSharpScriptComponent::ReloadScript)
-                ;
+            // Guard against double registration (can happen when Editor module reflects base classes)
+            if (behaviorContext->m_classes.find("CSharpScriptComponent") == behaviorContext->m_classes.end())
+            {
+                behaviorContext->Class<CSharpScriptComponent>("CSharpScriptComponent")
+                    ->Attribute(AZ::Script::Attributes::Module, "scripting")
+                    ->Attribute(AZ::Script::Attributes::Scope, AZ::Script::Attributes::ScopeFlags::Common)
+                    ->Method("IsScriptValid", &CSharpScriptComponent::IsScriptValid)
+                    ->Method("ReloadScript", &CSharpScriptComponent::ReloadScript)
+                    ;
+            }
         }
     }
 

@@ -37,6 +37,12 @@ namespace O3DESharp
     {
         if (auto serializeContext = azrtti_cast<AZ::SerializeContext*>(context))
         {
+            // Guard against double-reflection (can happen when module inherits from shared interface)
+            if (serializeContext->FindClassData(azrtti_typeid<O3DESharpSystemComponent>()))
+            {
+                return;
+            }
+
             serializeContext->Class<O3DESharpSystemComponent, AZ::Component>()
                 ->Version(2)
                 ;
