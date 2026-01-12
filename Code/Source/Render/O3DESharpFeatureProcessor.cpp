@@ -14,6 +14,12 @@ namespace O3DESharp
     {
         if (auto* serializeContext = azrtti_cast<AZ::SerializeContext*>(context))
         {
+            // Guard against double-reflection (can happen when both runtime and editor modules load)
+            if (serializeContext->FindClassData(azrtti_typeid<O3DESharpFeatureProcessor>()))
+            {
+                return;
+            }
+
             serializeContext
                 ->Class<O3DESharpFeatureProcessor, FeatureProcessor>()
                 ;

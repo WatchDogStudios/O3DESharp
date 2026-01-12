@@ -12,6 +12,7 @@ Provides Qt-based dialogs for creating and managing C# scripts.
 """
 
 import sys
+import datetime
 from pathlib import Path
 from typing import Optional, List, Callable
 
@@ -714,15 +715,276 @@ class CSharpProjectManagerWindow(QDialog):
         
         details_layout.addWidget(settings_group)
         
+        # Binding Generation Group
+        binding_group = QGroupBox("Gem Bindings")
+        binding_layout = QVBoxLayout(binding_group)
+        
+        # Binding generation description
+        binding_desc = QLabel(
+            "Generate C# wrapper classes from O3DE's BehaviorContext reflection data.\n"
+            "This creates strongly-typed bindings for Gems and their APIs."
+        )
+        binding_desc.setWordWrap(True)
+        binding_desc.setStyleSheet("color: #888;")
+        binding_layout.addWidget(binding_desc)
+        
+        # Binding options
+        binding_options_layout = QFormLayout()
+        
+        self.binding_gems_combo = QComboBox()
+        self.binding_gems_combo.addItem("All Active Gems", "all")
+        self.binding_gems_combo.setToolTip("Select which gems to generate bindings for")
+        binding_options_layout.addRow("Generate for:", self.binding_gems_combo)
+        
+        self.binding_include_deps_cb = QtWidgets.QCheckBox("Include Dependencies")
+        self.binding_include_deps_cb.setChecked(True)
+        self.binding_include_deps_cb.setToolTip("Also generate bindings for dependent gems")
+        binding_options_layout.addRow("", self.binding_include_deps_cb)
+        
+        binding_layout.addLayout(binding_options_layout)
+        
+        # Binding action buttons
+        binding_buttons_layout = QHBoxLayout()
+        
+        generate_bindings_btn = QPushButton("Generate Bindings")
+        generate_bindings_btn.setToolTip("Generate C# bindings from current reflection data")
+        generate_bindings_btn.clicked.connect(self._generate_bindings)
+        binding_buttons_layout.addWidget(generate_bindings_btn)
+        
+        refresh_gems_btn = QPushButton("Refresh Gems")
+        refresh_gems_btn.setToolTip("Refresh the list of available gems")
+        refresh_gems_btn.clicked.connect(self._refresh_gem_list)
+        binding_buttons_layout.addWidget(refresh_gems_btn)
+        
+        binding_buttons_layout.addStretch()
+        binding_layout.addLayout(binding_buttons_layout)
+        
+        # Binding status
+        self.binding_status_label = QLabel("Ready to generate")
+        self.binding_status_label.setStyleSheet("color: #888;")
+        binding_layout.addWidget(self.binding_status_label)
+        
+        details_layout.addWidget(binding_group)
+        
+        # Populate the gem combo box
+        self._refresh_gem_list()
+        
         splitter.addWidget(details_widget)
         splitter.setSizes([250, 450])
         
         layout.addWidget(splitter)
         
+        # Build Log Panel (collapsible)
+        log_group = QGroupBox("Build Log")
+        log_group.setCheckable(True)
+        log_group.setChecked(True)
+        log_layout = QVBoxLayout(log_group)
+        
+        # Log toolbar
+        log_toolbar = QHBoxLayout()
+        
+        clear_log_btn = QPushButton("Clear")
+        clear_log_btn.clicked.connect(self._clear_log)
+        log_toolbar.addWidget(clear_log_btn)
+        
+        save_log_btn = QPushButton("Save Log...")
+        save_log_btn.clicked.connect(self._save_log)
+        log_toolbar.addWidget(save_log_btn)
+        
+        open_log_file_btn = QPushButton("Open Log File")
+        open_log_file_btn.setToolTip("Open the persistent log file location")
+        open_log_file_btn.clicked.connect(self._open_log_file)
+        log_toolbar.addWidget(open_log_file_btn)
+        
+        log_toolbar.addStretch()
+        log_layout.addLayout(log_toolbar)
+        
+        # Log text area
+        self.log_text = QTextEdit()
+        self.log_text.setReadOnly(True)
+        self.log_text.setFont(QFont("Consolas", 9))
+        self.log_text.setMinimumHeight(150)
+        self.log_text.setMaximumHeight(250)
+        log_layout.addWidget(self.log_text)
+        
+        layout.addWidget(log_group)
+        
+        # Connect group checkbox to show/hide content
+        log_group.toggled.connect(lambda checked: self.log_text.setVisible(checked))
+        
+        # Load previous log if exists
+        self._load_persistent_log()
+        
         # Status
         self.status_label = QLabel("Ready")
         self.status_label.setStyleSheet("color: #888;")
         layout.addWidget(self.status_label)
+    
+    # ==================== Log Methods ====================
+    
+    def _get_log_file_path(self) -> Path:
+        """Get the path to the persistent build log file."""
+        return self.project_manager.project_path / "user" / "csharp_build.log"
+    
+    def _log(self, message: str, level: str = "INFO"):
+        """
+        Add a message to the build log.
+        
+        Args:
+            message: The message to log
+            level: Log level (INFO, WARNING, ERROR, SUCCESS)
+        """
+        # Guard: log_text may not exist yet during setup_ui
+        if not hasattr(self, 'log_text') or self.log_text is None:
+            print(f"[{level}] {message}")
+            return
+        
+        import datetime
+        timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        
+        # Color coding for different levels
+        colors = {
+            "INFO": "#CCCCCC",
+            "WARNING": "#FFA500",
+            "ERROR": "#FF4444",
+            "SUCCESS": "#44FF44",
+            "BUILD": "#88CCFF",
+        }
+        color = colors.get(level, "#CCCCCC")
+        
+        # Format the log entry
+        log_entry = f"[{timestamp}] [{level}] {message}"
+        html_entry = f'<span style="color: {color};">[{timestamp}] [{level}]</span> {message}'
+        
+        # Append to text widget
+        self.log_text.append(html_entry)
+        
+        # Scroll to bottom
+        scrollbar = self.log_text.verticalScrollBar()
+        scrollbar.setValue(scrollbar.maximum())
+        
+        # Also append to persistent log file
+        self._append_to_log_file(log_entry)
+        
+        # Process events to update UI
+        QtWidgets.QApplication.processEvents()
+    
+    def _log_build_output(self, output: str, is_error: bool = False):
+        """Log build output with proper formatting."""
+        if not output:
+            return
+        
+        # Split into lines and log each
+        for line in output.strip().split('\n'):
+            line = line.strip()
+            if not line:
+                continue
+            
+            # Detect error/warning lines
+            if 'error' in line.lower() or is_error:
+                level = "ERROR"
+            elif 'warning' in line.lower():
+                level = "WARNING"
+            else:
+                level = "BUILD"
+            
+            # Escape HTML entities
+            line = line.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
+            self._log(line, level)
+    
+    def _append_to_log_file(self, message: str):
+        """Append a message to the persistent log file."""
+        try:
+            log_file = self._get_log_file_path()
+            log_file.parent.mkdir(parents=True, exist_ok=True)
+            
+            with open(log_file, 'a', encoding='utf-8') as f:
+                f.write(message + '\n')
+        except Exception as e:
+            print(f"Failed to write to log file: {e}")
+    
+    def _load_persistent_log(self):
+        """Load previous log entries from the persistent log file."""
+        try:
+            log_file = self._get_log_file_path()
+            if log_file.exists():
+                # Load last 100 lines
+                with open(log_file, 'r', encoding='utf-8') as f:
+                    lines = f.readlines()
+                    recent_lines = lines[-100:] if len(lines) > 100 else lines
+                
+                if recent_lines:
+                    self.log_text.append('<span style="color: #666;">--- Previous session log ---</span>')
+                    for line in recent_lines:
+                        line = line.strip()
+                        if '[ERROR]' in line:
+                            color = "#FF4444"
+                        elif '[WARNING]' in line:
+                            color = "#FFA500"
+                        elif '[SUCCESS]' in line:
+                            color = "#44FF44"
+                        elif '[BUILD]' in line:
+                            color = "#88CCFF"
+                        else:
+                            color = "#888888"
+                        self.log_text.append(f'<span style="color: {color};">{line}</span>')
+                    self.log_text.append('<span style="color: #666;">--- Current session ---</span>')
+                    self.log_text.append('')
+        except Exception as e:
+            print(f"Failed to load log file: {e}")
+    
+    def _clear_log(self):
+        """Clear the build log."""
+        self.log_text.clear()
+        # Also clear the log file
+        try:
+            log_file = self._get_log_file_path()
+            if log_file.exists():
+                log_file.unlink()
+            self._log("Log cleared", "INFO")
+        except Exception as e:
+            self._log(f"Failed to clear log file: {e}", "WARNING")
+    
+    def _save_log(self):
+        """Save the build log to a file."""
+        default_name = f"csharp_build_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.log"
+        file_path, _ = QFileDialog.getSaveFileName(
+            self,
+            "Save Build Log",
+            str(self.project_manager.project_path / default_name),
+            "Log Files (*.log);;Text Files (*.txt);;All Files (*.*)"
+        )
+        if file_path:
+            try:
+                with open(file_path, 'w', encoding='utf-8') as f:
+                    f.write(self.log_text.toPlainText())
+                self._log(f"Log saved to: {file_path}", "SUCCESS")
+            except Exception as e:
+                QMessageBox.warning(self, "Error", f"Failed to save log: {e}")
+    
+    def _open_log_file(self):
+        """Open the persistent log file location."""
+        import subprocess
+        import sys
+        
+        log_file = self._get_log_file_path()
+        log_file.parent.mkdir(parents=True, exist_ok=True)
+        
+        # Create the file if it doesn't exist
+        if not log_file.exists():
+            log_file.touch()
+        
+        try:
+            if sys.platform == "win32":
+                # Open in default text editor on Windows
+                import os
+                os.startfile(str(log_file))
+            else:
+                subprocess.Popen(["xdg-open", str(log_file)])
+        except Exception as e:
+            QMessageBox.warning(self, "Error", f"Failed to open log file: {e}")
+    
+    # ==================== End Log Methods ====================
         
     def _set_user_assembly(self):
         """Set the user assembly name from the text field."""
@@ -798,10 +1060,13 @@ class CSharpProjectManagerWindow(QDialog):
     
     def _deploy_coral(self):
         """Deploy Coral.Managed files to the project."""
+        self._log("Deploying Coral.Managed files...", "INFO")
+        
         # First try auto-detection
         result = self.project_manager.deploy_coral()
         
         if not result["success"]:
+            self._log(f"Auto-detection failed: {result['message']}", "WARNING")
             # Ask user to browse for source
             reply = QMessageBox.question(
                 self, 
@@ -818,12 +1083,15 @@ class CSharpProjectManagerWindow(QDialog):
                         if self.project_manager.coral_managed_path else ""
                 )
                 if source_dir:
+                    self._log(f"Using user-specified source: {source_dir}", "INFO")
                     result = self.project_manager.deploy_coral(source_dir)
         
         if result["success"]:
+            self._log(f"Coral deployed successfully: {result['message']}", "SUCCESS")
             QMessageBox.information(self, "Success", result["message"])
             self._update_coral_deploy_status()
         else:
+            self._log(f"Coral deployment failed: {result['message']}", "ERROR")
             QMessageBox.warning(self, "Deployment Failed", result["message"])
     
     def _check_coral_deployment(self):
@@ -850,10 +1118,13 @@ Status: {status['message']}"""
     
     def _deploy_o3de_core(self):
         """Deploy O3DE.Core.dll to the project."""
+        self._log("Deploying O3DE.Core files...", "INFO")
+        
         # First try auto-detection
         result = self.project_manager.deploy_o3de_core()
         
         if not result["success"]:
+            self._log(f"Auto-detection failed: {result['message']}", "WARNING")
             # Ask user to browse for source
             reply = QMessageBox.question(
                 self, 
@@ -869,12 +1140,15 @@ Status: {status['message']}"""
                     ""
                 )
                 if source_dir:
+                    self._log(f"Using user-specified source: {source_dir}", "INFO")
                     result = self.project_manager.deploy_o3de_core(source_dir)
         
         if result["success"]:
+            self._log(f"O3DE.Core deployed successfully: {result['message']}", "SUCCESS")
             QMessageBox.information(self, "Success", result["message"])
             self._update_core_deploy_status()
         else:
+            self._log(f"O3DE.Core deployment failed: {result['message']}", "ERROR")
             QMessageBox.warning(self, "Deployment Failed", result["message"])
     
     def _check_o3de_core_deployment(self):
@@ -901,15 +1175,26 @@ Status: {status['message']}"""
     
     def _deploy_all(self):
         """Deploy both Coral and O3DE.Core to the project."""
+        self._log("========== Deploying all runtime dependencies ==========", "INFO")
         results = []
         
         # Deploy Coral
+        self._log("Deploying Coral.Managed...", "INFO")
         coral_result = self.project_manager.deploy_coral()
         results.append(("Coral", coral_result))
+        if coral_result["success"]:
+            self._log(f"✓ Coral: {coral_result['message']}", "SUCCESS")
+        else:
+            self._log(f"✗ Coral: {coral_result['message']}", "ERROR")
         
         # Deploy O3DE.Core
+        self._log("Deploying O3DE.Core...", "INFO")
         core_result = self.project_manager.deploy_o3de_core()
         results.append(("O3DE.Core", core_result))
+        if core_result["success"]:
+            self._log(f"✓ O3DE.Core: {core_result['message']}", "SUCCESS")
+        else:
+            self._log(f"✗ O3DE.Core: {core_result['message']}", "ERROR")
         
         # Update status labels
         self._update_coral_deploy_status()
@@ -1019,42 +1304,261 @@ Status: {status['message']}"""
         config = self.config_combo.currentText()
         
         self.status_label.setText(f"Building {project['name']}...")
+        self._log(f"========== Building {project['name']} ({config}) ==========", "INFO")
+        self._log(f"Project path: {project['path']}", "INFO")
         QtWidgets.QApplication.processEvents()
         
         result = self.project_manager.build_project(project["path"], config)
         
+        # Log the build output
+        if result.get("build_output"):
+            self._log_build_output(result["build_output"], not result["success"])
+        
         if result["success"]:
             self.status_label.setText(f"Build succeeded: {result['output_path']}")
-            QMessageBox.information(self, "Build Succeeded", result["message"])
+            self._log(f"Build succeeded! Output: {result['output_path']}", "SUCCESS")
+            self._log("", "INFO")  # Blank line for readability
         else:
             self.status_label.setText("Build failed")
-            QMessageBox.critical(
-                self, "Build Failed",
-                f"{result['message']}\n\n{result.get('build_output', '')}"
-            )
+            self._log(f"Build failed: {result['message']}", "ERROR")
+            self._log("", "INFO")  # Blank line for readability
             
     def _build_all(self):
         projects = self.project_manager.list_projects()
         config = self.config_combo.currentText()
         
+        self._log(f"========== Building all projects ({config}) ==========", "INFO")
+        self._log(f"Total projects: {len(projects)}", "INFO")
+        
         success_count = 0
         fail_count = 0
         
-        for project in projects:
-            self.status_label.setText(f"Building {project['name']}...")
+        for i, project in enumerate(projects, 1):
+            self.status_label.setText(f"Building {project['name']} ({i}/{len(projects)})...")
+            self._log(f"--- Building {project['name']} ({i}/{len(projects)}) ---", "INFO")
             QtWidgets.QApplication.processEvents()
             
             result = self.project_manager.build_project(project["path"], config)
+            
+            # Log the build output
+            if result.get("build_output"):
+                self._log_build_output(result["build_output"], not result["success"])
+            
             if result["success"]:
+                self._log(f"✓ {project['name']}: Build succeeded", "SUCCESS")
                 success_count += 1
             else:
+                self._log(f"✗ {project['name']}: Build failed - {result['message']}", "ERROR")
                 fail_count += 1
                 
         self.status_label.setText(f"Build complete: {success_count} succeeded, {fail_count} failed")
-        QMessageBox.information(
-            self, "Build Complete",
-            f"Built {len(projects)} project(s)\n\nSucceeded: {success_count}\nFailed: {fail_count}"
-        )
+        self._log(f"========== Build complete: {success_count} succeeded, {fail_count} failed ==========", 
+                  "SUCCESS" if fail_count == 0 else "WARNING")
+        self._log("", "INFO")  # Blank line for readability
+    
+    # ==================== Binding Generation Methods ====================
+    
+    def _refresh_gem_list(self):
+        """Refresh the gem list from the project."""
+        try:
+            # Import gem resolver
+            try:
+                from gem_dependency_resolver import GemDependencyResolver
+            except ImportError:
+                from .gem_dependency_resolver import GemDependencyResolver
+            
+            resolver = GemDependencyResolver()
+            result = resolver.discover_gems_from_project(str(self.project_manager.project_path))
+            
+            self.binding_gems_combo.clear()
+            self.binding_gems_combo.addItem("All Active Gems")
+            
+            if result.success:
+                # Add sorted gems in dependency order
+                for gem_name in result.sorted_gem_names:
+                    if gem_name in result.active_gem_names:
+                        self.binding_gems_combo.addItem(gem_name)
+                
+                self.binding_status_label.setText(f"Found {len(result.active_gem_names)} active gems")
+                self._log(f"Discovered {len(result.active_gem_names)} active gems for binding generation", "INFO")
+            else:
+                self.binding_status_label.setText(f"Error: {result.error_message}")
+                self._log(f"Failed to discover gems: {result.error_message}", "WARNING")
+                
+        except Exception as e:
+            self.binding_status_label.setText(f"Error: {str(e)}")
+            self._log(f"Error refreshing gem list: {e}", "ERROR")
+    
+    def _generate_bindings(self):
+        """Generate C# bindings for the selected gem(s)."""
+        try:
+            # Import binding generator
+            try:
+                from generate_bindings import BindingGenerationOrchestrator
+                from gem_dependency_resolver import GemDependencyResolver
+            except ImportError:
+                from .generate_bindings import BindingGenerationOrchestrator
+                from .gem_dependency_resolver import GemDependencyResolver
+            
+            selected_gem = self.binding_gems_combo.currentText()
+            include_deps = self.binding_include_deps_cb.isChecked()
+            
+            self._log("========== Starting Binding Generation ==========", "INFO")
+            self._log(f"Target: {selected_gem}", "INFO")
+            self._log(f"Include dependencies: {include_deps}", "INFO")
+            
+            # Create orchestrator
+            orchestrator = BindingGenerationOrchestrator()
+            
+            # Configure output
+            output_dir = str(self.project_manager.project_path / "Generated" / "CSharp")
+            
+            # Determine which gems to generate
+            include_gems = None
+            if selected_gem != "All Active Gems":
+                include_gems = [selected_gem]
+                if include_deps:
+                    # Get gem dependencies
+                    resolver = GemDependencyResolver()
+                    resolver.discover_gems_from_project(str(self.project_manager.project_path))
+                    deps = resolver.get_gem_dependencies(selected_gem)
+                    include_gems.extend(deps)
+                    self._log(f"Including dependencies: {deps}", "INFO")
+            
+            orchestrator.configure(
+                output_directory=output_dir,
+                root_namespace="O3DE.Generated",
+                generate_core=True,
+                generate_gems=True,
+                separate_gem_directories=True,
+                include_gems=include_gems
+            )
+            
+            # Check for existing reflection data
+            reflection_data_path = self.project_manager.project_path / "Generated" / "reflection_data.json"
+            
+            if not reflection_data_path.exists():
+                # Try to get it from the Editor
+                self._log("No reflection data found, attempting to export from Editor...", "INFO")
+                self.binding_status_label.setText("Exporting reflection data...")
+                QtWidgets.QApplication.processEvents()
+                
+                # Try to use Editor's behavior context exporter
+                try:
+                    import azlmbr.behavior_context
+                    
+                    # Create output directory
+                    reflection_data_path.parent.mkdir(parents=True, exist_ok=True)
+                    
+                    # Export behavior context (this is a hypothetical API - may need adjustment)
+                    self._log("Exporting behavior context to JSON...", "INFO")
+                    
+                    # For now, provide instructions if the API doesn't exist
+                    reply = QMessageBox.question(
+                        self,
+                        "Reflection Data Required",
+                        f"Reflection data not found at:\n{reflection_data_path}\n\n"
+                        "To generate bindings, you need to export the BehaviorContext "
+                        "reflection data first.\n\n"
+                        "Would you like to browse for an existing reflection_data.json file?",
+                        QMessageBox.Yes | QMessageBox.No
+                    )
+                    
+                    if reply == QMessageBox.Yes:
+                        file_path, _ = QFileDialog.getOpenFileName(
+                            self,
+                            "Select Reflection Data JSON",
+                            str(self.project_manager.project_path),
+                            "JSON Files (*.json);;All Files (*.*)"
+                        )
+                        if file_path:
+                            reflection_data_path = Path(file_path)
+                        else:
+                            self._log("Binding generation cancelled - no reflection data", "WARNING")
+                            self.binding_status_label.setText("Cancelled - no reflection data")
+                            return
+                    else:
+                        self._log("Binding generation cancelled - no reflection data", "WARNING")
+                        self.binding_status_label.setText("Cancelled - no reflection data")
+                        return
+                        
+                except Exception as e:
+                    self._log(f"Could not export from Editor: {e}", "WARNING")
+                    self.binding_status_label.setText("Error: Could not get reflection data")
+                    return
+            
+            # Load reflection data
+            self._log(f"Loading reflection data from: {reflection_data_path}", "INFO")
+            self.binding_status_label.setText("Loading reflection data...")
+            QtWidgets.QApplication.processEvents()
+            
+            if not orchestrator.load_reflection_data(str(reflection_data_path)):
+                self._log("Failed to load reflection data", "ERROR")
+                self.binding_status_label.setText("Error: Failed to load reflection data")
+                return
+            
+            # Discover gems
+            self._log("Discovering gems from project...", "INFO")
+            self.binding_status_label.setText("Discovering gems...")
+            QtWidgets.QApplication.processEvents()
+            
+            gem_result = orchestrator.discover_gems_from_project(
+                str(self.project_manager.project_path)
+            )
+            
+            if not gem_result.success:
+                self._log(f"Warning: Gem discovery issues: {gem_result.error_message}", "WARNING")
+            
+            # Generate bindings
+            self._log("Generating C# bindings...", "INFO")
+            self.binding_status_label.setText("Generating bindings...")
+            QtWidgets.QApplication.processEvents()
+            
+            result = orchestrator.generate()
+            
+            if result.success:
+                self._log(f"========== Binding Generation Complete ==========", "SUCCESS")
+                self._log(f"Classes generated: {result.classes_generated}", "SUCCESS")
+                self._log(f"EBuses generated: {result.ebuses_generated}", "SUCCESS")
+                self._log(f"Files created: {result.files_created}", "SUCCESS")
+                self._log(f"Output directory: {output_dir}", "INFO")
+                
+                self.binding_status_label.setText(
+                    f"Generated {result.classes_generated} classes, "
+                    f"{result.ebuses_generated} EBuses"
+                )
+                
+                QMessageBox.information(
+                    self,
+                    "Binding Generation Complete",
+                    f"Successfully generated C# bindings:\n\n"
+                    f"• Classes: {result.classes_generated}\n"
+                    f"• EBuses: {result.ebuses_generated}\n"
+                    f"• Files: {result.files_created}\n\n"
+                    f"Output: {output_dir}"
+                )
+            else:
+                self._log(f"Binding generation failed: {result.error_message}", "ERROR")
+                self.binding_status_label.setText(f"Error: {result.error_message}")
+                QMessageBox.warning(
+                    self,
+                    "Binding Generation Failed",
+                    f"Failed to generate bindings:\n\n{result.error_message}"
+                )
+                
+        except Exception as e:
+            import traceback
+            error_details = traceback.format_exc()
+            self._log(f"Error generating bindings: {e}", "ERROR")
+            self._log(error_details, "ERROR")
+            self.binding_status_label.setText(f"Error: {str(e)}")
+            QMessageBox.warning(
+                self,
+                "Error",
+                f"An error occurred while generating bindings:\n\n{e}"
+            )
+    
+    # ==================== End Binding Generation Methods ====================
     
     def _browse_managed_assembly(self):
         """Browse for the Coral.Managed.dll file."""

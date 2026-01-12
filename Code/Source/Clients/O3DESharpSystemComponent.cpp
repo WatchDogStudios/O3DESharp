@@ -35,6 +35,11 @@ namespace O3DESharp
 
     void O3DESharpSystemComponent::Reflect(AZ::ReflectContext* context)
     {
+        // Each sub-component has its own guard, so we can call them directly.
+        // The guards inside each Reflect method will prevent double-registration.
+        O3DESharpFeatureProcessor::Reflect(context);
+        CSharpScriptComponent::Reflect(context);
+
         if (auto serializeContext = azrtti_cast<AZ::SerializeContext*>(context))
         {
             // Guard against double-reflection (can happen when module inherits from shared interface)
@@ -47,11 +52,6 @@ namespace O3DESharp
                 ->Version(2)
                 ;
         }
-
-        O3DESharpFeatureProcessor::Reflect(context);
-        
-        // Reflect scripting components
-        CSharpScriptComponent::Reflect(context);
     }
 
     void O3DESharpSystemComponent::GetProvidedServices(AZ::ComponentDescriptor::DependencyArrayType& provided)
