@@ -12,6 +12,7 @@
 #include <AzCore/Component/TickBus.h>
 #include <AzCore/std/smart_ptr/unique_ptr.h>
 #include <O3DESharp/O3DESharpBus.h>
+#include <Scripting/Reflection/ReflectionDataExporter.h>
 
 namespace O3DESharp
 {
@@ -37,6 +38,7 @@ namespace O3DESharp
     class O3DESharpSystemComponent
         : public AZ::Component
         , protected O3DESharpRequestBus::Handler
+        , protected ReflectionDataExportRequestBus::Handler
     {
     public:
         AZ_COMPONENT_DECL(O3DESharpSystemComponent);
@@ -64,6 +66,16 @@ namespace O3DESharp
         AZStd::string GetCoralDirectory() const override;
         AZStd::string GetCoreAssemblyPath() const override;
         AZStd::string GetUserAssemblyPath() const override;
+        ////////////////////////////////////////////////////////////////////////
+
+        ////////////////////////////////////////////////////////////////////////
+        // ReflectionDataExportRequestBus interface implementation
+        bool ExportReflectionData(const AZStd::string& outputPath) override;
+        AZStd::string GetReflectionDataJson() override;
+        AZStd::string GetReflectionDataForCategory(const AZStd::string& category) override;
+        AZStd::vector<AZStd::string> GetReflectedClassNames() override;
+        AZStd::vector<AZStd::string> GetReflectedEBusNames() override;
+        AZStd::vector<AZStd::string> GetReflectedCategories() override;
         ////////////////////////////////////////////////////////////////////////
 
         ////////////////////////////////////////////////////////////////////////
@@ -107,6 +119,12 @@ namespace O3DESharp
          * Called after BehaviorContext has been populated to reflect all types
          */
         void ReflectBehaviorContext();
+
+        /**
+         * Automatically export reflection data to JSON for the binding generator
+         * Called during InitializeReflectionSystem() to keep the JSON up-to-date
+         */
+        void AutoExportReflectionData();
 
     private:
         // The Coral host manager instance - manages .NET runtime lifecycle

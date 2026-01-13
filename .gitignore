@@ -1,1 +1,4 @@
 bin/**
+Assets/Scripts/O3DE.Core/bin/**
+Assets/Scripts/O3DE.Core/obj/**
+Assets/Scripts/O3DE.Core/obj

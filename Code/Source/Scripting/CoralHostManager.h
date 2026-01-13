@@ -16,6 +16,8 @@
 #include <AzCore/RTTI/RTTI.h>
 #include <AzCore/Interface/Interface.h>
 
+#include <filesystem>
+
 #include <Coral/HostInstance.hpp>
 #include <Coral/Assembly.hpp>
 #include <Coral/Type.hpp>

@@ -18,6 +18,7 @@
 #include <AzCore/Utils/Utils.h>
 #include <AzCore/RTTI/BehaviorContext.h>
 #include <AzCore/Component/ComponentApplicationBus.h>
+#include <AzCore/std/containers/set.h>
 
 #include <Atom/RPI.Public/FeatureProcessorFactory.h>
 
@@ -102,6 +103,7 @@ namespace O3DESharp
     void O3DESharpSystemComponent::Activate()
     {
         O3DESharpRequestBus::Handler::BusConnect();
+        ReflectionDataExportRequestBus::Handler::BusConnect();
 
         // Register the feature processor for rendering support
         AZ::RPI::FeatureProcessorFactory::Get()->RegisterFeatureProcessor<O3DESharpFeatureProcessor>();
@@ -125,6 +127,7 @@ namespace O3DESharp
 
         AZ::RPI::FeatureProcessorFactory::Get()->UnregisterFeatureProcessor<O3DESharpFeatureProcessor>();
 
+        ReflectionDataExportRequestBus::Handler::BusDisconnect();
         O3DESharpRequestBus::Handler::BusDisconnect();
 
         AZLOG_INFO("O3DESharpSystemComponent: Deactivated");
@@ -208,9 +211,19 @@ namespace O3DESharp
     {
         AZStd::vector<AZStd::string> types;
 
-        // This would require iterating the user assembly to find all types
-        // that inherit from ScriptComponent. For now, return empty.
-        // TODO: Implement type enumeration
+        // If we have reflected classes from BehaviorContext that are script components, return those
+        if (m_reflector)
+        {
+            // Look for classes that have "Script" in their category or derive from script-related base classes
+            for (const auto& className : m_reflector->GetClassNames())
+            {
+                const ReflectedClass* cls = m_reflector->GetClass(className);
+                if (cls && (cls->category == "Scripting" || cls->category == "Script"))
+                {
+                    types.push_back(className);
+                }
+            }
+        }
 
         return types;
     }
@@ -228,6 +241,117 @@ namespace O3DESharp
     AZStd::string O3DESharpSystemComponent::GetUserAssemblyPath() const
     {
         return m_userAssemblyPath;
+    }
+
+    // ============================================================
+    // ReflectionDataExportRequestBus Implementation
+    // ============================================================
+
+    bool O3DESharpSystemComponent::ExportReflectionData(const AZStd::string& outputPath)
+    {
+        if (!m_reflector)
+        {
+            AZLOG_ERROR("O3DESharpSystemComponent: BehaviorContext reflector not initialized");
+            return false;
+        }
+
+        ReflectionDataExporter exporter;
+        ReflectionExportConfig config;
+        config.outputPath = AZ::IO::Path(outputPath);
+        config.prettyPrint = true;
+        config.includeInternal = false;
+
+        ReflectionExportResult result = exporter.Export(*m_reflector, config);
+
+        if (result.success)
+        {
+            AZLOG_INFO("O3DESharpSystemComponent: Exported reflection data to %s (%zu classes, %zu ebuses)",
+                outputPath.c_str(), result.classesExported, result.ebusesExported);
+        }
+        else
+        {
+            AZLOG_ERROR("O3DESharpSystemComponent: Failed to export reflection data: %s", result.errorMessage.c_str());
+        }
+
+        return result.success;
+    }
+
+    AZStd::string O3DESharpSystemComponent::GetReflectionDataJson()
+    {
+        if (!m_reflector)
+        {
+            return "{}";
+        }
+
+        ReflectionDataExporter exporter;
+        return exporter.ExportToString(*m_reflector, true);
+    }
+
+    AZStd::string O3DESharpSystemComponent::GetReflectionDataForCategory(const AZStd::string& category)
+    {
+        if (!m_reflector)
+        {
+            return "{}";
+        }
+
+        // Use the exporter with category filter
+        ReflectionDataExporter exporter;
+        ReflectionExportConfig config;
+        config.prettyPrint = true;
+        
+        if (!category.empty())
+        {
+            config.includeCategories.push_back(category);
+        }
+        
+        ReflectionExportResult result = exporter.Export(*m_reflector, config);
+        
+        if (result.success)
+        {
+            return result.jsonData;
+        }
+        
+        return "{}";
+    }
+
+    AZStd::vector<AZStd::string> O3DESharpSystemComponent::GetReflectedClassNames()
+    {
+        if (m_reflector)
+        {
+            return m_reflector->GetClassNames();
+        }
+        return {};
+    }
+
+    AZStd::vector<AZStd::string> O3DESharpSystemComponent::GetReflectedEBusNames()
+    {
+        if (m_reflector)
+        {
+            return m_reflector->GetEBusNames();
+        }
+        return {};
+    }
+
+    AZStd::vector<AZStd::string> O3DESharpSystemComponent::GetReflectedCategories()
+    {
+        AZStd::vector<AZStd::string> categories;
+        if (m_reflector)
+        {
+            AZStd::set<AZStd::string> uniqueCategories;
+            for (const auto& className : m_reflector->GetClassNames())
+            {
+                const ReflectedClass* cls = m_reflector->GetClass(className);
+                if (cls && !cls->category.empty())
+                {
+                    uniqueCategories.insert(cls->category);
+                }
+            }
+            for (const auto& cat : uniqueCategories)
+            {
+                categories.push_back(cat);
+            }
+        }
+        return categories;
     }
 
     // ============================================================
@@ -265,7 +389,8 @@ namespace O3DESharp
         config.coralDirectory = coralDir.c_str();
         m_coralDirectory = config.coralDirectory;
 
-        // Core API assembly path - O3DE.Core.dll
+        // Core API assembly path - O3DE.Core.
+        // TODO(Mikael A.): Multiplatform.....
         AZ::IO::FixedMaxPath coreApiPath = projectPath / "Bin" / "Scripts" / "O3DE.Core.dll";
         
         if (auto settingsRegistry = AZ::SettingsRegistry::Get())
@@ -281,6 +406,7 @@ namespace O3DESharp
         m_coreAssemblyPath = config.coreApiAssemblyPath;
 
         // User assembly path - the game's C# scripts compiled DLL
+        // TODO(Mikael A.): Multiplatform.....
         AZ::IO::FixedMaxPath userAssemblyPath = projectPath / "Bin" / "Scripts" / "GameScripts.dll";
         
         if (auto settingsRegistry = AZ::SettingsRegistry::Get())
@@ -432,6 +558,58 @@ namespace O3DESharp
         AZLOG_INFO("  Reflected %zu EBuses", m_reflector->GetEBusCount());
         AZLOG_INFO("  Reflected %zu global methods", m_reflector->GetGlobalMethodCount());
         AZLOG_INFO("  Reflected %zu global properties", m_reflector->GetGlobalPropertyCount());
+
+        // Automatically export reflection data to JSON for the binding generator
+        AutoExportReflectionData();
+    }
+
+    void O3DESharpSystemComponent::AutoExportReflectionData()
+    {
+        if (!m_reflector)
+        {
+            return;
+        }
+
+        // Get the project path
+        AZ::IO::FixedMaxPath projectPath = AZ::Utils::GetProjectPath();
+        if (projectPath.empty())
+        {
+            AZLOG_WARN("O3DESharpSystemComponent: Cannot auto-export reflection data - no project path");
+            return;
+        }
+
+        // Create the output path: <ProjectPath>/Generated/reflection_data.json
+        AZ::IO::Path outputPath = AZ::IO::Path(projectPath) / "Generated" / "reflection_data.json";
+
+        // Ensure the directory exists
+        AZ::IO::Path outputDir = outputPath.ParentPath();
+        if (auto fileIO = AZ::IO::FileIOBase::GetInstance())
+        {
+            if (!fileIO->Exists(outputDir.c_str()))
+            {
+                fileIO->CreatePath(outputDir.c_str());
+            }
+        }
+
+        // Export the reflection data
+        ReflectionDataExporter exporter;
+        ReflectionExportConfig config;
+        config.outputPath = outputPath;
+        config.prettyPrint = true;
+        config.includeInternal = false;
+        config.includeDeprecated = false;
+
+        ReflectionExportResult result = exporter.Export(*m_reflector, config);
+
+        if (result.success)
+        {
+            AZLOG_INFO("O3DESharpSystemComponent: Auto-exported reflection data to %s", outputPath.c_str());
+            AZLOG_INFO("  Exported %zu classes, %zu EBuses", result.classesExported, result.ebusesExported);
+        }
+        else
+        {
+            AZLOG_WARN("O3DESharpSystemComponent: Failed to auto-export reflection data: %s", result.errorMessage.c_str());
+        }
     }
 
     void O3DESharpSystemComponent::ShutdownReflectionSystem()

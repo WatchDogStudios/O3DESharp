@@ -912,6 +912,8 @@ class CSharpBindingGenerator:
         self, output_subdir: str, project_name: str, dependencies: List[str]
     ) -> None:
         """Generate a .csproj file."""
+        is_core_project = project_name == "O3DE.Core"
+        
         content = []
 
         content.append('<Project Sdk="Microsoft.NET.Sdk">')
@@ -932,8 +934,18 @@ class CSharpBindingGenerator:
         content.append("")
 
         # Add project references for dependencies
-        if dependencies:
+        has_project_refs = dependencies or (not is_core_project and self.config.generate_core_bindings)
+        if has_project_refs:
             content.append("  <ItemGroup>")
+            
+            # Gem projects should reference Core project
+            if not is_core_project and self.config.generate_core_bindings:
+                core_subdir = self.config.core_output_subdir
+                content.append(
+                    f'    <ProjectReference Include="../{core_subdir}/O3DE.Core.csproj" />'
+                )
+            
+            # Add other gem dependencies
             for dep in dependencies:
                 dep_filename = self._get_safe_filename(dep)
                 content.append(
@@ -1089,7 +1101,7 @@ class CSharpBindingGenerator:
 
         # Class declaration
         partial = "partial " if self.config.generate_partial_classes else ""
-        class_name = self._make_safe_name(cls.name)
+        class_name = self._get_csharp_class_name(cls.name)
 
         # Base class
         base_clause = ""
@@ -1142,8 +1154,9 @@ class CSharpBindingGenerator:
             lines.append(f"{ind}/// </summary>")
 
             for param in method.parameters:
+                clean_name = self._clean_parameter_name(param.name)
                 lines.append(
-                    f'{ind}/// <param name="{self._to_camel_case(param.name)}">'
+                    f'{ind}/// <param name="{self._to_camel_case(clean_name)}">'
                     f"Parameter of type {param.type_name}</param>"
                 )
 
@@ -1160,13 +1173,14 @@ class CSharpBindingGenerator:
         # Method signature
         static = "static " if method.is_static else ""
         return_type = self._get_csharp_type_name(method.return_type.type_name)
-        method_name = self._to_pascal_case(method.name)
+        method_name = self._clean_identifier(self._to_pascal_case(method.name))
 
         # Parameters
         params = []
         for param in method.parameters:
             param_type = self._get_csharp_type_name(param.type_name)
-            param_name = self._make_safe_name(self._to_camel_case(param.name))
+            clean_name = self._clean_parameter_name(param.name)
+            param_name = self._make_safe_name(self._to_camel_case(clean_name))
             params.append(f"{param_type} {param_name}")
 
         param_list = ", ".join(params)
@@ -1175,14 +1189,15 @@ class CSharpBindingGenerator:
         lines.append(f"{ind}{{")
 
         # Method body - call native method
-        class_name = cls.name if cls else "Global"
-        internal_call = f"NativeMethods.{class_name}_{method.name}"
+        native_prefix = self._get_native_method_prefix(cls.name) if cls else "Global"
+        internal_call = f"NativeMethods.{native_prefix}_{method.name}"
 
         args = []
         if not method.is_static and cls:
             args.append("_nativeHandle")
         for param in method.parameters:
-            args.append(self._make_safe_name(self._to_camel_case(param.name)))
+            clean_name = self._clean_parameter_name(param.name)
+            args.append(self._make_safe_name(self._to_camel_case(clean_name)))
 
         args_str = ", ".join(args)
 
@@ -1214,19 +1229,19 @@ class CSharpBindingGenerator:
 
         prop_type = self._get_csharp_type_name(prop.value_type.type_name)
         prop_name = self._to_pascal_case(prop.name)
-        class_name = cls.name if cls else "Global"
+        native_prefix = self._get_native_method_prefix(cls.name) if cls else "Global"
 
         lines.append(f"{ind}public {prop_type} {prop_name}")
         lines.append(f"{ind}{{")
 
         if prop.has_getter:
             lines.append(
-                f"{ind}    get => NativeMethods.{class_name}_Get{prop.name}(_nativeHandle);"
+                f"{ind}    get => NativeMethods.{native_prefix}_Get{prop.name}(_nativeHandle);"
             )
 
         if prop.has_setter:
             lines.append(
-                f"{ind}    set => NativeMethods.{class_name}_Set{prop.name}(_nativeHandle, value);"
+                f"{ind}    set => NativeMethods.{native_prefix}_Set{prop.name}(_nativeHandle, value);"
             )
 
         lines.append(f"{ind}}}")
@@ -1240,13 +1255,15 @@ class CSharpBindingGenerator:
         lines = []
         ind = self._indent(indent)
 
-        class_name = self._make_safe_name(cls.name)
+        class_name = self._get_csharp_class_name(cls.name)
+        native_prefix = self._get_native_method_prefix(cls.name)
 
         # Parameters
         params = []
         for param in ctor.parameters:
             param_type = self._get_csharp_type_name(param.type_name)
-            param_name = self._make_safe_name(self._to_camel_case(param.name))
+            clean_name = self._clean_parameter_name(param.name)
+            param_name = self._make_safe_name(self._to_camel_case(clean_name))
             params.append(f"{param_type} {param_name}")
 
         param_list = ", ".join(params)
@@ -1256,11 +1273,11 @@ class CSharpBindingGenerator:
 
         # Constructor body
         args = [
-            self._make_safe_name(self._to_camel_case(p.name)) for p in ctor.parameters
+            self._make_safe_name(self._to_camel_case(self._clean_parameter_name(p.name))) for p in ctor.parameters
         ]
         args_str = ", ".join(args)
         lines.append(
-            f"{ind}    _nativeHandle = NativeMethods.{cls.name}_Create({args_str});"
+            f"{ind}    _nativeHandle = NativeMethods.{native_prefix}_Create({args_str});"
         )
 
         lines.append(f"{ind}}}")
@@ -1278,7 +1295,7 @@ class CSharpBindingGenerator:
             lines.append(f"{ind}/// {self._escape_xml(ebus.description)}")
             lines.append(f"{ind}/// </summary>")
 
-        ebus_name = self._make_safe_name(ebus.name)
+        ebus_name = self._get_csharp_class_name(ebus.name)
         lines.append(f"{ind}public static class {ebus_name}")
         lines.append(f"{ind}{{")
 
@@ -1303,7 +1320,7 @@ class CSharpBindingGenerator:
         ind = self._indent(indent)
 
         return_type = self._get_csharp_type_name(event.return_type.type_name)
-        method_name = self._to_pascal_case(event.name)
+        method_name = self._clean_identifier(self._to_pascal_case(event.name))
 
         # Parameters
         params = []
@@ -1313,7 +1330,8 @@ class CSharpBindingGenerator:
 
         for param in event.parameters:
             param_type = self._get_csharp_type_name(param.type_name)
-            param_name = self._make_safe_name(self._to_camel_case(param.name))
+            clean_name = self._clean_parameter_name(param.name)
+            param_name = self._make_safe_name(self._to_camel_case(clean_name))
             params.append(f"{param_type} {param_name}")
 
         param_list = ", ".join(params)
@@ -1335,10 +1353,12 @@ class CSharpBindingGenerator:
         if not event.is_broadcast:
             args.append("address")
         for param in event.parameters:
-            args.append(self._make_safe_name(self._to_camel_case(param.name)))
+            clean_name = self._clean_parameter_name(param.name)
+            args.append(self._make_safe_name(self._to_camel_case(clean_name)))
 
         args_str = ", ".join(args)
-        internal_method = f"NativeMethods.{ebus.name}_{event.name}"
+        ebus_prefix = self._get_native_method_prefix(ebus.name)
+        internal_method = f"NativeMethods.{ebus_prefix}_{event.name}"
 
         if return_type == "void":
             lines.append(f"{ind}    {internal_method}({args_str});")
@@ -1354,8 +1374,8 @@ class CSharpBindingGenerator:
     ) -> str:
         """Generate the internal call declaration for a method."""
         return_type = self._get_csharp_type_name(method.return_type.type_name)
-        class_name = cls.name if cls else "Global"
-        method_name = f"{class_name}_{method.name}"
+        native_prefix = self._get_native_method_prefix(cls.name) if cls else "Global"
+        method_name = f"{native_prefix}_{method.name}"
 
         params = []
         if not method.is_static and cls:
@@ -1363,7 +1383,8 @@ class CSharpBindingGenerator:
 
         for param in method.parameters:
             param_type = self._get_csharp_type_name(param.type_name)
-            param_name = self._make_safe_name(self._to_camel_case(param.name))
+            clean_name = self._clean_parameter_name(param.name)
+            param_name = self._make_safe_name(self._to_camel_case(clean_name))
             params.append(f"{param_type} {param_name}")
 
         param_list = ", ".join(params)
@@ -1402,15 +1423,30 @@ using O3DE.Core;"""
 
     def _get_csharp_type_name(self, type_name: str) -> str:
         """Convert an O3DE type name to C# type name."""
+        if not type_name:
+            return "void"
+            
         if type_name in TYPE_MAPPINGS:
             return TYPE_MAPPINGS[type_name]
 
-        # Handle pointers and references
-        clean_name = type_name.replace("*", "").replace("&", "").strip()
+        # Handle pointers, references, and const qualifiers
+        clean_name = type_name
+        clean_name = clean_name.replace("const ", "").replace(" const", "")
+        clean_name = clean_name.replace("*", "").replace("&", "")
+        clean_name = clean_name.strip()
+        
         if clean_name in TYPE_MAPPINGS:
             return TYPE_MAPPINGS[clean_name]
 
-        # Remove AZ:: and AZStd:: prefixes
+        # Handle UUID types like {1A5676D2-767B-4C2F-BC35-9CDDCE1430BB}
+        if clean_name.startswith("{") and clean_name.endswith("}"):
+            return "Guid"
+        
+        # Handle AZ::Uuid
+        if clean_name in ("Uuid", "AZ::Uuid"):
+            return "Guid"
+
+        # Remove common AZ:: and AZStd:: prefixes first
         if clean_name.startswith("AZ::"):
             clean_name = clean_name[4:]
         elif clean_name.startswith("AZStd::"):
@@ -1418,14 +1454,150 @@ using O3DE.Core;"""
 
         if clean_name in TYPE_MAPPINGS:
             return TYPE_MAPPINGS[clean_name]
+        
+        # Check again after stripping prefix
+        if clean_name == "Uuid":
+            return "Guid"
 
-        # Default: return the cleaned name
+        # Handle template types - extract the base type or use object
+        if "<" in clean_name:
+            # For complex template types, just use the base type name or object
+            base_type = clean_name.split("<")[0].strip()
+            # Handle common template types
+            if base_type in ("vector", "Vector", "AZStd::vector", "list", "List"):
+                return "object[]"  # TODO: Could be made generic
+            elif base_type in ("basic_string_view", "string_view", "AZStd::string_view"):
+                return "string"
+            elif base_type in ("basic_string", "AZStd::string"):
+                return "string"
+            elif base_type in ("optional", "AZStd::optional"):
+                return "object"  # TODO: Could be Nullable<T>
+            elif base_type in ("shared_ptr", "unique_ptr", "AZStd::shared_ptr", "AZStd::unique_ptr"):
+                return "IntPtr"
+            else:
+                # Unknown template - use object
+                return "object"
+
+        # For any remaining namespaced types, extract just the type name
+        # e.g., "Render::AreaLightComponent" -> "AreaLightComponent"
+        if "::" in clean_name:
+            clean_name = clean_name.split("::")[-1]
+
+        # Default: return the cleaned name (escaping keywords if needed)
         return self._make_safe_name(clean_name)
 
     def _make_safe_name(self, name: str) -> str:
-        """Make a name safe for C# (escape keywords)."""
+        """Make a name safe for C# (escape keywords, handle C++ namespaces)."""
+        # First, extract just the class/type name if it has C++ namespaces
+        if "::" in name:
+            name = name.split("::")[-1]
+        
+        # Also handle the case where it might have C# dots
+        if "." in name:
+            name = name.split(".")[-1]
+        
+        # Escape C# keywords
         if name.lower() in CSHARP_KEYWORDS:
             return f"@{name}"
+        return name
+
+    def _get_csharp_class_name(self, cpp_name: str) -> str:
+        """Extract the C# class name from a potentially namespaced C++ name.
+        
+        Examples:
+            'AZ::Render::AreaLightComponent' -> 'AreaLightComponent'
+            'TransformComponent' -> 'TransformComponent'
+        """
+        if "::" in cpp_name:
+            simple_name = cpp_name.split("::")[-1]
+        else:
+            simple_name = cpp_name
+        
+        return self._make_safe_name(simple_name)
+
+    def _get_native_method_prefix(self, cpp_name: str) -> str:
+        """Get the prefix for native method calls.
+        
+        Converts C++ namespace separators to underscores for use in NativeMethods.
+        
+        Examples:
+            'AZ::Render::AreaLightComponent' -> 'AZ_Render_AreaLightComponent'
+            'TransformComponent' -> 'TransformComponent'
+            'Has Key' -> 'Has_Key'
+        """
+        result = cpp_name.replace("::", "_").replace(".", "_").replace(" ", "_")
+        # Remove any remaining invalid C# identifier characters
+        result = ''.join(c for c in result if c.isalnum() or c == '_')
+        return result
+
+    def _clean_parameter_name(self, name: str) -> str:
+        """Clean a parameter name by removing C++ type qualifiers.
+        
+        Sometimes parameter names from reflection contain type info like:
+            'entityId const&' -> 'entityId'
+            'value*' -> 'value'
+            'allocator>' -> 'allocator'
+        """
+        if not name:
+            return "param"
+        
+        # Remove common C++ qualifiers and template fragments that might be in the name
+        clean = name
+        clean = clean.replace("const", "").replace("&", "").replace("*", "")
+        # Remove template fragments
+        clean = clean.replace("<", "").replace(">", "")
+        # Remove braces (UUIDs like {GUID})
+        clean = clean.replace("{", "").replace("}", "")
+        clean = clean.strip()
+        
+        # If the name became empty or just whitespace, use a default
+        if not clean:
+            return "param"
+        
+        # Take only the first word if there are spaces (might be "type name")
+        if " " in clean:
+            parts = clean.split()
+            # Usually the last part is the actual name
+            clean = parts[-1]
+        
+        # If name starts with a digit, prefix with underscore
+        if clean and clean[0].isdigit():
+            clean = "_" + clean
+        
+        # Remove any remaining invalid characters for C# identifiers
+        clean = ''.join(c for c in clean if c.isalnum() or c == '_')
+        
+        # If still empty after all cleaning, use default
+        if not clean:
+            return "param"
+        
+        return clean
+
+    def _clean_identifier(self, name: str) -> str:
+        """Clean a name to be a valid C# identifier (for method names, etc.).
+        
+        Examples:
+            'Has Key' -> 'HasKey'
+            'Get_Value' -> 'GetValue'
+        """
+        if not name:
+            return "Unknown"
+        
+        # Remove spaces by converting to PascalCase
+        if " " in name:
+            parts = name.split()
+            name = "".join(part.capitalize() for part in parts if part)
+        
+        # Remove any invalid characters
+        name = ''.join(c for c in name if c.isalnum() or c == '_')
+        
+        # If name starts with a digit, prefix with underscore
+        if name and name[0].isdigit():
+            name = "_" + name
+        
+        if not name:
+            return "Unknown"
+        
         return name
 
     def _to_pascal_case(self, name: str) -> str:
@@ -1433,13 +1605,18 @@ using O3DE.Core;"""
         if not name:
             return name
 
+        # Handle spaces first (e.g., "Has Key" -> "HasKey")
+        if " " in name:
+            parts = name.split()
+            return "".join(part.capitalize() for part in parts if part)
+
         # Handle snake_case
         if "_" in name:
             parts = name.split("_")
             return "".join(part.capitalize() for part in parts if part)
 
-        # Handle camelCase
-        return name[0].upper() + name[1:]
+        # Handle camelCase - just capitalize first letter
+        return name[0].upper() + name[1:] if len(name) > 1 else name.upper()
 
     def _to_camel_case(self, name: str) -> str:
         """Convert a name to camelCase."""

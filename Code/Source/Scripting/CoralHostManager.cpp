@@ -14,6 +14,8 @@
 #include <AzCore/StringFunc/StringFunc.h>
 #include <AzCore/Utils/Utils.h>
 
+#include <filesystem>
+
 namespace O3DESharp
 {
     // Static callback functions for Coral

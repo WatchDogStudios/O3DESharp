@@ -465,6 +465,7 @@ endif()
 # ============================================================
 # C# Projects Integration
 # ============================================================
+# NOTE(Mikael A.): Yes, i know this is hacky, will add proper support soon.
 # Include C# projects in the Visual Studio solution so they appear alongside C++ projects.
 # This allows developers to work with all O3DESharp code (C++ and C#) in a single solution.
 #
