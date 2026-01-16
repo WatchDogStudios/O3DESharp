@@ -83,13 +83,6 @@ namespace O3DESharp.BindingGenerator.GemDiscovery
                 }
             }
 
-            // Also check O3DE_ENGINE_PATH environment variable
-            var envEnginePath = Environment.GetEnvironmentVariable("O3DE_ENGINE_PATH");
-            if (!string.IsNullOrEmpty(envEnginePath) && Directory.Exists(envEnginePath))
-            {
-                gemSearchPaths.Add(Path.Combine(envEnginePath, "Gems"));
-            }
-
             // Find all gem.json files
             foreach (var searchPath in gemSearchPaths.Distinct())
             {
