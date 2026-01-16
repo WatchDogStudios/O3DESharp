@@ -16,6 +16,8 @@ namespace O3DESharp.BindingGenerator.Parsing
     public class TypeMapper
     {
         private readonly Dictionary<string, string> _typeMap;
+        private static readonly System.Text.RegularExpressions.Regex WhitespaceRegex = 
+            new System.Text.RegularExpressions.Regex(@"\s+", System.Text.RegularExpressions.RegexOptions.Compiled);
 
         public TypeMapper()
         {
@@ -164,7 +166,7 @@ namespace O3DESharp.BindingGenerator.Parsing
         private string NormalizeType(string type)
         {
             // Remove extra whitespace
-            return System.Text.RegularExpressions.Regex.Replace(type.Trim(), @"\s+", " ");
+            return WhitespaceRegex.Replace(type.Trim(), " ");
         }
 
         private string SimplifyTypeName(string qualifiedName)

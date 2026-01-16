@@ -10,8 +10,8 @@
     <RootNamespace>O3DESharp.BindingGenerator</RootNamespace>
     <AssemblyName>O3DESharp.BindingGenerator</AssemblyName>
     <Version>1.0.0</Version>
-    <Authors>WD Studios Corp.</Authors>
-    <Company>WD Studios Corp.</Company>
+    <Authors>Contributors to the Open 3D Engine Project</Authors>
+    <Company>Contributors to the Open 3D Engine Project</Company>
     <Product>O3DE C# Binding Generator</Product>
     <Description>ClangSharp-based C# binding generator for O3DE gems</Description>
     <Copyright>Copyright (c) Contributors to the Open 3D Engine Project</Copyright>

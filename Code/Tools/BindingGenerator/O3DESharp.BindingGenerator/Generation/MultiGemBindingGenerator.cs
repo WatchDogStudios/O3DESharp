@@ -120,7 +120,7 @@ namespace O3DESharp.BindingGenerator.Generation
             cppGenerator.Generate(bindings, cppOutputPath);
 
             // Generate .csproj
-            var coreAssemblyPath = Path.Combine(projectPath, "Assets/Scripts/O3DE.Core/bin/Debug/net8.0/O3DE.Core.dll");
+            var coreAssemblyPath = ResolveCorePath(projectPath);
             projectGenerator.Generate(gem, csharpOutputPath, allGems, coreAssemblyPath);
 
             Log($"  Generated bindings for {gem.GemName}");
@@ -202,6 +202,31 @@ namespace O3DESharp.BindingGenerator.Generation
         {
             var resolved = pathTemplate.Replace("{GemName}", gem.GemName);
             return Path.Combine(gem.GemPath, resolved);
+        }
+
+        private string ResolveCorePath(string projectPath)
+        {
+            // Try multiple possible locations for O3DE.Core assembly
+            var possiblePaths = new[]
+            {
+                Path.Combine(projectPath, "Assets/Scripts/O3DE.Core/bin/Release/net8.0/O3DE.Core.dll"),
+                Path.Combine(projectPath, "Assets/Scripts/O3DE.Core/bin/Debug/net8.0/O3DE.Core.dll"),
+                Path.Combine(projectPath, "Assets/Scripts/O3DE.Core/bin/Release/net9.0/O3DE.Core.dll"),
+                Path.Combine(projectPath, "Assets/Scripts/O3DE.Core/bin/Debug/net9.0/O3DE.Core.dll"),
+                "../../../Assets/Scripts/O3DE.Core/bin/Debug/net8.0/O3DE.Core.dll" // Relative fallback
+            };
+
+            foreach (var path in possiblePaths)
+            {
+                if (File.Exists(path))
+                {
+                    return path;
+                }
+            }
+
+            // Return a placeholder path if not found - user can fix in generated .csproj
+            Log($"  Warning: O3DE.Core.dll not found, using placeholder path");
+            return Path.Combine(projectPath, "Assets/Scripts/O3DE.Core/bin/Debug/net8.0/O3DE.Core.dll");
         }
 
         private void Log(string message)

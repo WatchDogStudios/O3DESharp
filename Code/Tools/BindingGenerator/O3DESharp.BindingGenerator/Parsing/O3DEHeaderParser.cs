@@ -179,7 +179,8 @@ namespace O3DESharp.BindingGenerator.Parsing
                 if (childCursor.Kind == CXCursorKind.CXCursor_AnnotateAttr)
                 {
                     var attrText = childCursor.Spelling.ToString();
-                    if (attrText.Contains("export_csharp"))
+                    // Match exact annotation text "export_csharp"
+                    if (attrText.Equals("export_csharp", StringComparison.Ordinal))
                     {
                         hasAttribute = true;
                         return CXChildVisitResult.CXChildVisit_Break;
