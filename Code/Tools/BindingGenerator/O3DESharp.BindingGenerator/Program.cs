@@ -8,6 +8,7 @@
 
 using System;
 using System.CommandLine;
+using System.CommandLine.Invocation;
 using System.IO;
 using System.Linq;
 using O3DESharp.BindingGenerator.Configuration;
@@ -58,10 +59,12 @@ namespace O3DESharp.BindingGenerator
             var listGemsCommand = new Command("list-gems", "List all discovered gems in the project");
             listGemsCommand.AddOption(projectOption);
             listGemsCommand.AddOption(verboseOption);
-            listGemsCommand.SetHandler((string project, bool verbose) =>
+            listGemsCommand.SetHandler((context) =>
             {
-                Environment.Exit(ListGems(project, verbose));
-            }, projectOption, verboseOption);
+                var project = context.ParseResult.GetValueForOption(projectOption) ?? ".";
+                var verbose = context.ParseResult.GetValueForOption(verboseOption);
+                context.ExitCode = ListGems(project, verbose);
+            });
 
             // Generate command
             var generateCommand = new Command("generate", "Generate C# bindings for gems");
@@ -71,10 +74,16 @@ namespace O3DESharp.BindingGenerator
             generateCommand.AddOption(verboseOption);
             generateCommand.AddOption(incrementalOption);
             generateCommand.AddOption(requireAttributeOption);
-            generateCommand.SetHandler((string project, string config, string[] gems, bool verbose, bool incremental, bool requireAttribute) =>
+            generateCommand.SetHandler((context) =>
             {
-                Environment.Exit(GenerateBindings(project, config, gems, verbose, incremental, requireAttribute));
-            }, projectOption, configOption, gemsOption, verboseOption, incrementalOption, requireAttributeOption);
+                var project = context.ParseResult.GetValueForOption(projectOption) ?? ".";
+                var config = context.ParseResult.GetValueForOption(configOption) ?? "binding_config.json";
+                var gems = context.ParseResult.GetValueForOption(gemsOption) ?? Array.Empty<string>();
+                var verbose = context.ParseResult.GetValueForOption(verboseOption);
+                var incremental = context.ParseResult.GetValueForOption(incrementalOption);
+                var requireAttribute = context.ParseResult.GetValueForOption(requireAttributeOption);
+                context.ExitCode = GenerateBindings(project, config, gems, verbose, incremental, requireAttribute);
+            });
 
             // Init config command
             var outputOption = new Option<string>(
@@ -84,10 +93,12 @@ namespace O3DESharp.BindingGenerator
             
             var initConfigCommand = new Command("init-config", "Create a default binding_config.json file");
             initConfigCommand.AddOption(outputOption);
-            initConfigCommand.SetHandler((string output) =>
+            initConfigCommand.SetHandler((context) =>
             {
+                var output = context.ParseResult.GetValueForOption(outputOption) ?? "binding_config.json";
                 BindingConfigLoader.CreateDefaultFile(output);
-            }, outputOption);
+                context.ExitCode = 0;
+            });
 
             rootCommand.AddCommand(listGemsCommand);
             rootCommand.AddCommand(generateCommand);
@@ -101,10 +112,16 @@ namespace O3DESharp.BindingGenerator
             rootCommand.AddOption(incrementalOption);
             rootCommand.AddOption(requireAttributeOption);
             
-            rootCommand.SetHandler((string project, string config, string[] gems, bool verbose, bool incremental, bool requireAttribute) =>
+            rootCommand.SetHandler((context) =>
             {
-                Environment.Exit(GenerateBindings(project, config, gems, verbose, incremental, requireAttribute));
-            }, projectOption, configOption, gemsOption, verboseOption, incrementalOption, requireAttributeOption);
+                var project = context.ParseResult.GetValueForOption(projectOption) ?? ".";
+                var config = context.ParseResult.GetValueForOption(configOption) ?? "binding_config.json";
+                var gems = context.ParseResult.GetValueForOption(gemsOption) ?? Array.Empty<string>();
+                var verbose = context.ParseResult.GetValueForOption(verboseOption);
+                var incremental = context.ParseResult.GetValueForOption(incrementalOption);
+                var requireAttribute = context.ParseResult.GetValueForOption(requireAttributeOption);
+                context.ExitCode = GenerateBindings(project, config, gems, verbose, incremental, requireAttribute);
+            });
 
             return rootCommand.Invoke(args);
         }
