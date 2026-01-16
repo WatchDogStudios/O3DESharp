@@ -67,7 +67,7 @@ namespace O3DESharp.BindingGenerator.Parsing
             }
 
             // Add standard C++ flags
-            args.Add("-std=c++17");
+            args.Add("-std=c++20");
             args.Add("-xc++");
             args.Add("-Wno-pragma-once-outside-header");
 
