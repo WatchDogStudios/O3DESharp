@@ -2,3 +2,5 @@ bin/**
 Assets/Scripts/O3DE.Core/bin/**
 Assets/Scripts/O3DE.Core/obj/**
 Assets/Scripts/O3DE.Core/obj
+Code/Tools/BindingGenerator/**/bin/**
+Code/Tools/BindingGenerator/**/obj/**

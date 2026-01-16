@@ -3,17 +3,24 @@
   <PropertyGroup>
     <OutputType>Exe</OutputType>
     <TargetFramework>net8.0</TargetFramework>
-    <LangVersion>latest</LangVersion>
+    <ImplicitUsings>disable</ImplicitUsings>
     <Nullable>enable</Nullable>
-    <ImplicitUsings>enable</ImplicitUsings>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <LangVersion>latest</LangVersion>
     <RootNamespace>O3DESharp.BindingGenerator</RootNamespace>
+    <AssemblyName>O3DESharp.BindingGenerator</AssemblyName>
+    <Version>1.0.0</Version>
+    <Authors>Contributors to the Open 3D Engine Project</Authors>
+    <Company>Contributors to the Open 3D Engine Project</Company>
+    <Product>O3DE C# Binding Generator</Product>
+    <Description>ClangSharp-based C# binding generator for O3DE gems</Description>
+    <Copyright>Copyright (c) Contributors to the Open 3D Engine Project</Copyright>
   </PropertyGroup>
 
   <ItemGroup>
     <PackageReference Include="ClangSharp" Version="17.0.1" />
-    <PackageReference Include="ClangSharp.Interop" Version="17.0.1" />
-    <PackageReference Include="libClangSharp" Version="17.0.1" />
     <PackageReference Include="System.CommandLine" Version="2.0.0-beta4.22272.1" />
+    <PackageReference Include="System.Text.Json" Version="8.0.5" />
   </ItemGroup>
 
 </Project>

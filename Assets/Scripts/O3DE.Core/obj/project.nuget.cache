@@ -1,8 +1,11 @@
 {
   "version": 2,
-  "dgSpecHash": "vvhraFThyiU=",
+  "dgSpecHash": "Ecpyo6QLdJc=",
   "success": true,
-  "projectFilePath": "F:\\northstar\\Gems\\O3DESharp\\Assets\\Scripts\\O3DE.Core\\O3DE.Core.csproj",
-  "expectedPackageFiles": [],
+  "projectFilePath": "/home/runner/work/O3DESharp/O3DESharp/_codeql_detected_source_root/_codeql_detected_source_root/_codeql_detected_source_root/_codeql_detected_source_root/_codeql_detected_source_root/_codeql_detected_source_root/_codeql_detected_source_root/_codeql_detected_source_root/_codeql_detected_source_root/_codeql_detected_source_root/_codeql_detected_source_root/_codeql_detected_source_root/_codeql_detected_source_root/_codeql_detected_source_root/_codeql_detected_source_root/_codeql_detected_source_root/_codeql_detected_source_root/_codeql_detected_source_root/_codeql_detected_source_root/_codeql_detected_source_root/_codeql_detected_source_root/_codeql_detected_source_root/_codeql_detected_source_root/_codeql_detected_source_root/_codeql_detected_source_root/_codeql_detected_source_root/_codeql_detected_source_root/_codeql_detected_source_root/_codeql_detected_source_root/_codeql_detected_source_root/_codeql_detected_source_root/_codeql_detected_source_root/_codeql_detected_source_root/_codeql_detected_source_root/_codeql_detected_source_root/_codeql_detected_source_root/_codeql_detected_source_root/_codeql_detected_source_root/Assets/Scripts/O3DE.Core/O3DE.Core.csproj",
+  "expectedPackageFiles": [
+    "/home/runner/work/O3DESharp/.codeql-scratch/dbs/csharp/working/packages/microsoft.netcore.app.ref/9.0.11/microsoft.netcore.app.ref.9.0.11.nupkg.sha512",
+    "/home/runner/work/O3DESharp/.codeql-scratch/dbs/csharp/working/packages/microsoft.aspnetcore.app.ref/9.0.11/microsoft.aspnetcore.app.ref.9.0.11.nupkg.sha512"
+  ],
   "logs": []
 }
