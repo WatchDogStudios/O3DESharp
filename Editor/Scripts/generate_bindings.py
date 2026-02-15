@@ -99,7 +99,7 @@ class BindingGenerationOrchestrator:
         include_gems: List[str] = None,
         exclude_gems: List[str] = None,
         require_export_attribute: bool = False,
-        target_framework: str = "net8.0",
+        target_framework: str = "net9.0",
         incremental_build: bool = True,
     ):
         """
@@ -282,7 +282,7 @@ class BindingGenerationOrchestrator:
 
             assembly_name = f"O3DE.Bindings.{gem_name}"
             namespace = f"{self.config.root_namespace}.{gem_name}"
-            framework = getattr(self.config, "target_framework", "net8.0")
+            framework = getattr(self.config, "target_framework", "net9.0")
 
             # Resolve reference to O3DE.Core managed runtime
             o3de_core_hint = ""
@@ -802,8 +802,8 @@ Examples:
     )
     parser.add_argument(
         "--target-framework",
-        default="net8.0",
-        help="Target .NET framework (default: net8.0)",
+        default="net9.0",
+        help="Target .NET framework (default: net9.0)",
     )
     parser.add_argument(
         "--list-gems",

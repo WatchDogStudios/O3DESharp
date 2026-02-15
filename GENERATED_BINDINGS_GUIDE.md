@@ -100,6 +100,9 @@ python Editor/Scripts/generate_bindings.py --project F:\o3de --build-dlls
 
 # Combine with other flags
 python Editor/Scripts/generate_bindings.py --project F:\o3de --gems PhysX Atom --build-dlls --verbose
+
+# Practical Example 
+python F:\o3de\Gems\O3DESharp\Editor\Scripts\generate_bindings.py --project C:\Users\nanaa\O3DE\Projects\NewProject --build-dlls --verbose
 ```
 
 Or programmatically:

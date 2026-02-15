@@ -64,11 +64,12 @@ namespace O3DESharp.BindingGenerator.Parsing
                 ["int64_t"] = "long",
                 ["uint64_t"] = "ulong",
 
-                // String types
-                ["const char*"] = "string",
-                ["char*"] = "string",
-                ["AZStd::string"] = "string",
-                ["AZStd::string_view"] = "string",
+                // String types — mapped to IntPtr because unmanaged delegates (delegate* unmanaged<>)
+                // cannot use managed 'string' type. Users must marshal via Marshal.PtrToStringAnsi() etc.
+                ["const char*"] = "IntPtr",
+                ["char*"] = "IntPtr",
+                ["AZStd::string"] = "IntPtr",
+                ["AZStd::string_view"] = "IntPtr",
 
                 // O3DE math types that have matching C# structs in O3DE.Core
                 ["AZ::Vector2"] = "Vector2",
@@ -93,9 +94,9 @@ namespace O3DESharp.BindingGenerator.Parsing
                 ["AZ::Uuid"] = "Guid",
                 ["AZ::Crc32"] = "uint",
                 ["AZ::TypeId"] = "Guid",
-                ["AZ::IO::PathView"] = "string",
-                ["AZ::IO::Path"] = "string",
-                ["AZ::IO::FixedMaxPath"] = "string",
+                ["AZ::IO::PathView"] = "IntPtr",
+                ["AZ::IO::Path"] = "IntPtr",
+                ["AZ::IO::FixedMaxPath"] = "IntPtr",
                 ["AZ::Name"] = "IntPtr",
                 ["AZ::Data::AssetId"] = "IntPtr",
 
@@ -216,8 +217,8 @@ namespace O3DESharp.BindingGenerator.Parsing
                 }
             }
 
-            // Adjust for pointers/references
-            if (parsedType.IsPointer && parsedType.CSharpTypeName != "string")
+            // Adjust for pointers — any pointer type becomes IntPtr
+            if (parsedType.IsPointer)
             {
                 parsedType.CSharpTypeName = "IntPtr";
             }

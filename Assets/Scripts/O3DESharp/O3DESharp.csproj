@@ -1,0 +1,41 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <ImplicitUsings>disable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <LangVersion>latest</LangVersion>
+    <AssemblyName>O3DESharp</AssemblyName>
+    <RootNamespace>O3DE.O3DESharp</RootNamespace>
+    <Version>1.0.0</Version>
+    <GenerateDocumentationFile>true</GenerateDocumentationFile>
+  </PropertyGroup>
+
+  <!-- O3DE Binding Generator Configuration -->
+  <PropertyGroup>
+    <O3DEProjectPath>$(MSBuildProjectDirectory)\..\..\gem.json</O3DEProjectPath>
+    <O3DEGenerateBindings>true</O3DEGenerateBindings>
+    <O3DEDesignTimeGenerate>true</O3DEDesignTimeGenerate>
+    <O3DEIncremental>true</O3DEIncremental>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <O3DEGems Include="O3DESharp" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Reference Include="O3DE.Core">
+      <HintPath>F:\o3de\Gems\O3DESharp\Assets\Scripts\O3DE.Core\bin/Release/net8.0/O3DE.Core.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+
+    <!-- Gem Dependencies -->
+    <ProjectReference Include="../Atom/Atom.csproj" />
+    <ProjectReference Include="../EditorPythonBindings/EditorPythonBindings.csproj" />
+  </ItemGroup>
+
+  <!-- Import O3DE Binding Generator MSBuild Task (optional) -->
+  <Import Project="$(O3DEBindingGeneratorTasksPath)" Condition="Exists('$(O3DEBindingGeneratorTasksPath)')" />
+
+</Project>

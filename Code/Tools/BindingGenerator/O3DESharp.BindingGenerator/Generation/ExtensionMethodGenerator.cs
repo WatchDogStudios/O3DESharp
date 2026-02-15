@@ -11,6 +11,7 @@ using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using System.Text;
+using System.Text.RegularExpressions;
 using O3DESharp.BindingGenerator.Parsing;
 
 namespace O3DESharp.BindingGenerator.Generation
@@ -142,11 +143,11 @@ namespace O3DESharp.BindingGenerator.Generation
         private string GenerateWithExtension(ParsedClass parsedClass, ParsedMethod method)
         {
             var sb = new StringBuilder();
-            
+
             // Convert "SetFoo" to "WithFoo"
             var withName = "With" + method.Name.Substring(3);
-            var paramList = string.Join(", ", method.Parameters.Select(p => $"{p.Type.CSharpTypeName} {p.Name}"));
-            var argList = string.Join(", ", method.Parameters.Select(p => p.Name));
+            var paramList = string.Join(", ", method.Parameters.Select((p, i) => $"{p.Type.CSharpTypeName} {SafeParamName(p.Name, i)}"));
+            var argList = string.Join(", ", method.Parameters.Select((p, i) => SafeParamName(p.Name, i)));
 
             sb.AppendLine($"        /// <summary>");
             sb.AppendLine($"        /// Fluent wrapper for {method.Name}. Calls {method.Name} and returns the instance for chaining.");
@@ -168,10 +169,10 @@ namespace O3DESharp.BindingGenerator.Generation
                 return string.Empty;
 
             var sb = new StringBuilder();
-            
+
             var fluentName = method.Name + "Fluent";
-            var paramList = string.Join(", ", method.Parameters.Select(p => $"{p.Type.CSharpTypeName} {p.Name}"));
-            var argList = string.Join(", ", method.Parameters.Select(p => p.Name));
+            var paramList = string.Join(", ", method.Parameters.Select((p, i) => $"{p.Type.CSharpTypeName} {SafeParamName(p.Name, i)}"));
+            var argList = string.Join(", ", method.Parameters.Select((p, i) => SafeParamName(p.Name, i)));
 
             sb.AppendLine($"        /// <summary>");
             sb.AppendLine($"        /// Fluent wrapper for {method.Name}. Calls {method.Name} and returns the instance for chaining.");
@@ -213,6 +214,61 @@ namespace O3DESharp.BindingGenerator.Generation
                     return true;
             }
             return false;
+        }
+
+        /// <summary>
+        /// C# reserved keywords that need @ escaping when used as identifiers.
+        /// </summary>
+        private static readonly HashSet<string> CSharpKeywords = new HashSet<string>(StringComparer.Ordinal)
+        {
+            "abstract", "as", "base", "bool", "break", "byte", "case", "catch",
+            "char", "checked", "class", "const", "continue", "decimal", "default",
+            "delegate", "do", "double", "else", "enum", "event", "explicit",
+            "extern", "false", "finally", "fixed", "float", "for", "foreach",
+            "goto", "if", "implicit", "in", "int", "interface", "internal",
+            "is", "lock", "long", "namespace", "new", "null", "object",
+            "operator", "out", "override", "params", "private", "protected",
+            "public", "readonly", "ref", "return", "sbyte", "sealed", "short",
+            "sizeof", "stackalloc", "static", "string", "struct", "switch",
+            "this", "throw", "true", "try", "typeof", "uint", "ulong",
+            "unchecked", "unsafe", "ushort", "using", "virtual", "void",
+            "volatile", "while",
+        };
+
+        /// <summary>
+        /// Sanitize a parameter name: provide fallback for empty names, escape C# keywords,
+        /// and strip invalid characters.
+        /// </summary>
+        private static string SafeParamName(string name, int index)
+        {
+            if (string.IsNullOrWhiteSpace(name))
+                return $"arg{index}";
+
+            // Strip namespaces, template args, invalid characters
+            var safe = Regex.Replace(name, @"<[^>]*>", "");
+            if (safe.Contains("::"))
+            {
+                var parts = safe.Split(new[] { "::" }, StringSplitOptions.RemoveEmptyEntries);
+                safe = parts.Length > 0 ? parts[parts.Length - 1] : $"arg{index}";
+            }
+            safe = Regex.Replace(safe, @"[^a-zA-Z0-9_]", "_");
+            safe = Regex.Replace(safe, @"_+", "_").Trim('_');
+
+            if (safe.Length == 0 || char.IsDigit(safe[0]))
+                safe = "_" + safe;
+
+            if (safe.Length == 0)
+                return $"arg{index}";
+
+            // Lowercase first char for parameter naming convention
+            if (char.IsUpper(safe[0]))
+                safe = char.ToLowerInvariant(safe[0]) + safe.Substring(1);
+
+            // Escape C# keywords
+            if (CSharpKeywords.Contains(safe))
+                safe = "@" + safe;
+
+            return safe;
         }
 
         private void AppendFileHeader(StringBuilder sb)

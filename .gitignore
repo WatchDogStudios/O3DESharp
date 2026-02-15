@@ -34,6 +34,10 @@ Code/Tools/BindingGenerator/O3DESharp.BindingGenerator.Tasks/*.nupkg
 # Deprecated Python generator backups
 Editor/Scripts/*.deprecated
 
-errors.log
-Assets/Scripts/O3DE.Core/bin/
-Assets/Scripts/O3DE.Core/obj/
+tempclaude-*
+.vs
+Code/Tools/BindingGenerator/O3DESharp.BindingGenerator/.vs
+bin
+Code/Tools/BindingGenerator/O3DESharp.BindingGenerator/bin
+obj
+Code/Tools/BindingGenerator/O3DESharp.BindingGenerator/obj

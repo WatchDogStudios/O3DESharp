@@ -76,6 +76,14 @@ namespace O3DESharp.BindingGenerator.Generation
                 .Where(e => IsValidCSharpIdentifier(SanitizeIdentifier(e.Name)))
                 .ToList();
 
+            // Deduplicate classes that map to the same sanitized name (e.g., same class
+            // name in different C++ namespaces). Keep only the first occurrence since all
+            // would produce the same InternalCalls field names and wrapper class file.
+            validClasses = DeduplicateByName(validClasses, c => SanitizeIdentifier(c.Name));
+
+            // Deduplicate standalone functions with the same sanitized name
+            validFunctions = DeduplicateByName(validFunctions, f => SanitizeIdentifier(f.Name));
+
             // Generate InternalCalls file
             GenerateInternalCalls(validClasses, validFunctions, safeGemName, outputDirectory);
 
@@ -119,6 +127,9 @@ namespace O3DESharp.BindingGenerator.Generation
             sb.AppendLine("#pragma warning disable 0649");
             sb.AppendLine();
 
+            // Track all emitted field names to prevent any duplicates in InternalCalls
+            var emittedFieldNames = new HashSet<string>(StringComparer.Ordinal);
+
             // Generate function pointers for each class
             foreach (var parsedClass in classes)
             {
@@ -135,6 +146,9 @@ namespace O3DESharp.BindingGenerator.Generation
 
                 foreach (var method in validMethods)
                 {
+                    var fieldName = $"{safeClassName}_{SanitizeIdentifier(method.Name)}";
+                    if (!emittedFieldNames.Add(fieldName))
+                        continue; // Skip duplicate field names
                     GenerateInternalCallDeclaration(sb, safeClassName, method);
                 }
 
@@ -151,6 +165,9 @@ namespace O3DESharp.BindingGenerator.Generation
 
                 foreach (var function in functions)
                 {
+                    var fieldName = SanitizeIdentifier(function.Name);
+                    if (!emittedFieldNames.Add(fieldName))
+                        continue; // Skip duplicate field names
                     GenerateStandaloneFunctionDeclaration(sb, function);
                 }
             }
@@ -629,14 +646,20 @@ namespace O3DESharp.BindingGenerator.Generation
 
         /// <summary>
         /// Get the valid (bindable) methods from a parsed class.
+        /// Deduplicates by sanitized method name since InternalCalls fields are keyed
+        /// by ClassName_MethodName without parameter type info.
         /// </summary>
         private static List<ParsedMethod> GetValidMethods(ParsedClass parsedClass)
         {
-            return parsedClass.Methods
+            var methods = parsedClass.Methods
                 .Where(m => IsValidCSharpIdentifier(SanitizeIdentifier(m.Name)))
                 .Where(m => IsValidCSharpType(m.ReturnType.CSharpTypeName))
                 .Where(m => m.Parameters.All(p => IsValidCSharpType(p.Type.CSharpTypeName)))
                 .ToList();
+
+            // Deduplicate by sanitized name — keep only the first overload
+            // since InternalCalls can only have one field per ClassName_MethodName
+            return DeduplicateByName(methods, m => SanitizeIdentifier(m.Name));
         }
 
         /// <summary>
@@ -673,6 +696,25 @@ namespace O3DESharp.BindingGenerator.Generation
                 return false;
 
             return true;
+        }
+
+        /// <summary>
+        /// Deduplicate a list of items by a key selector.
+        /// Keeps the first occurrence when multiple items map to the same key.
+        /// </summary>
+        private static List<T> DeduplicateByName<T>(List<T> items, Func<T, string> keySelector)
+        {
+            var seen = new HashSet<string>(StringComparer.Ordinal);
+            var result = new List<T>();
+            foreach (var item in items)
+            {
+                var key = keySelector(item);
+                if (seen.Add(key))
+                {
+                    result.Add(item);
+                }
+            }
+            return result;
         }
 
         /// <summary>
