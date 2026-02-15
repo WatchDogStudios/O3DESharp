@@ -12,6 +12,7 @@
 #include <AzCore/Serialization/EditContext.h>
 #include <AzCore/IO/FileIO.h>
 #include <AzCore/IO/Path/Path.h>
+#include <AzCore/IO/SystemFile.h>
 #include <AzCore/Settings/SettingsRegistryMergeUtils.h>
 #include <AzCore/JSON/rapidjson.h>
 #include <AzCore/JSON/document.h>
@@ -81,16 +82,16 @@ namespace O3DESharp
                 editContext->Class<EditorCSharpScriptComponent>("C# Script", "Attaches a C# script to this entity")
                     ->ClassElement(AZ::Edit::ClassElements::EditorData, "")
                         ->Attribute(AZ::Edit::Attributes::Category, "Scripting")
-                        ->Attribute(AZ::Edit::Attributes::Icon, "Icons/Components/Script.svg")
-                        ->Attribute(AZ::Edit::Attributes::ViewportIcon, "Icons/Components/Viewport/Script.svg")
+                        ->Attribute(AZ::Edit::Attributes::Icon, "Icons/Components/csharp.svg")
+                        ->Attribute(AZ::Edit::Attributes::ViewportIcon, "Icons/Components/Viewport/csharp.svg")
                         ->Attribute(AZ::Edit::Attributes::AppearsInAddComponentMenu, AZ_CRC_CE("Game"))
                         ->Attribute(AZ::Edit::Attributes::AutoExpand, true)
-                    // TODO(Mikael A.): Will need to be filled out once we work with sig-docs-community. Talk to JT [SCB_GameDesign] in the O3DF server.
                         ->Attribute(AZ::Edit::Attributes::HelpPageURL, "")
+
                     // Script Selection group with embedded config
                     ->ClassElement(AZ::Edit::ClassElements::Group, "Script Selection")
                         ->Attribute(AZ::Edit::Attributes::AutoExpand, true)
-                    
+
                     ->DataElement(AZ::Edit::UIHandlers::Default, &EditorCSharpScriptComponent::m_config, "Configuration", "")
                         ->Attribute(AZ::Edit::Attributes::Visibility, AZ::Edit::PropertyVisibility::ShowChildrenOnly)
                         ->Attribute(AZ::Edit::Attributes::ChangeNotify, &EditorCSharpScriptComponent::OnScriptClassNameChanged)
@@ -98,15 +99,15 @@ namespace O3DESharp
                     // Action buttons
                     ->ClassElement(AZ::Edit::ClassElements::Group, "Actions")
                         ->Attribute(AZ::Edit::Attributes::AutoExpand, true)
-                    
+
                     ->UIElement(AZ::Edit::UIHandlers::Button, "Browse...", "Browse for existing C# scripts")
                         ->Attribute(AZ::Edit::Attributes::ButtonText, "Browse Scripts...")
                         ->Attribute(AZ::Edit::Attributes::ChangeNotify, &EditorCSharpScriptComponent::OnBrowseScript)
-                    
+
                     ->UIElement(AZ::Edit::UIHandlers::Button, "Create New", "Create a new C# script file")
                         ->Attribute(AZ::Edit::Attributes::ButtonText, "Create New Script...")
                         ->Attribute(AZ::Edit::Attributes::ChangeNotify, &EditorCSharpScriptComponent::OnCreateScript)
-                    
+
                     ->UIElement(AZ::Edit::UIHandlers::Button, "Edit", "Open script in default IDE")
                         ->Attribute(AZ::Edit::Attributes::ButtonText, "Edit Script")
                         ->Attribute(AZ::Edit::Attributes::ChangeNotify, &EditorCSharpScriptComponent::OnEditScript)
@@ -202,8 +203,6 @@ try:
     if dialog.exec_():
         selected_class = dialog.get_selected_class()
         if selected_class:
-            # For now just log it - in a full implementation, we'd need
-            # a way to pass this back to the C++ component
             print(f"Selected script class: {selected_class}")
 except ImportError as e:
     print(f"Could not load C# editor tools: {e}")
@@ -268,10 +267,10 @@ if o3desharp_scripts_path not in sys.path:
 
 try:
     import csharp_project_manager
-    
+
     manager = csharp_project_manager.CSharpProjectManager()
     class_name = "%s"
-    
+
     # Find the script file based on class name
     for project_path in manager.list_projects():
         for script_path in manager.list_scripts(project_path):
@@ -346,107 +345,12 @@ except Exception as e:
     }
 
     bool EditorCSharpScriptComponent::ClassExistsInAssembly(
-        [[maybe_unused]] const AZStd::string& className, 
+        [[maybe_unused]] const AZStd::string& className,
         [[maybe_unused]] const AZStd::string& assemblyPath) const
     {
         // TODO: Implement actual assembly inspection using Coral
         // For now, return true to allow runtime validation
         return true;
-    }
-
-    AZStd::vector<AZStd::string> EditorCSharpScriptComponent::GetAvailableScriptClasses() const
-    {
-        AZStd::vector<AZStd::string> scriptClasses;
-        
-        // Add an empty option at the beginning for "no selection"
-        scriptClasses.push_back("");
-        
-        // Use Python to scan for available C# script classes
-        // We capture the result via a static variable since Python execution is synchronous
-        static AZStd::vector<AZStd::string> s_cachedScriptClasses;
-        static bool s_cacheValid = false;
-        
-        // Execute Python to get the list of script classes
-        AzToolsFramework::EditorPythonRunnerRequestBus::Broadcast(
-            &AzToolsFramework::EditorPythonRunnerRequestBus::Events::ExecuteByString,
-            R"(
-import sys
-import os
-import azlmbr.paths
-import azlmbr.bus as bus
-
-# Add O3DESharp Editor/Scripts to Python path if not already there
-o3desharp_scripts_path = os.path.join(azlmbr.paths.engroot, 'Gems', 'O3DESharp', 'Editor', 'Scripts')
-if o3desharp_scripts_path not in sys.path:
-    sys.path.insert(0, o3desharp_scripts_path)
-
-try:
-    import csharp_project_manager
-    manager = csharp_project_manager.get_project_manager()
-    classes = manager.get_available_script_classes()
-    
-    # Store the result in a file that C++ can read
-    import json
-    cache_file = os.path.join(azlmbr.paths.projectroot, 'user', '.csharp_classes_cache.json')
-    os.makedirs(os.path.dirname(cache_file), exist_ok=True)
-    with open(cache_file, 'w') as f:
-        json.dump(classes, f)
-except Exception as e:
-    print(f"Error getting script classes: {e}")
-)",
-            false
-        );
-        
-        // Read the cached result from the file
-        AZ::IO::Path projectPath;
-        if (auto* settingsRegistry = AZ::SettingsRegistry::Get())
-        {
-            settingsRegistry->Get(projectPath.Native(), AZ::SettingsRegistryMergeUtils::FilePathKey_ProjectPath);
-        }
-        
-        AZ::IO::Path cachePath = projectPath / "user" / ".csharp_classes_cache.json";
-        
-        if (AZ::IO::FileIOBase* fileIO = AZ::IO::FileIOBase::GetInstance())
-        {
-            if (fileIO->Exists(cachePath.c_str()))
-            {
-                AZ::IO::HandleType fileHandle;
-                if (fileIO->Open(cachePath.c_str(), AZ::IO::OpenMode::ModeRead, fileHandle) == AZ::IO::ResultCode::Success)
-                {
-                    AZ::u64 fileSize = 0;
-                    fileIO->Size(fileHandle, fileSize);
-                    
-                    if (fileSize > 0 && fileSize < 1024 * 1024) // Sanity check: max 1MB
-                    {
-                        AZStd::vector<char> buffer(fileSize + 1);
-                        fileIO->Read(fileHandle, buffer.data(), fileSize);
-                        buffer[fileSize] = '\0';
-                        fileIO->Close(fileHandle);
-                        
-                        // Parse JSON array
-                        rapidjson::Document doc;
-                        doc.Parse(buffer.data());
-                        
-                        if (doc.IsArray())
-                        {
-                            for (const auto& item : doc.GetArray())
-                            {
-                                if (item.IsString())
-                                {
-                                    scriptClasses.push_back(item.GetString());
-                                }
-                            }
-                        }
-                    }
-                    else
-                    {
-                        fileIO->Close(fileHandle);
-                    }
-                }
-            }
-        }
-        
-        return scriptClasses;
     }
 
     void EditorCSharpScriptComponent::Init()

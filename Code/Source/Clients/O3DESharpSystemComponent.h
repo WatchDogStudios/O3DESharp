@@ -93,6 +93,14 @@ namespace O3DESharp
         void InitializeCoralHost();
 
         /**
+         * Scan known build-output / staging directories for the newest copies
+         * of Coral.Managed.dll and O3DE.Core.dll and deploy them to the
+         * project's Bin/Scripts directory so the Coral host can find them.
+         * Called automatically before InitializeCoralHost().
+         */
+        void DeployLatestManagedAssemblies();
+
+        /**
          * Shutdown the Coral .NET host
          * Called during component deactivation
          */

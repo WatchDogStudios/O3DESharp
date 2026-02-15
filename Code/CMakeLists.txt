@@ -96,7 +96,7 @@ if(TARGET Coral.Managed)
     )
     
     set_property(TARGET ${gem_name}.StageCoral PROPERTY FOLDER "${relative_o3desharp_gem_root}/Deploy")
-    
+
     message(STATUS "O3DESharp: Coral.Managed will be staged to ${CORAL_STAGING_DIR}")
 endif()
 
@@ -145,11 +145,103 @@ if(EXISTS "${O3DE_CORE_BUILD_OUTPUT}/O3DE.Core.dll")
     endif()
     
     set_property(TARGET ${gem_name}.StageO3DECore PROPERTY FOLDER "${relative_o3desharp_gem_root}/Deploy")
-    
+
     message(STATUS "O3DESharp: O3DE.Core will be staged to ${O3DE_CORE_STAGING_DIR}")
 else()
     message(STATUS "O3DESharp: O3DE.Core.dll not found at ${O3DE_CORE_BUILD_OUTPUT}/O3DE.Core.dll")
     message(STATUS "O3DESharp: Build O3DE.Core C# project first (dotnet build -c Release)")
+endif()
+
+# ============================================================
+# ClangSharp Binding Generator Tool
+# ============================================================
+# Build the ClangSharp-based C# binding generator tool.
+# This tool performs static analysis of C++ headers to generate C# bindings.
+
+# Option to control automatic binding generation
+option(O3DESHARP_AUTO_GENERATE_BINDINGS "Automatically generate C# bindings during build" ON)
+
+get_property(gem_root_for_bindings GLOBAL PROPERTY "@GEMROOT:${gem_name}@")
+set(BINDING_GENERATOR_SOURCE_DIR "${gem_root_for_bindings}/Code/Tools/BindingGenerator")
+set(BINDING_GENERATOR_BINARY_DIR "${CMAKE_BINARY_DIR}/Gems/O3DESharp/BindingGenerator")
+set(BINDING_GENERATOR_OUTPUT_DIR "${CMAKE_BINARY_DIR}/bin/BindingGenerator")
+
+# Check if the binding generator source exists
+if(EXISTS "${BINDING_GENERATOR_SOURCE_DIR}/O3DESharp.BindingGenerator/O3DESharp.BindingGenerator.csproj")
+    # Use ExternalProject to build the ClangSharp binding generator
+    include(ExternalProject)
+    
+    # Determine build configuration
+    set(BINDING_GENERATOR_CONFIG "Release")
+    if(CMAKE_BUILD_TYPE MATCHES "Debug")
+        set(BINDING_GENERATOR_CONFIG "Debug")
+    endif()
+    
+    ExternalProject_Add(
+        O3DESharp.BindingGenerator
+        SOURCE_DIR "${BINDING_GENERATOR_SOURCE_DIR}"
+        BINARY_DIR "${BINDING_GENERATOR_BINARY_DIR}"
+        CONFIGURE_COMMAND ""
+        BUILD_COMMAND dotnet build "${BINDING_GENERATOR_SOURCE_DIR}/O3DESharp.BindingGenerator/O3DESharp.BindingGenerator.csproj" 
+            -c ${BINDING_GENERATOR_CONFIG}
+            -o "${BINDING_GENERATOR_OUTPUT_DIR}"
+        INSTALL_COMMAND ""
+        BUILD_ALWAYS OFF
+        BUILD_BYPRODUCTS "${BINDING_GENERATOR_OUTPUT_DIR}/O3DESharp.BindingGenerator.dll"
+    )
+    
+    # Export the path to the binding generator for Python scripts
+    set(O3DESHARP_BINDING_GENERATOR_PATH "${BINDING_GENERATOR_OUTPUT_DIR}" CACHE PATH 
+        "Path to O3DESharp binding generator tool" FORCE)
+    
+    message(STATUS "O3DESharp: Binding generator will be built to ${BINDING_GENERATOR_OUTPUT_DIR}")
+    
+    # ============================================================
+    # Automatic Binding Generation Target
+    # ============================================================
+    # Generate C# bindings automatically during build if enabled.
+    # The ClangSharp tool has built-in incremental build support via file hash caching.
+    
+    if(O3DESHARP_AUTO_GENERATE_BINDINGS)
+        set(BINDINGS_OUTPUT_DIR "${CMAKE_BINARY_DIR}/Gems/O3DESharp/Generated/Bindings")
+        set(BINDINGS_MARKER_FILE "${CMAKE_BINARY_DIR}/.o3desharp_bindings_generated")
+        set(BINDING_CONFIG_FILE "${gem_root_for_bindings}/binding_config.json")
+        
+        # Create binding generation target
+        add_custom_target(${gem_name}.GenerateBindings
+            COMMENT "O3DESharp: Generating C# bindings with ClangSharp tool"
+            COMMAND ${CMAKE_COMMAND} -E echo "Checking if C# bindings need regeneration..."
+            COMMAND ${CMAKE_COMMAND} -E make_directory "${BINDINGS_OUTPUT_DIR}"
+            COMMAND dotnet run 
+                --project "${BINDING_GENERATOR_SOURCE_DIR}/O3DESharp.BindingGenerator/O3DESharp.BindingGenerator.csproj" 
+                -- generate 
+                --project "${CMAKE_SOURCE_DIR}"
+                --output "${BINDINGS_OUTPUT_DIR}"
+                --incremental
+            COMMAND ${CMAKE_COMMAND} -E touch "${BINDINGS_MARKER_FILE}"
+            DEPENDS O3DESharp.BindingGenerator
+            WORKING_DIRECTORY "${gem_root_for_bindings}"
+            VERBATIM
+        )
+        
+        # Make the binding generation target part of the default build
+        # but only if the config file exists (prevents errors in fresh checkouts)
+        if(EXISTS "${BINDING_CONFIG_FILE}")
+            set_property(TARGET ${gem_name}.BindingGenerator PROPERTY FOLDER "${relative_o3desharp_gem_root}/Bindings")
+            set_property(TARGET ${gem_name}.GenerateBindings PROPERTY FOLDER "${relative_o3desharp_gem_root}/Bindings")
+            message(STATUS "O3DESharp: Automatic binding generation ENABLED (output: ${BINDINGS_OUTPUT_DIR})")
+            message(STATUS "O3DESharp:   Set O3DESHARP_AUTO_GENERATE_BINDINGS=OFF to disable")
+        else()
+            message(STATUS "O3DESharp: Automatic binding generation DISABLED (binding_config.json not found)")
+            message(STATUS "O3DESharp:   Create ${BINDING_CONFIG_FILE} to enable automatic generation")
+        endif()
+    else()
+        message(STATUS "O3DESharp: Automatic binding generation DISABLED by user")
+        message(STATUS "O3DESharp:   Set O3DESHARP_AUTO_GENERATE_BINDINGS=ON to enable")
+    endif()
+else()
+    message(WARNING "O3DESharp: Binding generator source not found at ${BINDING_GENERATOR_SOURCE_DIR}")
+    message(WARNING "O3DESharp: C# binding generation will not be available")
 endif()
 
 # CREDIT Olex A. (Amazon, ReactNavagation)
@@ -311,6 +403,36 @@ ly_create_alias(NAME ${gem_name}.Clients.API NAMESPACE Gem TARGETS Gem::${gem_na
 ly_create_alias(NAME ${gem_name}.Servers.API NAMESPACE Gem TARGETS Gem::${gem_name}.API)
 ly_create_alias(NAME ${gem_name}.Unified.API NAMESPACE Gem TARGETS Gem::${gem_name}.API)
 
+# ============================================================
+# Deploy Coral and O3DE.Core files to launcher targets
+# ============================================================
+# Now that the launcher target aliases exist, we can deploy runtime files to them
+
+# Deploy Coral.Managed files if the staging target exists
+if(TARGET ${gem_name}.StageCoral)
+    ly_add_target_files(
+        TARGETS ${gem_name}.Clients ${gem_name}.Servers ${gem_name}.Unified
+        FILES
+            "${CORAL_STAGING_DIR}/Coral.Managed.dll"
+            "${CORAL_STAGING_DIR}/Coral.Managed.runtimeconfig.json"
+            "${CORAL_STAGING_DIR}/Coral.Managed.deps.json"
+        OUTPUT_SUBDIRECTORY "Bin/Scripts/Coral"
+    )
+    message(STATUS "O3DESharp: Coral will be deployed to Bin/Scripts/Coral/ for runtime and export")
+endif()
+
+# Deploy O3DE.Core files if the staging target exists
+if(TARGET ${gem_name}.StageO3DECore)
+    ly_add_target_files(
+        TARGETS ${gem_name}.Clients ${gem_name}.Servers ${gem_name}.Unified
+        FILES
+            "${O3DE_CORE_STAGING_DIR}/O3DE.Core.dll"
+            "${O3DE_CORE_STAGING_DIR}/O3DE.Core.deps.json"
+        OUTPUT_SUBDIRECTORY "Bin/Scripts"
+    )
+    message(STATUS "O3DESharp: O3DE.Core will be deployed to Bin/Scripts/ for runtime and export")
+endif()
+
 # Add in CMake dependencies for each gem dependency listed in this gem's gem.json file
 # for the Clients, Servers and Unified gem variants
 o3de_add_variant_dependencies_for_gem_dependencies(GEM_NAME ${gem_name} VARIANTS Clients Servers Unified)
@@ -458,6 +580,87 @@ if(PAL_TRAIT_BUILD_TESTS_SUPPORTED)
             ly_add_googletest(
                 NAME Gem::${gem_name}.Editor.Tests
             )
+        endif()
+    endif()
+
+    # ============================================================
+    # Python Binding Generator Tests
+    # ============================================================
+    # Add pytest tests for Python binding generator orchestration scripts
+    if(PAL_TRAIT_BUILD_HOST_TOOLS)
+        get_property(gem_root_for_python_tests GLOBAL PROPERTY "@GEMROOT:${gem_name}@")
+        set(PYTHON_TESTS_DIR "${gem_root_for_python_tests}/Editor/Tests")
+
+        if(EXISTS "${PYTHON_TESTS_DIR}/conftest.py")
+            # Create custom target to run Python tests with pytest
+            add_custom_target(${gem_name}.Tests.Python
+                COMMAND ${CMAKE_COMMAND} -E echo "Running O3DESharp Python tests..."
+                COMMAND pytest "${PYTHON_TESTS_DIR}" -v --tb=short
+                WORKING_DIRECTORY "${gem_root_for_python_tests}"
+                COMMENT "Running O3DESharp Python binding generator tests with pytest"
+                VERBATIM
+            )
+
+            # Add to test folder
+            set_property(TARGET ${gem_name}.Tests.Python PROPERTY FOLDER "${relative_o3desharp_gem_root}/Tests")
+
+            # Register with CTest if available
+            if(BUILD_TESTING)
+                add_test(
+                    NAME O3DESharp.Tests.Python
+                    COMMAND pytest "${PYTHON_TESTS_DIR}" -v --tb=short
+                    WORKING_DIRECTORY "${gem_root_for_python_tests}"
+                )
+                set_tests_properties(O3DESharp.Tests.Python PROPERTIES
+                    LABELS "python;bindings;unit"
+                    TIMEOUT 300
+                )
+            endif()
+
+            message(STATUS "O3DESharp: Python tests target created (run with: cmake --build . --target ${gem_name}.Tests.Python)")
+        else()
+            message(STATUS "O3DESharp: Python tests not found at ${PYTHON_TESTS_DIR}")
+        endif()
+    endif()
+
+    # ============================================================
+    # C# Binding Generator Tests
+    # ============================================================
+    # Add xUnit tests for ClangSharp binding generator tool
+    if(PAL_TRAIT_BUILD_HOST_TOOLS)
+        get_property(gem_root_for_csharp_tests GLOBAL PROPERTY "@GEMROOT:${gem_name}@")
+        set(CSHARP_TESTS_DIR "${gem_root_for_csharp_tests}/Code/Tools/BindingGenerator.Tests")
+
+        if(EXISTS "${CSHARP_TESTS_DIR}/BindingGenerator.Tests.csproj")
+            # Create custom target to run C# tests with dotnet test
+            add_custom_target(${gem_name}.Tests.BindingGenerator
+                COMMAND ${CMAKE_COMMAND} -E echo "Running O3DESharp C# Binding Generator tests..."
+                COMMAND dotnet test "${CSHARP_TESTS_DIR}/BindingGenerator.Tests.csproj" --verbosity normal
+                WORKING_DIRECTORY "${CSHARP_TESTS_DIR}"
+                COMMENT "Running O3DESharp ClangSharp binding generator tests with xUnit"
+                DEPENDS O3DESharp.BindingGenerator
+                VERBATIM
+            )
+
+            # Add to test folder
+            set_property(TARGET ${gem_name}.Tests.BindingGenerator PROPERTY FOLDER "${relative_o3desharp_gem_root}/Tests")
+
+            # Register with CTest if available
+            if(BUILD_TESTING)
+                add_test(
+                    NAME O3DESharp.Tests.BindingGenerator
+                    COMMAND dotnet test "${CSHARP_TESTS_DIR}/BindingGenerator.Tests.csproj" --verbosity normal
+                    WORKING_DIRECTORY "${CSHARP_TESTS_DIR}"
+                )
+                set_tests_properties(O3DESharp.Tests.BindingGenerator PROPERTIES
+                    LABELS "csharp;bindings;unit"
+                    TIMEOUT 600
+                )
+            endif()
+
+            message(STATUS "O3DESharp: C# Binding Generator tests target created (run with: cmake --build . --target ${gem_name}.Tests.BindingGenerator)")
+        else()
+            message(STATUS "O3DESharp: C# Binding Generator tests not found at ${CSHARP_TESTS_DIR}")
         endif()
     endif()
 endif()

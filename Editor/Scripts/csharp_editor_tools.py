@@ -170,6 +170,7 @@ class CreateScriptDialog(QDialog):
         super().__init__(parent)
         self.project_manager = get_project_manager()
         self.project_path = project_path
+        self._created_class_name = None  # Store fully-qualified name of created class
         self.setup_ui()
         
     def setup_ui(self):
@@ -308,6 +309,7 @@ class CreateScriptDialog(QDialog):
         )
         
         if result["success"]:
+            self._created_class_name = f"{project_data['namespace']}.{class_name}"
             QMessageBox.information(
                 self, "Success",
                 f"Script '{class_name}.cs' created successfully!"
@@ -316,6 +318,15 @@ class CreateScriptDialog(QDialog):
             self.accept()
         else:
             QMessageBox.critical(self, "Error", result["message"])
+    
+    def get_created_class_name(self) -> Optional[str]:
+        """Get the fully qualified class name of the created script.
+        
+        Returns:
+            The fully qualified name (e.g. 'MyGame.PlayerController') or None
+            if no script was created.
+        """
+        return self._created_class_name
 
 
 class ScriptBrowserDialog(QDialog):
@@ -332,7 +343,7 @@ class ScriptBrowserDialog(QDialog):
         
     def setup_ui(self):
         self.setWindowTitle("Select C# Script")
-        self.setMinimumSize(500, 400)
+        self.setMinimumSize(560, 440)
         self.setModal(True)
         
         layout = QVBoxLayout(self)
@@ -343,6 +354,17 @@ class ScriptBrowserDialog(QDialog):
         refresh_btn = QPushButton("↻ Refresh")
         refresh_btn.clicked.connect(self._populate_tree)
         toolbar.addWidget(refresh_btn)
+        
+        self.open_btn = QPushButton("Open in Editor")
+        self.open_btn.setToolTip("Open the selected script file")
+        self.open_btn.setEnabled(False)
+        self.open_btn.clicked.connect(self._open_selected_in_editor)
+        toolbar.addWidget(self.open_btn)
+        
+        build_btn = QPushButton("Build")
+        build_btn.setToolTip("Build the project that contains the selected script")
+        build_btn.clicked.connect(self._build_selected_project)
+        toolbar.addWidget(build_btn)
         
         toolbar.addStretch()
         
@@ -466,10 +488,12 @@ class ScriptBrowserDialog(QDialog):
             if item_data and item_data["type"] == "script":
                 self.selected_label.setText(item_data["data"]["full_name"])
                 self.select_btn.setEnabled(True)
+                self.open_btn.setEnabled(bool(item_data["data"].get("path")))
                 return
                 
         self.selected_label.setText("None")
         self.select_btn.setEnabled(False)
+        self.open_btn.setEnabled(False)
         
     def _on_item_double_clicked(self, item, column):
         item_data = item.data(0, Qt.UserRole)
@@ -514,6 +538,573 @@ class ScriptBrowserDialog(QDialog):
         dialog = CreateScriptDialog(project_path, self)
         dialog.script_created.connect(lambda _: self._populate_tree())
         dialog.exec_()
+    
+    def _open_selected_in_editor(self):
+        """Open the selected script file in the default code editor."""
+        items = self.tree.selectedItems()
+        if not items:
+            return
+        item_data = items[0].data(0, Qt.UserRole)
+        if not item_data or item_data["type"] != "script":
+            return
+        script_path = item_data["data"].get("path", "")
+        if not script_path:
+            return
+        import subprocess as _sp
+        try:
+            _sp.Popen(["code", script_path])
+        except Exception:
+            try:
+                import os
+                os.startfile(script_path)
+            except Exception as e:
+                QMessageBox.warning(self, "Error", f"Could not open script: {e}")
+    
+    def _build_selected_project(self):
+        """Build the project containing the selected item."""
+        items = self.tree.selectedItems()
+        project_path = None
+        if items:
+            item_data = items[0].data(0, Qt.UserRole)
+            if item_data:
+                if item_data["type"] == "project":
+                    project_path = item_data["data"]["path"]
+                elif item_data["type"] == "script":
+                    parent = items[0].parent()
+                    if parent:
+                        parent_data = parent.data(0, Qt.UserRole)
+                        if parent_data and parent_data["type"] == "project":
+                            project_path = parent_data["data"]["path"]
+        
+        if not project_path:
+            QMessageBox.information(self, "Build", "Select a project or script first.")
+            return
+        
+        result = self.project_manager.build_project(project_path)
+        if result["success"]:
+            QMessageBox.information(self, "Build Succeeded", f"Output: {result.get('output_path', 'OK')}")
+        else:
+            QMessageBox.warning(self, "Build Failed", result.get("message", "Unknown error"))
+
+
+# ==================== Recently-Used Cache ====================
+
+class _RecentClassesCache:
+    """Manages a persistent list of recently-selected script classes."""
+    
+    _MAX_RECENT = 8
+    _instance = None
+    
+    def __init__(self):
+        self._recent: List[str] = []
+        self._load()
+    
+    @classmethod
+    def instance(cls) -> '_RecentClassesCache':
+        if cls._instance is None:
+            cls._instance = cls()
+        return cls._instance
+    
+    def _cache_file(self) -> Path:
+        manager = get_project_manager()
+        return manager.project_path / "user" / ".csharp_recent_classes.json"
+    
+    def _load(self):
+        import json
+        try:
+            path = self._cache_file()
+            if path.exists():
+                with open(path, 'r', encoding='utf-8') as f:
+                    data = json.load(f)
+                if isinstance(data, list):
+                    self._recent = data[:self._MAX_RECENT]
+        except Exception:
+            self._recent = []
+    
+    def _save(self):
+        import json
+        try:
+            path = self._cache_file()
+            path.parent.mkdir(parents=True, exist_ok=True)
+            with open(path, 'w', encoding='utf-8') as f:
+                json.dump(self._recent, f, indent=2)
+        except Exception:
+            pass
+    
+    def add(self, class_name: str):
+        if not class_name:
+            return
+        # Move to front if already present
+        if class_name in self._recent:
+            self._recent.remove(class_name)
+        self._recent.insert(0, class_name)
+        self._recent = self._recent[:self._MAX_RECENT]
+        self._save()
+    
+    def get(self) -> List[str]:
+        return list(self._recent)
+    
+    def clear(self):
+        self._recent = []
+        self._save()
+
+
+# ==================== Script Class Picker Dialog ====================
+
+class ScriptClassPickerDialog(QDialog):
+    """
+    Streamlined script class picker for the entity component inspector.
+    
+    Features:
+    - Instant search / filter with keyboard focus
+    - Recently-used classes at the top
+    - Grouped by project / namespace
+    - Class info preview panel
+    - Inline "Create New Script" button
+    """
+    
+    class_selected = Signal(str)  # Emits fully qualified class name
+    
+    def __init__(self, current_class: str = "", parent=None):
+        super().__init__(parent)
+        self.project_manager = get_project_manager()
+        self._selected_class: Optional[str] = None
+        self._current_class = current_class
+        self._all_classes: List[dict] = []  # cached flat list
+        self.setup_ui()
+        self._load_classes()
+    
+    # ---- UI ----
+    
+    def setup_ui(self):
+        self.setWindowTitle("Pick Script Class")
+        self.setMinimumSize(520, 480)
+        self.setModal(True)
+        
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(8, 8, 8, 8)
+        layout.setSpacing(6)
+        
+        # ---- Search bar (auto-focused) ----
+        search_layout = QHBoxLayout()
+        search_layout.setSpacing(4)
+        
+        search_icon = QLabel("🔍")
+        search_layout.addWidget(search_icon)
+        
+        self.search_edit = QLineEdit()
+        self.search_edit.setPlaceholderText("Type to search classes…  (Ctrl+F)")
+        self.search_edit.setClearButtonEnabled(True)
+        self.search_edit.textChanged.connect(self._apply_filter)
+        search_layout.addWidget(self.search_edit)
+        
+        layout.addLayout(search_layout)
+        
+        # ---- Filter toggles ----
+        filter_bar = QHBoxLayout()
+        filter_bar.setSpacing(8)
+        
+        self.components_only_cb = QtWidgets.QCheckBox("ScriptComponents only")
+        self.components_only_cb.setChecked(True)
+        self.components_only_cb.stateChanged.connect(self._apply_filter)
+        filter_bar.addWidget(self.components_only_cb)
+        
+        filter_bar.addStretch()
+        
+        refresh_btn = QToolButton()
+        refresh_btn.setText("↻")
+        refresh_btn.setToolTip("Refresh class list")
+        refresh_btn.clicked.connect(self._load_classes)
+        filter_bar.addWidget(refresh_btn)
+        
+        layout.addLayout(filter_bar)
+        
+        # ---- Splitter: list | info ----
+        splitter = QSplitter(Qt.Horizontal)
+        
+        # Left side – class list
+        list_widget = QWidget()
+        list_layout = QVBoxLayout(list_widget)
+        list_layout.setContentsMargins(0, 0, 0, 0)
+        
+        self.class_list = QListWidget()
+        self.class_list.setAlternatingRowColors(True)
+        self.class_list.currentItemChanged.connect(self._on_current_changed)
+        self.class_list.itemDoubleClicked.connect(self._accept_selection)
+        list_layout.addWidget(self.class_list)
+        
+        # "(none)" clear button
+        clear_layout = QHBoxLayout()
+        none_btn = QPushButton("Clear Selection")
+        none_btn.setToolTip("Remove the currently assigned script class")
+        none_btn.clicked.connect(self._select_none)
+        clear_layout.addWidget(none_btn)
+        clear_layout.addStretch()
+        list_layout.addLayout(clear_layout)
+        
+        splitter.addWidget(list_widget)
+        
+        # Right side – info panel
+        info_widget = QWidget()
+        info_layout = QVBoxLayout(info_widget)
+        info_layout.setContentsMargins(4, 0, 0, 0)
+        
+        info_header = QLabel("Class Info")
+        info_header.setStyleSheet("font-weight: bold;")
+        info_layout.addWidget(info_header)
+        
+        self.info_class_label = QLabel("-")
+        self.info_class_label.setWordWrap(True)
+        
+        self.info_project_label = QLabel("-")
+        self.info_base_label = QLabel("-")
+        self.info_path_label = QLabel("-")
+        self.info_path_label.setWordWrap(True)
+        
+        info_form = QFormLayout()
+        info_form.addRow("Class:", self.info_class_label)
+        info_form.addRow("Project:", self.info_project_label)
+        info_form.addRow("Base:", self.info_base_label)
+        info_form.addRow("File:", self.info_path_label)
+        info_layout.addLayout(info_form)
+        
+        info_layout.addStretch()
+        
+        # Quick actions in info panel
+        actions_label = QLabel("Quick Actions")
+        actions_label.setStyleSheet("font-weight: bold; margin-top: 8px;")
+        info_layout.addWidget(actions_label)
+        
+        self.open_script_btn = QPushButton("Open in Editor")
+        self.open_script_btn.setEnabled(False)
+        self.open_script_btn.clicked.connect(self._open_selected_script)
+        info_layout.addWidget(self.open_script_btn)
+        
+        create_btn = QPushButton("+ Create New Script…")
+        create_btn.clicked.connect(self._create_new_script)
+        info_layout.addWidget(create_btn)
+        
+        splitter.addWidget(info_widget)
+        splitter.setSizes([320, 200])
+        
+        layout.addWidget(splitter)
+        
+        # ---- Bottom buttons ----
+        btn_layout = QHBoxLayout()
+        btn_layout.addStretch()
+        
+        cancel_btn = QPushButton("Cancel")
+        cancel_btn.clicked.connect(self.reject)
+        btn_layout.addWidget(cancel_btn)
+        
+        self.ok_btn = QPushButton("OK")
+        self.ok_btn.setEnabled(False)
+        self.ok_btn.setDefault(True)
+        self.ok_btn.clicked.connect(self._accept_selection)
+        btn_layout.addWidget(self.ok_btn)
+        
+        layout.addLayout(btn_layout)
+        
+        # Focus the search bar immediately
+        self.search_edit.setFocus()
+    
+    # ---- Data ----
+    
+    def _load_classes(self):
+        """Reload the master list of classes from all projects."""
+        self._all_classes = []
+        projects = self.project_manager.list_projects()
+        
+        for project in projects:
+            scripts = self.project_manager.list_scripts(project["path"])
+            for script in scripts:
+                script["project_name"] = project["name"]
+                self._all_classes.append(script)
+        
+        self._apply_filter()
+    
+    def _apply_filter(self):
+        """Rebuild the visible list applying the current search text + toggles."""
+        text = self.search_edit.text().strip().lower()
+        components_only = self.components_only_cb.isChecked()
+        
+        self.class_list.clear()
+        
+        recent = _RecentClassesCache.instance().get()
+        
+        # Partition: recent first, then alphabetical
+        recent_items: List[dict] = []
+        other_items: List[dict] = []
+        
+        for cls in self._all_classes:
+            if components_only and not cls.get("is_script_component", False):
+                continue
+            if text and text not in cls.get("full_name", "").lower() and \
+               text not in cls.get("class_name", "").lower():
+                continue
+            if cls.get("full_name", "") in recent:
+                recent_items.append(cls)
+            else:
+                other_items.append(cls)
+        
+        # Sort recent by recency order
+        recent_order = {name: idx for idx, name in enumerate(recent)}
+        recent_items.sort(key=lambda c: recent_order.get(c.get("full_name", ""), 999))
+        other_items.sort(key=lambda c: c.get("full_name", ""))
+        
+        # Add recent header if any
+        if recent_items:
+            header = QListWidgetItem("── Recently Used ──")
+            header.setFlags(Qt.NoItemFlags)
+            header.setForeground(QtGui.QColor("#888"))
+            font = header.font()
+            font.setItalic(True)
+            header.setFont(font)
+            self.class_list.addItem(header)
+            
+            for cls in recent_items:
+                self._add_class_item(cls, is_recent=True)
+        
+        # Add all classes header
+        if other_items:
+            if recent_items:
+                header = QListWidgetItem("── All Classes ──")
+                header.setFlags(Qt.NoItemFlags)
+                header.setForeground(QtGui.QColor("#888"))
+                font = header.font()
+                font.setItalic(True)
+                header.setFont(font)
+                self.class_list.addItem(header)
+            
+            # Group by project
+            by_project: dict = {}
+            for cls in other_items:
+                proj = cls.get("project_name", "Unknown")
+                by_project.setdefault(proj, []).append(cls)
+            
+            for proj_name in sorted(by_project.keys()):
+                proj_header = QListWidgetItem(f"  [{proj_name}]")
+                proj_header.setFlags(Qt.NoItemFlags)
+                proj_header.setForeground(QtGui.QColor("#6A9EDB"))
+                font = proj_header.font()
+                font.setBold(True)
+                proj_header.setFont(font)
+                self.class_list.addItem(proj_header)
+                
+                for cls in by_project[proj_name]:
+                    self._add_class_item(cls)
+        
+        # Pre-select current class if present
+        if self._current_class:
+            for i in range(self.class_list.count()):
+                item = self.class_list.item(i)
+                data = item.data(Qt.UserRole)
+                if data and data.get("full_name") == self._current_class:
+                    self.class_list.setCurrentItem(item)
+                    break
+    
+    def _add_class_item(self, cls: dict, is_recent: bool = False):
+        display = cls.get("full_name", cls.get("class_name", "???"))
+        item = QListWidgetItem(f"  ● {display}" if is_recent else f"    {display}")
+        item.setData(Qt.UserRole, cls)
+        item.setToolTip(
+            f"Class: {cls.get('full_name', '')}\n"
+            f"Base: {cls.get('base_class', 'N/A')}\n"
+            f"Project: {cls.get('project_name', 'N/A')}"
+        )
+        self.class_list.addItem(item)
+    
+    # ---- Selection ----
+    
+    def _on_current_changed(self, current, _previous):
+        if current is None:
+            self._clear_info()
+            return
+        data = current.data(Qt.UserRole)
+        if data is None:
+            self._clear_info()
+            return
+        self.info_class_label.setText(data.get("full_name", "-"))
+        self.info_project_label.setText(data.get("project_name", "-"))
+        self.info_base_label.setText(data.get("base_class", "-") or "-")
+        self.info_path_label.setText(data.get("path", "-"))
+        self.ok_btn.setEnabled(True)
+        self.open_script_btn.setEnabled(bool(data.get("path")))
+    
+    def _clear_info(self):
+        self.info_class_label.setText("-")
+        self.info_project_label.setText("-")
+        self.info_base_label.setText("-")
+        self.info_path_label.setText("-")
+        self.ok_btn.setEnabled(False)
+        self.open_script_btn.setEnabled(False)
+    
+    def _accept_selection(self):
+        item = self.class_list.currentItem()
+        if item is None:
+            return
+        data = item.data(Qt.UserRole)
+        if data is None:
+            return
+        self._selected_class = data.get("full_name", "")
+        _RecentClassesCache.instance().add(self._selected_class)
+        self.class_selected.emit(self._selected_class)
+        self.accept()
+    
+    def _select_none(self):
+        """Clear the selection (unassign script class)."""
+        self._selected_class = ""
+        self.class_selected.emit("")
+        self.accept()
+    
+    def get_selected_class(self) -> Optional[str]:
+        """Return the fully qualified class name chosen by the user, or None."""
+        return self._selected_class
+    
+    # ---- Quick actions ----
+    
+    def _open_selected_script(self):
+        item = self.class_list.currentItem()
+        if item is None:
+            return
+        data = item.data(Qt.UserRole)
+        if data and data.get("path"):
+            import subprocess as _sp
+            try:
+                _sp.Popen(["code", data["path"]])
+            except Exception:
+                try:
+                    import os
+                    os.startfile(data["path"])
+                except Exception as e:
+                    QMessageBox.warning(self, "Error", f"Could not open file: {e}")
+    
+    def _create_new_script(self):
+        """Open the Create Script dialog and optionally select the newly created class."""
+        dialog = CreateScriptDialog(None, self)
+        if dialog.exec_() == QDialog.Accepted:
+            new_class = dialog.get_created_class_name()
+            if new_class:
+                self._selected_class = new_class
+                _RecentClassesCache.instance().add(new_class)
+                self.class_selected.emit(new_class)
+                self.accept()
+
+
+# ==================== Quick Action Prompt ====================
+
+class QuickActionPrompt(QDialog):
+    """
+    Command-palette-style prompt for common C# scripting actions.
+    
+    Shown via a keyboard shortcut or toolbar button. The user types a few
+    characters and picks an action from the filtered list.
+    """
+    
+    action_chosen = Signal(str)  # Emits action id
+    
+    _ACTIONS = [
+        {"id": "create_project",    "label": "Create C# Project",            "icon": "📁", "shortcut": "P"},
+        {"id": "create_script",     "label": "Create C# Script",             "icon": "📝", "shortcut": "S"},
+        {"id": "browse_scripts",    "label": "Browse Scripts",               "icon": "🔍", "shortcut": "B"},
+        {"id": "pick_class",        "label": "Pick Script Class",            "icon": "🎯", "shortcut": "K"},
+        {"id": "build_all",         "label": "Build All Projects",           "icon": "🔨", "shortcut": "A"},
+        {"id": "open_manager",      "label": "Open Project Manager",         "icon": "⚙️", "shortcut": "M"},
+        {"id": "generate_bindings", "label": "Generate Gem Bindings",        "icon": "🔗", "shortcut": "G"},
+        {"id": "deploy_all",        "label": "Deploy Runtime (Coral + Core)","icon": "📦", "shortcut": "D"},
+        {"id": "refresh_classes",   "label": "Refresh Script Class Cache",   "icon": "↻",  "shortcut": "R"},
+    ]
+    
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._chosen_action: Optional[str] = None
+        self.setup_ui()
+    
+    def setup_ui(self):
+        self.setWindowTitle("C# Quick Actions")
+        self.setWindowFlags(Qt.Popup | Qt.FramelessWindowHint)
+        self.setMinimumWidth(380)
+        self.setMaximumHeight(400)
+        
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(4, 4, 4, 4)
+        layout.setSpacing(2)
+        
+        # Search
+        self.search_edit = QLineEdit()
+        self.search_edit.setPlaceholderText("Type to filter actions…")
+        self.search_edit.setClearButtonEnabled(True)
+        self.search_edit.textChanged.connect(self._filter)
+        self.search_edit.returnPressed.connect(self._accept_first)
+        layout.addWidget(self.search_edit)
+        
+        # Action list
+        self.action_list = QListWidget()
+        self.action_list.setAlternatingRowColors(True)
+        self.action_list.itemDoubleClicked.connect(self._on_action_clicked)
+        self.action_list.itemActivated.connect(self._on_action_clicked)
+        layout.addWidget(self.action_list)
+        
+        self._populate()
+        self.search_edit.setFocus()
+    
+    def _populate(self):
+        self.action_list.clear()
+        for action in self._ACTIONS:
+            item = QListWidgetItem(f"  {action['icon']}  {action['label']}   [{action['shortcut']}]")
+            item.setData(Qt.UserRole, action["id"])
+            self.action_list.addItem(item)
+        if self.action_list.count() > 0:
+            self.action_list.setCurrentRow(0)
+    
+    def _filter(self, text: str):
+        text = text.strip().lower()
+        for i in range(self.action_list.count()):
+            item = self.action_list.item(i)
+            action_id = item.data(Qt.UserRole)
+            action = next((a for a in self._ACTIONS if a["id"] == action_id), None)
+            if action is None:
+                item.setHidden(True)
+                continue
+            matches = (
+                text in action["label"].lower()
+                or text in action["id"]
+                or text == action["shortcut"].lower()
+            )
+            item.setHidden(not matches)
+        # Select first visible
+        for i in range(self.action_list.count()):
+            if not self.action_list.item(i).isHidden():
+                self.action_list.setCurrentRow(i)
+                break
+    
+    def _accept_first(self):
+        """Accept the first visible item when Enter is pressed."""
+        for i in range(self.action_list.count()):
+            item = self.action_list.item(i)
+            if not item.isHidden():
+                self._on_action_clicked(item)
+                return
+    
+    def _on_action_clicked(self, item):
+        action_id = item.data(Qt.UserRole)
+        if action_id:
+            self._chosen_action = action_id
+            self.action_chosen.emit(action_id)
+            self.accept()
+    
+    def get_chosen_action(self) -> Optional[str]:
+        return self._chosen_action
+    
+    def keyPressEvent(self, event):
+        """Allow arrow-key navigation between search box and list."""
+        if event.key() == Qt.Key_Escape:
+            self.reject()
+            return
+        if event.key() in (Qt.Key_Down, Qt.Key_Up) and self.search_edit.hasFocus():
+            self.action_list.setFocus()
+            return
+        super().keyPressEvent(event)
 
 
 class CSharpProjectManagerWindow(QDialog):
@@ -1636,5 +2227,340 @@ def show_script_browser():
     """Show the Script Browser dialog."""
     dialog = ScriptBrowserDialog()
     if dialog.exec_() == QDialog.Accepted:
-        # Return the selected script name
-        pass
+        return dialog.get_selected_class()
+    return None
+
+
+def show_script_class_picker(current_class: str = ""):
+    """Show the ScriptClassPickerDialog and return the selected class.
+    
+    Args:
+        current_class: Fully qualified name to pre-select.
+    
+    Returns:
+        Selected class name, empty string for 'clear', or None if cancelled.
+    """
+    dialog = ScriptClassPickerDialog(current_class=current_class)
+    if dialog.exec_() == QDialog.Accepted:
+        return dialog.get_selected_class()
+    return None
+
+
+def show_quick_actions():
+    """Show the Quick Action command palette and dispatch the chosen action."""
+    dialog = QuickActionPrompt()
+    if dialog.exec_() == QDialog.Accepted:
+        return dialog.get_chosen_action()
+    return None
+
+
+# ============================================================================
+# EBus Handler for direct C++ ↔ Python communication
+# ============================================================================
+
+class CSharpEditorToolsHandler:
+    """
+    Handler for the CSharpEditorToolsBus that provides direct C++ ↔ Python
+    communication without file-based IPC.
+    
+    This replaces the fragile temp file approach with type-safe EBus calls.
+    """
+    
+    def __init__(self):
+        self.project_manager = get_project_manager()
+        self._class_cache = None
+        self._cache_timestamp = 0
+        self._cache_ttl = 5.0  # Cache valid for 5 seconds
+        
+    def GetAvailableScriptClasses(self, scripts_only=True):
+        """
+        Get all available C# script classes with full metadata.
+        
+        Args:
+            scripts_only: If True, only return ScriptComponent subclasses
+            
+        Returns:
+            List of ScriptClassInfo objects
+        """
+        try:
+            import time
+            current_time = time.time()
+            
+            # Check cache validity
+            if self._class_cache is None or (current_time - self._cache_timestamp) > self._cache_ttl:
+                self._refresh_cache()
+            
+            result = []
+            recent_classes = _RecentClassesCache.instance().get()
+            
+            for class_info in self._class_cache:
+                # Filter by scripts_only if requested
+                if scripts_only and not class_info.get("is_script_component", False):
+                    continue
+                
+                # Convert to ScriptClassInfo format for C++
+                info = {
+                    'fullName': class_info.get('full_name', ''),
+                    'className': class_info.get('class_name', ''),
+                    'namespace': class_info.get('namespace', ''),
+                    'projectName': class_info.get('project_name', ''),
+                    'filePath': class_info.get('file_path', ''),
+                    'baseClass': class_info.get('base_class', ''),
+                    'isScriptComponent': class_info.get('is_script_component', False),
+                    'isRecent': class_info.get('full_name', '') in recent_classes
+                }
+                result.append(info)
+            
+            # Sort: recent first, then alphabetical by full name
+            result.sort(key=lambda x: (not x['isRecent'], x['fullName']))
+            
+            return result
+            
+        except Exception as e:
+            print(f"[O3DESharp] Error in GetAvailableScriptClasses: {e}")
+            import traceback
+            traceback.print_exc()
+            return []
+    
+    def GetScriptClassNames(self, scripts_only=True):
+        """
+        Get just the class names for dropdown population.
+        
+        Args:
+            scripts_only: If True, only return ScriptComponent subclasses
+            
+        Returns:
+            List of fully qualified class names (strings)
+        """
+        try:
+            classes = self.GetAvailableScriptClasses(scripts_only)
+            return [cls['fullName'] for cls in classes]
+        except Exception as e:
+            print(f"[O3DESharp] Error in GetScriptClassNames: {e}")
+            return []
+    
+    def ValidateScriptClass(self, class_name):
+        """
+        Validate a script class name.
+        
+        Args:
+            class_name: Fully qualified class name to validate
+            
+        Returns:
+            ScriptValidationResult dict with validation info
+        """
+        try:
+            # Empty class name is valid (means "no script")
+            if not class_name or class_name.strip() == "":
+                return {
+                    'isValid': True,
+                    'message': 'No script class specified',
+                    'filePath': '',
+                    'baseClass': ''
+                }
+            
+            # Basic format check
+            if '.' not in class_name:
+                return {
+                    'isValid': False,
+                    'message': 'Warning: Class should include namespace (e.g., MyGame.MyScript)',
+                    'filePath': '',
+                    'baseClass': ''
+                }
+            
+            # Check if class exists in any project
+            all_classes = self.GetAvailableScriptClasses(scripts_only=False)
+            for cls in all_classes:
+                if cls['fullName'] == class_name:
+                    return {
+                        'isValid': True,
+                        'message': f"Valid script class (base: {cls['baseClass'] or 'none'})",
+                        'filePath': cls['filePath'],
+                        'baseClass': cls['baseClass']
+                    }
+            
+            # Class not found - might be valid but not yet compiled
+            return {
+                'isValid': False,
+                'message': f"Class '{class_name}' not found in any C# project. Ensure it's compiled.",
+                'filePath': '',
+                'baseClass': ''
+            }
+            
+        except Exception as e:
+            print(f"[O3DESharp] Error in ValidateScriptClass: {e}")
+            return {
+                'isValid': False,
+                'message': f'Validation error: {str(e)}',
+                'filePath': '',
+                'baseClass': ''
+            }
+    
+    def OpenScriptPicker(self, current_class):
+        """
+        Open the script class picker dialog.
+        
+        Args:
+            current_class: Currently selected class (for pre-selection)
+            
+        Returns:
+            Selected class name, or empty string if cancelled
+        """
+        try:
+            dialog = ScriptClassPickerDialog(current_class=current_class)
+            if dialog.exec_() == QDialog.Accepted:
+                selected = dialog.get_selected_class()
+                if selected is not None:
+                    # Add to recent classes if not empty
+                    if selected:
+                        self.AddToRecentClasses(selected)
+                    return selected
+            return ""  # Cancelled
+        except Exception as e:
+            print(f"[O3DESharp] Error opening script picker: {e}")
+            import traceback
+            traceback.print_exc()
+            return ""
+    
+    def CreateNewScript(self, default_name="", default_namespace=""):
+        """
+        Open the create new script dialog.
+        
+        Args:
+            default_name: Default class name
+            default_namespace: Default namespace
+            
+        Returns:
+            Created class name (fully qualified), or empty string if cancelled
+        """
+        try:
+            dialog = CreateScriptDialog()
+            
+            # Pre-fill defaults if provided
+            if default_name:
+                dialog.class_name_edit.setText(default_name)
+            if default_namespace:
+                dialog.namespace_edit.setText(default_namespace)
+            
+            if dialog.exec_() == QDialog.Accepted:
+                created_class = dialog.get_created_class_name()
+                if created_class:
+                    # Invalidate cache since we created a new script
+                    self.InvalidateCache()
+                    # Add to recent classes
+                    self.AddToRecentClasses(created_class)
+                    return created_class
+            return ""
+        except Exception as e:
+            print(f"[O3DESharp] Error creating script: {e}")
+            import traceback
+            traceback.print_exc()
+            return ""
+    
+    def OpenScriptInEditor(self, class_name):
+        """
+        Open a script file in the default IDE.
+        
+        Args:
+            class_name: Fully qualified class name to open
+            
+        Returns:
+            True if successful, False otherwise
+        """
+        try:
+            if not class_name:
+                return False
+            
+            # Find the script file
+            all_classes = self.GetAvailableScriptClasses(scripts_only=False)
+            for cls in all_classes:
+                if cls['fullName'] == class_name:
+                    file_path = cls['filePath']
+                    if file_path and Path(file_path).exists():
+                        # Open in default editor
+                        import subprocess
+                        if os.name == 'nt':
+                            os.startfile(file_path)
+                        elif os.name == 'posix':
+                            subprocess.run(['xdg-open', file_path])
+                        else:
+                            subprocess.run(['open', file_path])
+                        print(f"[O3DESharp] Opened script: {file_path}")
+                        return True
+            
+            print(f"[O3DESharp] Script file not found for class: {class_name}")
+            return False
+            
+        except Exception as e:
+            print(f"[O3DESharp] Error opening script in editor: {e}")
+            return False
+    
+    def InvalidateCache(self):
+        """Invalidate the script class cache (force refresh on next query)."""
+        self._class_cache = None
+        self._cache_timestamp = 0
+        print("[O3DESharp] Script class cache invalidated")
+    
+    def AddToRecentClasses(self, class_name):
+        """
+        Add a class to the recent classes list.
+        
+        Args:
+            class_name: Fully qualified class name
+        """
+        try:
+            if class_name:
+                _RecentClassesCache.instance().add(class_name)
+        except Exception as e:
+            print(f"[O3DESharp] Error adding to recent classes: {e}")
+    
+    def _refresh_cache(self):
+        """Refresh the internal class cache from all projects."""
+        import time
+        self._class_cache = []
+        projects = self.project_manager.list_projects()
+        
+        for project in projects:
+            scripts = self.project_manager.list_scripts(project["path"])
+            for script in scripts:
+                script["project_name"] = project["name"]
+                self._class_cache.append(script)
+        
+        self._cache_timestamp = time.time()
+
+
+# Global handler instance
+_handler = None
+
+def get_ebus_handler():
+    """Get or create the global EBus handler instance."""
+    global _handler
+    if _handler is None:
+        _handler = CSharpEditorToolsHandler()
+    return _handler
+
+
+# Connect the handler to the EBus when this module is imported in the editor
+def connect_ebus_handler():
+    """Connect the Python handler to the CSharpEditorToolsBus."""
+    try:
+        handler = get_ebus_handler()
+        
+        # Register handler methods with the EBus
+        # The handler methods will be called when C++ broadcasts on the bus
+        import azlmbr.bus as bus
+        
+        # Note: The actual EBus connection happens via behavior context reflection
+        # Python functions are automatically accessible when the module is loaded
+        print("[O3DESharp] CSharpEditorToolsBus handler initialized")
+        
+    except Exception as e:
+        print(f"[O3DESharp] Note: EBus handler will connect when editor is ready: {e}")
+
+
+# Initialize handler when module loads (connection happens via behavior context)
+try:
+    _handler = CSharpEditorToolsHandler()
+    print("[O3DESharp] C# Editor Tools handler created")
+except Exception as e:
+    print(f"[O3DESharp] Handler initialization deferred: {e}")

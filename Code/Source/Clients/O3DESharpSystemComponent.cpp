@@ -20,6 +20,8 @@
 #include <AzCore/Component/ComponentApplicationBus.h>
 #include <AzCore/std/containers/set.h>
 
+#include <filesystem>
+
 #include <Atom/RPI.Public/FeatureProcessorFactory.h>
 
 #include <Render/O3DESharpFeatureProcessor.h>
@@ -107,6 +109,9 @@ namespace O3DESharp
 
         // Register the feature processor for rendering support
         AZ::RPI::FeatureProcessorFactory::Get()->RegisterFeatureProcessor<O3DESharpFeatureProcessor>();
+
+        // Auto-deploy the latest Coral.Managed and O3DE.Core DLLs before init
+        DeployLatestManagedAssemblies();
 
         // Initialize the Coral .NET host
         InitializeCoralHost();
@@ -357,6 +362,188 @@ namespace O3DESharp
     // ============================================================
     // Coral Host Management
     // ============================================================
+
+    // Helper: find the newest file named |filename| within |searchDirs| (flat)
+    // and |searchRoots| (recursive).  Returns an empty path when not found.
+    static std::filesystem::path FindNewestFile(
+        const char* filename,
+        const AZStd::vector<std::filesystem::path>& searchDirs,
+        const AZStd::vector<std::filesystem::path>& searchRoots)
+    {
+        namespace fs = std::filesystem;
+        fs::path bestPath;
+        fs::file_time_type bestTime{};
+
+        auto consider = [&](const fs::path& candidate)
+        {
+            std::error_code ec;
+            auto t = fs::last_write_time(candidate, ec);
+            if (!ec && t > bestTime)
+            {
+                bestTime = t;
+                bestPath = candidate;
+            }
+        };
+
+        // Direct (fast) check
+        for (const auto& dir : searchDirs)
+        {
+            std::error_code ec;
+            if (!fs::is_directory(dir, ec))
+                continue;
+            auto candidate = dir / filename;
+            if (fs::exists(candidate, ec))
+                consider(candidate);
+        }
+
+        // Recursive search (slower – covers _deps, Build trees, etc.)
+        for (const auto& root : searchRoots)
+        {
+            std::error_code ec;
+            if (!fs::is_directory(root, ec))
+                continue;
+            for (auto it = fs::recursive_directory_iterator(root, fs::directory_options::skip_permission_denied, ec);
+                 it != fs::recursive_directory_iterator(); it.increment(ec))
+            {
+                if (ec)
+                    continue;
+                if (it->is_regular_file(ec) && !ec && it->path().filename() == filename)
+                {
+                    // Skip obj/ref/refint intermediate folders
+                    auto dirName = it->path().parent_path().filename().string();
+                    if (dirName == "obj" || dirName == "ref" || dirName == "refint")
+                        continue;
+                    consider(it->path());
+                }
+            }
+        }
+
+        return bestPath;
+    }
+
+    // Copy |src| to |dest| only when src is newer or dest doesn't exist.
+    static bool DeployIfNewer(const std::filesystem::path& src, const std::filesystem::path& dest)
+    {
+        namespace fs = std::filesystem;
+        std::error_code ec;
+
+        if (!fs::exists(src, ec) || ec)
+            return false;
+
+        bool needsCopy = false;
+        if (!fs::exists(dest, ec) || ec)
+        {
+            needsCopy = true;
+        }
+        else
+        {
+            auto srcTime = fs::last_write_time(src, ec);
+            if (ec) return false;
+            auto destTime = fs::last_write_time(dest, ec);
+            if (ec) return false;
+            needsCopy = srcTime > destTime;
+        }
+
+        if (needsCopy)
+        {
+            fs::create_directories(dest.parent_path(), ec);
+            if (ec)
+            {
+                AZLOG_WARN("DeployIfNewer: Cannot create directory %s: %s",
+                    dest.parent_path().string().c_str(), ec.message().c_str());
+                return false;
+            }
+            fs::copy_file(src, dest, fs::copy_options::overwrite_existing, ec);
+            if (ec)
+            {
+                AZLOG_WARN("DeployIfNewer: Failed to copy %s -> %s: %s",
+                    src.string().c_str(), dest.string().c_str(), ec.message().c_str());
+                return false;
+            }
+            AZLOG_INFO("DeployIfNewer: Deployed %s -> %s", src.string().c_str(), dest.string().c_str());
+            return true;
+        }
+        return false;
+    }
+
+    void O3DESharpSystemComponent::DeployLatestManagedAssemblies()
+    {
+        namespace fs = std::filesystem;
+
+        AZ::IO::FixedMaxPath projectPath = AZ::Utils::GetProjectPath();
+        AZ::IO::FixedMaxPath engineRoot  = AZ::Utils::GetEnginePath();
+        AZ::IO::FixedMaxPath exeDir      = AZ::Utils::GetExecutableDirectory();
+
+        // Build workspace root is typically two levels above the executable directory
+        // e.g. <workspace>/bin/profile/Editor.exe -> <workspace>
+        fs::path exePath(exeDir.c_str());
+        fs::path buildWorkspace = exePath.parent_path().parent_path();
+
+        fs::path gemRoot = fs::path(engineRoot.c_str()) / "Gems" / "O3DESharp";
+        fs::path installRoot = fs::path(engineRoot.c_str()) / "install" / "Gems" / "O3DESharp";
+        fs::path coreScripts = gemRoot / "Assets" / "Scripts" / "O3DE.Core" / "bin";
+        fs::path installScripts = installRoot / "Assets" / "Scripts" / "O3DE.Core" / "bin";
+
+        // Flat directories checked first (fast)
+        AZStd::vector<fs::path> directDirs = {
+            gemRoot / "bin" / "Coral",
+            gemRoot / "bin" / "O3DE.Core",
+            gemRoot / "bin",
+            coreScripts / "Debug" / "net9.0",
+            coreScripts / "Release" / "net9.0",
+            coreScripts / "Debug" / "net8.0",
+            coreScripts / "Release" / "net8.0",
+            installScripts / "Debug" / "net9.0",
+            installScripts / "Release" / "net9.0",
+            installScripts / "Debug" / "net8.0",
+            installScripts / "Release" / "net8.0",
+            exePath,
+        };
+
+        // Broader roots searched recursively
+        AZStd::vector<fs::path> rglobRoots;
+        if (fs::is_directory(buildWorkspace / "Build"))
+            rglobRoots.push_back(buildWorkspace / "Build");
+        if (fs::is_directory(buildWorkspace / "_deps"))
+            rglobRoots.push_back(buildWorkspace / "_deps");
+
+        fs::path deployDir = fs::path(projectPath.c_str()) / "Bin" / "Scripts";
+        fs::path coralDeployDir = deployDir / "Coral";
+
+        // ----- Coral.Managed -----
+        {
+            fs::path newestDll = FindNewestFile("Coral.Managed.dll", directDirs, rglobRoots);
+            if (!newestDll.empty())
+            {
+                bool deployed = DeployIfNewer(newestDll, coralDeployDir / "Coral.Managed.dll");
+                // Also copy companion files from the same directory
+                fs::path srcDir = newestDll.parent_path();
+                for (const char* companion : {"Coral.Managed.runtimeconfig.json", "Coral.Managed.deps.json"})
+                {
+                    fs::path companionSrc = srcDir / companion;
+                    if (fs::exists(companionSrc))
+                        DeployIfNewer(companionSrc, coralDeployDir / companion);
+                }
+                if (deployed)
+                    AZLOG_INFO("O3DESharp: Deployed latest Coral.Managed from %s", newestDll.string().c_str());
+            }
+        }
+
+        // ----- O3DE.Core -----
+        {
+            fs::path newestDll = FindNewestFile("O3DE.Core.dll", directDirs, rglobRoots);
+            if (!newestDll.empty())
+            {
+                bool deployed = DeployIfNewer(newestDll, deployDir / "O3DE.Core.dll");
+                // Companion deps.json
+                fs::path depsSrc = newestDll.parent_path() / "O3DE.Core.deps.json";
+                if (fs::exists(depsSrc))
+                    DeployIfNewer(depsSrc, deployDir / "O3DE.Core.deps.json");
+                if (deployed)
+                    AZLOG_INFO("O3DESharp: Deployed latest O3DE.Core from %s", newestDll.string().c_str());
+            }
+        }
+    }
 
     void O3DESharpSystemComponent::InitializeCoralHost()
     {

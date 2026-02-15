@@ -13,6 +13,7 @@
 #include <AzCore/Math/Quaternion.h>
 #include <AzCore/Math/Transform.h>
 #include <AzCore/Component/EntityId.h>
+#include <AzFramework/Input/Channels/InputChannel.h>
 
 #include <Coral/String.hpp>
 
@@ -29,7 +30,7 @@ namespace O3DESharp
      * Interop structures for passing data between C++ and C#
      * These must match the layout of corresponding C# structs
      */
-    
+
     // Matches O3DE.Vector3 in C#
     struct InteropVector3
     {
@@ -54,7 +55,7 @@ namespace O3DESharp
 
         InteropQuaternion() : x(0), y(0), z(0), w(1) {}
         InteropQuaternion(float inX, float inY, float inZ, float inW) : x(inX), y(inY), z(inZ), w(inW) {}
-        InteropQuaternion(const AZ::Quaternion& quat) 
+        InteropQuaternion(const AZ::Quaternion& quat)
             : x(quat.GetX()), y(quat.GetY()), z(quat.GetZ()), w(quat.GetW()) {}
 
         AZ::Quaternion ToAZ() const { return AZ::Quaternion(x, y, z, w); }
@@ -62,11 +63,11 @@ namespace O3DESharp
 
     /**
      * ScriptBindings - Static class that registers all C++ functions exposed to C#
-     * 
+     *
      * These are "internal calls" in .NET terminology - native functions that can be
-     * called from managed code using [MethodImpl(MethodImplOptions.InternalCall)]
-     * 
-     * The functions registered here correspond to extern methods in the C# O3DE.Core assembly.
+     * called from managed code.
+     *
+     * The functions registered here correspond to function pointer fields in InternalCalls.cs.
      */
     class ScriptBindings
     {
@@ -79,41 +80,52 @@ namespace O3DESharp
 
     private:
         // ============================================================
-        // Logging Functions
-        // Exposed to C# as O3DE.Debug.Log, O3DE.Debug.LogWarning, etc.
+        // Input Helpers
         // ============================================================
-        
+
+        /// Maps a C# KeyCode integer to an O3DE InputChannelId
+        static const AzFramework::InputChannelId& KeyCodeToChannelId(int keyCode);
+
+        /// Maps a C# mouse button integer to an O3DE InputChannelId
+        static const AzFramework::InputChannelId& MouseButtonToChannelId(int button);
+
+        // ============================================================
+        // Logging Functions
+        // ============================================================
+
         static void Log_Info(Coral::String message);
         static void Log_Warning(Coral::String message);
         static void Log_Error(Coral::String message);
 
         // ============================================================
         // Entity Functions
-        // Exposed to C# as methods on O3DE.Entity
         // ============================================================
-        
+
         static bool Entity_IsValid(AZ::u64 entityId);
         static Coral::String Entity_GetName(AZ::u64 entityId);
         static void Entity_SetName(AZ::u64 entityId, Coral::String name);
         static bool Entity_IsActive(AZ::u64 entityId);
         static void Entity_Activate(AZ::u64 entityId);
         static void Entity_Deactivate(AZ::u64 entityId);
+        static void Entity_Destroy(AZ::u64 entityId);
+        static AZ::u64 Entity_FindByName(Coral::String name);
+        static int Entity_GetChildCount(AZ::u64 entityId);
+        static AZ::u64 Entity_GetChildAtIndex(AZ::u64 entityId, int index);
 
         // ============================================================
         // Transform Functions
-        // Exposed to C# as methods on O3DE.TransformComponent
         // ============================================================
-        
+
         static InteropVector3 Transform_GetWorldPosition(AZ::u64 entityId);
         static void Transform_SetWorldPosition(AZ::u64 entityId, InteropVector3 position);
         static InteropVector3 Transform_GetLocalPosition(AZ::u64 entityId);
         static void Transform_SetLocalPosition(AZ::u64 entityId, InteropVector3 position);
-        
+
         static InteropQuaternion Transform_GetWorldRotation(AZ::u64 entityId);
         static void Transform_SetWorldRotation(AZ::u64 entityId, InteropQuaternion rotation);
         static InteropVector3 Transform_GetWorldRotationEuler(AZ::u64 entityId);
         static void Transform_SetWorldRotationEuler(AZ::u64 entityId, InteropVector3 eulerDegrees);
-        
+
         static InteropVector3 Transform_GetLocalScale(AZ::u64 entityId);
         static void Transform_SetLocalScale(AZ::u64 entityId, InteropVector3 scale);
         static float Transform_GetLocalUniformScale(AZ::u64 entityId);
@@ -128,22 +140,22 @@ namespace O3DESharp
 
         // ============================================================
         // Input Functions
-        // Exposed to C# as O3DE.Input static methods
         // ============================================================
-        
+
         static bool Input_IsKeyDown(int keyCode);
         static bool Input_IsKeyPressed(int keyCode);
         static bool Input_IsKeyReleased(int keyCode);
         static bool Input_IsMouseButtonDown(int button);
+        static bool Input_IsMouseButtonPressed(int button);
+        static bool Input_IsMouseButtonReleased(int button);
         static InteropVector3 Input_GetMousePosition();
         static InteropVector3 Input_GetMouseDelta();
         static float Input_GetAxis(Coral::String axisName);
 
         // ============================================================
         // Time Functions
-        // Exposed to C# as O3DE.Time static methods
         // ============================================================
-        
+
         static float Time_GetDeltaTime();
         static float Time_GetTotalTime();
         static float Time_GetTimeScale();
@@ -151,10 +163,9 @@ namespace O3DESharp
         static AZ::u64 Time_GetFrameCount();
 
         // ============================================================
-        // Physics Functions (basic)
-        // Exposed to C# as O3DE.Physics static methods
+        // Physics Functions
         // ============================================================
-        
+
         struct RaycastHit
         {
             bool hit;
@@ -163,14 +174,13 @@ namespace O3DESharp
             float distance;
             AZ::u64 entityId;
         };
-        
+
         static RaycastHit Physics_Raycast(InteropVector3 origin, InteropVector3 direction, float maxDistance);
 
         // ============================================================
         // Component Functions
-        // Generic component access
         // ============================================================
-        
+
         static bool Component_HasComponent(AZ::u64 entityId, Coral::String componentTypeName);
     };
 

@@ -41,6 +41,10 @@ namespace O3DE
         internal static delegate* unmanaged<ulong, Bool32> Entity_IsActive;
         internal static delegate* unmanaged<ulong, void> Entity_Activate;
         internal static delegate* unmanaged<ulong, void> Entity_Deactivate;
+        internal static delegate* unmanaged<ulong, void> Entity_Destroy;
+        internal static delegate* unmanaged<NativeString, ulong> Entity_FindByName;
+        internal static delegate* unmanaged<ulong, int> Entity_GetChildCount;
+        internal static delegate* unmanaged<ulong, int, ulong> Entity_GetChildAtIndex;
 
         // ============================================================
         // Transform Functions
@@ -72,6 +76,8 @@ namespace O3DE
         internal static delegate* unmanaged<int, Bool32> Input_IsKeyPressed;
         internal static delegate* unmanaged<int, Bool32> Input_IsKeyReleased;
         internal static delegate* unmanaged<int, Bool32> Input_IsMouseButtonDown;
+        internal static delegate* unmanaged<int, Bool32> Input_IsMouseButtonPressed;
+        internal static delegate* unmanaged<int, Bool32> Input_IsMouseButtonReleased;
         internal static delegate* unmanaged<Vector3> Input_GetMousePosition;
         internal static delegate* unmanaged<Vector3> Input_GetMouseDelta;
         internal static delegate* unmanaged<NativeString, float> Input_GetAxis;

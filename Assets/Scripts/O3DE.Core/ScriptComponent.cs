@@ -7,6 +7,7 @@
  */
 
 using System;
+using System.Collections.Generic;
 
 namespace O3DE
 {
@@ -222,6 +223,126 @@ namespace O3DE
         protected void DeactivateEntity()
         {
             Entity.Deactivate();
+        }
+
+        #endregion
+
+        #region Delayed Actions
+
+        /// <summary>
+        /// Internal representation of a scheduled action.
+        /// </summary>
+        private class ScheduledAction
+        {
+            public Action Callback;
+            public float TimeRemaining;
+            public float RepeatInterval; // 0 = one-shot
+            public bool Cancelled;
+
+            public ScheduledAction(Action callback, float delay, float repeatInterval = 0f)
+            {
+                Callback = callback;
+                TimeRemaining = delay;
+                RepeatInterval = repeatInterval;
+                Cancelled = false;
+            }
+        }
+
+        /// <summary>
+        /// List of pending scheduled actions.
+        /// </summary>
+        private List<ScheduledAction>? m_scheduledActions;
+
+        /// <summary>
+        /// Invokes an action after a delay (in seconds).
+        /// </summary>
+        /// <param name="action">The action to invoke</param>
+        /// <param name="delay">Delay in seconds before invoking</param>
+        public void Invoke(Action action, float delay)
+        {
+            m_scheduledActions ??= new List<ScheduledAction>();
+            m_scheduledActions.Add(new ScheduledAction(action, delay));
+        }
+
+        /// <summary>
+        /// Invokes an action repeatedly, starting after an initial delay.
+        /// </summary>
+        /// <param name="action">The action to invoke</param>
+        /// <param name="delay">Initial delay in seconds</param>
+        /// <param name="repeatInterval">Time between subsequent invocations</param>
+        public void InvokeRepeating(Action action, float delay, float repeatInterval)
+        {
+            m_scheduledActions ??= new List<ScheduledAction>();
+            m_scheduledActions.Add(new ScheduledAction(action, delay, repeatInterval));
+        }
+
+        /// <summary>
+        /// Cancels all scheduled invocations for this component.
+        /// </summary>
+        public void CancelInvoke()
+        {
+            m_scheduledActions?.Clear();
+        }
+
+        /// <summary>
+        /// Cancels all scheduled invocations of a specific action.
+        /// </summary>
+        /// <param name="action">The action to cancel</param>
+        public void CancelInvoke(Action action)
+        {
+            if (m_scheduledActions == null) return;
+            for (int i = m_scheduledActions.Count - 1; i >= 0; i--)
+            {
+                if (m_scheduledActions[i].Callback == action)
+                {
+                    m_scheduledActions[i].Cancelled = true;
+                }
+            }
+        }
+
+        /// <summary>
+        /// Processes pending scheduled actions. Called internally by the C++ tick handler.
+        /// DO NOT call this directly.
+        /// </summary>
+        internal void ProcessPendingInvocations(float deltaTime)
+        {
+            if (m_scheduledActions == null || m_scheduledActions.Count == 0)
+                return;
+
+            // Process backwards so we can safely remove items
+            for (int i = m_scheduledActions.Count - 1; i >= 0; i--)
+            {
+                var action = m_scheduledActions[i];
+                if (action.Cancelled)
+                {
+                    m_scheduledActions.RemoveAt(i);
+                    continue;
+                }
+
+                action.TimeRemaining -= deltaTime;
+                if (action.TimeRemaining <= 0f)
+                {
+                    try
+                    {
+                        action.Callback();
+                    }
+                    catch (Exception ex)
+                    {
+                        Debug.LogError($"Error in scheduled action: {ex.Message}");
+                    }
+
+                    if (action.RepeatInterval > 0f)
+                    {
+                        // Reschedule for next repeat
+                        action.TimeRemaining += action.RepeatInterval;
+                    }
+                    else
+                    {
+                        // One-shot: remove
+                        m_scheduledActions.RemoveAt(i);
+                    }
+                }
+            }
         }
 
         #endregion

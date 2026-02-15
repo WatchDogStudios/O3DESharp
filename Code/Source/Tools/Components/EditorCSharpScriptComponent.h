@@ -10,7 +10,6 @@
 
 #include <Scripting/CSharpScriptComponent.h>
 #include <AzToolsFramework/ToolsComponents/EditorComponentBase.h>
-#include <AzToolsFramework/ToolsComponents/EditorComponentAdapter.h>
 
 namespace O3DESharp
 {
@@ -54,6 +53,7 @@ namespace O3DESharp
      * - Visual feedback on script status
      * - Browse button for script selection (via Python editor tools)
      * - Create new script option
+     * - Edit script in IDE
      */
     class EditorCSharpScriptComponent
         : public AzToolsFramework::Components::EditorComponentBase
@@ -92,9 +92,6 @@ namespace O3DESharp
 
         //! Callback when script class name changes
         AZ::Crc32 OnScriptClassNameChanged();
-        
-        //! Get list of available C# script classes for the ComboBox
-        AZStd::vector<AZStd::string> GetAvailableScriptClasses() const;
 
     protected:
         // AZ::Component

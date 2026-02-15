@@ -8,6 +8,7 @@
 
 #include <AzCore/Serialization/SerializeContext.h>
 #include "O3DESharpEditorSystemComponent.h"
+#include "CSharpEditorToolsBus.h"
 
 #include <O3DESharp/O3DESharpTypeIds.h>
 
@@ -36,10 +37,30 @@ namespace O3DESharp
         // Reflect base class first to ensure full hierarchy is registered
         BaseSystemComponent::Reflect(context);
 
+        // Reflect CSharpEditorTools types for Python binding
+        ScriptClassInfo::Reflect(context);
+        ScriptValidationResult::Reflect(context);
+
         if (auto serializeContext = azrtti_cast<AZ::SerializeContext*>(context))
         {
             serializeContext->Class<O3DESharpEditorSystemComponent, O3DESharpSystemComponent>()
                 ->Version(0);
+        }
+
+        if (auto* behaviorContext = azrtti_cast<AZ::BehaviorContext*>(context))
+        {
+            behaviorContext->EBus<CSharpEditorToolsBus>("CSharpEditorToolsBus")
+                ->Attribute(AZ::Script::Attributes::Scope, AZ::Script::Attributes::ScopeFlags::Automation)
+                ->Attribute(AZ::Script::Attributes::Module, "editor")
+                ->Event("GetAvailableScriptClasses", &CSharpEditorToolsBus::Events::GetAvailableScriptClasses)
+                ->Event("GetScriptClassNames", &CSharpEditorToolsBus::Events::GetScriptClassNames)
+                ->Event("ValidateScriptClass", &CSharpEditorToolsBus::Events::ValidateScriptClass)
+                ->Event("OpenScriptPicker", &CSharpEditorToolsBus::Events::OpenScriptPicker)
+                ->Event("CreateNewScript", &CSharpEditorToolsBus::Events::CreateNewScript)
+                ->Event("OpenScriptInEditor", &CSharpEditorToolsBus::Events::OpenScriptInEditor)
+                ->Event("InvalidateCache", &CSharpEditorToolsBus::Events::InvalidateCache)
+                ->Event("AddToRecentClasses", &CSharpEditorToolsBus::Events::AddToRecentClasses)
+                ;
         }
     }
 

@@ -7,6 +7,7 @@
  */
 
 #include "CoralHostManager.h"
+#include "ScriptBindings.h"
 
 #include <AzCore/Console/ILogger.h>
 #include <AzCore/IO/FileIO.h>
@@ -481,17 +482,12 @@ namespace O3DESharp
 
         AZLOG_INFO("CoralHostManager: Registering internal calls...");
 
-        // Internal calls are registered in ScriptBindings.cpp
-        // This method is called after the core assembly is loaded to allow
-        // ScriptBindings to register all the C++ functions exposed to C#
+        // Register all C++ functions exposed to C# via ScriptBindings
+        // This sets the static function pointer fields in O3DE.InternalCalls (C#)
+        // Must happen BEFORE user assemblies are loaded, in case loading triggers
+        // type initialization that calls into O3DE.Core
+        ScriptBindings::RegisterAll(m_coreAssembly);
 
-        // The actual registration happens via:
-        // m_coreAssembly->AddInternalCall("O3DE.InternalCalls", "FunctionName", &FunctionPtr);
-        // m_coreAssembly->UploadInternalCalls();
-
-        // For now, we defer to ScriptBindings::RegisterAll() which should be called
-        // after this manager is fully initialized
-
-        AZLOG_INFO("CoralHostManager: Internal calls will be registered by ScriptBindings");
+        AZLOG_INFO("CoralHostManager: Internal calls registered successfully");
     }
 } // namespace O3DESharp

@@ -9,8 +9,11 @@
 set(FILES
     Source/Tools/O3DESharpEditorSystemComponent.cpp
     Source/Tools/O3DESharpEditorSystemComponent.h
+    Source/Tools/CSharpEditorToolsBus.h
     Source/Tools/Components/EditorO3DESharpComponent.h
     Source/Tools/Components/EditorO3DESharpComponent.cpp
     Source/Tools/Components/EditorCSharpScriptComponent.h
     Source/Tools/Components/EditorCSharpScriptComponent.cpp
+    Source/Tools/Components/CSharpScriptClassPropertyHandler.h
+    Source/Tools/Components/CSharpScriptClassPropertyHandler.cpp
 )

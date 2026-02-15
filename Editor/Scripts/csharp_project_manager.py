@@ -135,32 +135,63 @@ class CSharpProjectManager:
         # Path to Coral.Managed.dll - used for C# project references (NOT the O3DE.Core runtime API)
         self.coral_managed_path = self._get_coral_managed_path()
         self.user_assembly_path = self._get_user_assembly_path()
+        # Path to O3DE.Core.dll - used for C# project references
+        self.o3de_core_path = self._get_o3de_core_path()
+        
+        # In-memory cache for script discovery (file_path -> (mtime, parsed_data))
+        self._script_cache: Dict[str, tuple] = {}
+        
+        # Cache for list_scripts results per project (project_path -> (timestamp, scripts))
+        self._project_scripts_cache: Dict[str, tuple] = {}
+        self._cache_ttl = 5.0  # Cache valid for 5 seconds
         
         # Automatically ensure runtime dependencies are deployed
         self._auto_deploy_runtime()
     
     def _auto_deploy_runtime(self):
         """
-        Automatically deploy Coral and O3DE.Core if they are not already deployed.
+        Automatically deploy Coral and O3DE.Core if they are not already deployed,
+        or if the deployed versions are older than the latest available build output.
         This runs silently during initialization to ensure the C# scripting system works.
         """
         try:
-            # Check and deploy Coral if needed
-            coral_status = self.check_coral_deployment()
-            if not coral_status["deployed"]:
-                coral_result = self.deploy_coral()
-                if coral_result["success"]:
-                    print(f"O3DESharp: Auto-deployed Coral to {coral_result.get('deploy_path', 'project')}")
-            
-            # Check and deploy O3DE.Core if needed
-            core_status = self.check_o3de_core_deployment()
-            if not core_status["deployed"]:
-                core_result = self.deploy_o3de_core()
-                if core_result["success"]:
-                    print(f"O3DESharp: Auto-deployed O3DE.Core to {core_result.get('deploy_path', 'project')}")
+            self._auto_deploy_one(
+                "Coral",
+                self.get_coral_deploy_path() / "Coral.Managed.dll",
+                self.find_coral_source_files,
+                self.deploy_coral
+            )
+            self._auto_deploy_one(
+                "O3DE.Core",
+                self.get_o3de_core_deploy_path() / "O3DE.Core.dll",
+                self.find_o3de_core_source_files,
+                self.deploy_o3de_core
+            )
         except Exception as e:
             # Don't fail initialization if auto-deploy fails
             print(f"O3DESharp: Auto-deployment warning: {e}")
+
+    def _auto_deploy_one(self, label: str, deployed_dll: Path, find_fn, deploy_fn):
+        """
+        Deploy a component if it is missing or stale compared to the latest source.
+        """
+        source_files = find_fn()
+        source_dll = source_files.get("dll")
+
+        needs_deploy = False
+        if not deployed_dll.exists():
+            needs_deploy = True
+        elif source_dll and source_dll.exists():
+            # Redeploy if the source is newer than the currently deployed copy
+            if source_dll.stat().st_mtime > deployed_dll.stat().st_mtime:
+                needs_deploy = True
+
+        if needs_deploy:
+            result = deploy_fn()
+            if result["success"]:
+                print(f"O3DESharp: Auto-deployed {label} to {result.get('deploy_path', 'project')}")
+            else:
+                print(f"O3DESharp: Failed to auto-deploy {label}: {result.get('message', 'unknown error')}")
     
     def ensure_runtime_deployed(self) -> Dict[str, Any]:
         """
@@ -363,6 +394,14 @@ class CSharpProjectManager:
         # Default path
         return str(self.project_path / "Bin" / "Scripts" / "GameScripts.dll")
     
+    def _get_o3de_core_path(self) -> str:
+        """
+        Get the path to O3DE.Core.dll for project references.
+        
+        Returns the deployed location in the project's Bin/Scripts folder.
+        """
+        return str(self.project_path / "Bin" / "Scripts" / "O3DE.Core.dll")
+
     def get_user_assembly_path(self) -> str:
         """Get the current user assembly path."""
         return self.user_assembly_path
@@ -472,79 +511,121 @@ class CSharpProjectManager:
         """Get the path where Coral files should be deployed."""
         return self.project_path / "Bin" / "Scripts" / "Coral"
     
-    def find_coral_source_files(self) -> Dict[str, Path]:
+    @staticmethod
+    def _find_latest_file(filename: str, search_dirs: list, rglob_roots: list = None) -> 'Path | None':
         """
-        Find Coral.Managed build output files from various possible locations.
-        
-        Returns:
-            Dict mapping file type to Path, or empty dict if not found
+        Scan *search_dirs* (direct check) and *rglob_roots* (recursive search)
+        for *filename* and return the path with the newest modification time,
+        or None if the file could not be found anywhere.
+        """
+        best_path: 'Path | None' = None
+        best_mtime: float = 0.0
+
+        # Direct locations first (fast)
+        for d in search_dirs:
+            candidate = d / filename
+            if candidate.is_file():
+                mt = candidate.stat().st_mtime
+                if mt > best_mtime:
+                    best_mtime = mt
+                    best_path = candidate
+
+        # Recursive search in broader roots (slower, but catches CMake _deps/build trees)
+        for root in (rglob_roots or []):
+            if not root.is_dir():
+                continue
+            try:
+                for candidate in root.rglob(filename):
+                    # Skip obj/intermediate directories to avoid ref-assembly copies
+                    parts_lower = [p.lower() for p in candidate.parts]
+                    if 'obj' in parts_lower or 'ref' in parts_lower or 'refint' in parts_lower:
+                        continue
+                    mt = candidate.stat().st_mtime
+                    if mt > best_mtime:
+                        best_mtime = mt
+                        best_path = candidate
+            except OSError:
+                continue
+
+        return best_path
+
+    def _get_assembly_search_dirs(self):
+        """
+        Return (direct_dirs, rglob_roots) tuples for both Coral and O3DE.Core
+        searches.  These cover the gem staging folder, dotnet build outputs,
+        CMake build output, install tree, and the executable folder.
         """
         engine_root = Path(paths.engroot)
-        
-        # Possible locations for Coral.Managed build output
-        # Priority: CMake staging dir > User-configured path > Build output > Source location
-        search_roots = [
-            # CMake staging directory (created by O3DESharp.StageCoral target)
-            engine_root / "Gems" / "O3DESharp" / "bin" / "Coral",
-            # CMake build output directory (FetchContent places it in _deps)
-            engine_root / "build",
-            engine_root / "out",
-            # Direct gem location
-            engine_root / "Gems" / "O3DESharp" / "External" / "Coral",
-            engine_root / "Gems" / "O3DESharp" / "bin",
-            # User-configured path directory
+        gem_root = engine_root / "Gems" / "O3DESharp"
+        exe_folder = Path(paths.executableFolder)
+        # The CMake build workspace is typically the parent of the executable folder
+        # e.g. F:/o3de/workspace/bin/profile -> F:/o3de/workspace
+        build_workspace = exe_folder.parent.parent if exe_folder.exists() else None
+
+        direct_dirs = [
+            # Gem staging (committed / CMake copy)
+            gem_root / "bin" / "Coral",
+            gem_root / "bin" / "O3DE.Core",
+            gem_root / "bin",
+            # dotnet build outputs (all config x TFM combos)
+            gem_root / "Assets" / "Scripts" / "O3DE.Core" / "bin" / "Debug" / "net9.0",
+            gem_root / "Assets" / "Scripts" / "O3DE.Core" / "bin" / "Release" / "net9.0",
+            gem_root / "Assets" / "Scripts" / "O3DE.Core" / "bin" / "Debug" / "net8.0",
+            gem_root / "Assets" / "Scripts" / "O3DE.Core" / "bin" / "Release" / "net8.0",
+            # Install tree copies
+            engine_root / "install" / "Gems" / "O3DESharp" / "Assets" / "Scripts" / "O3DE.Core" / "bin" / "Debug" / "net9.0",
+            engine_root / "install" / "Gems" / "O3DESharp" / "Assets" / "Scripts" / "O3DE.Core" / "bin" / "Release" / "net9.0",
+            engine_root / "install" / "Gems" / "O3DESharp" / "Assets" / "Scripts" / "O3DE.Core" / "bin" / "Debug" / "net8.0",
+            engine_root / "install" / "Gems" / "O3DESharp" / "Assets" / "Scripts" / "O3DE.Core" / "bin" / "Release" / "net8.0",
         ]
-        
-        # If user has configured a coral managed path, check its directory too
+
+        # User-configured Coral.Managed path directory
         if self.coral_managed_path:
             managed_dir = Path(self.coral_managed_path).parent
-            search_roots.insert(0, managed_dir)
-        
-        # Files we need to find
-        required_files = {
-            "dll": "Coral.Managed.dll",
-            "runtimeconfig": "Coral.Managed.runtimeconfig.json",
-            "deps": "Coral.Managed.deps.json"
-        }
-        
-        found_files = {}
-        
-        for root in search_roots:
-            if not root.exists():
-                continue
-            
-            # First check if files are directly in this directory
-            all_found_direct = True
-            for key, filename in required_files.items():
-                file_path = root / filename
-                if file_path.exists():
-                    found_files[key] = file_path
-                else:
-                    all_found_direct = False
-            
-            if all_found_direct and "dll" in found_files:
-                return found_files
-            found_files.clear()
-            
-            # Search recursively for Coral.Managed.dll
-            for dll_path in root.rglob("Coral.Managed.dll"):
-                dll_dir = dll_path.parent
-                
-                # Check if all required files are in the same directory
-                all_found = True
-                for key, filename in required_files.items():
-                    file_path = dll_dir / filename
-                    if file_path.exists():
-                        found_files[key] = file_path
-                    else:
-                        all_found = False
-                        break
-                
-                if all_found:
-                    return found_files
-                found_files.clear()
-        
-        return found_files
+            if managed_dir not in direct_dirs:
+                direct_dirs.insert(0, managed_dir)
+
+        rglob_roots = []
+        # CMake build workspace (contains _deps/coral-build, Build/profile, etc.)
+        if build_workspace and build_workspace.is_dir():
+            rglob_roots.append(build_workspace / "Build")
+            rglob_roots.append(build_workspace / "_deps")
+        # Fallback: engine-level build / out directories
+        for d in [engine_root / "build", engine_root / "out"]:
+            if d.is_dir() and d not in rglob_roots:
+                rglob_roots.append(d)
+
+        return direct_dirs, rglob_roots
+
+    def find_coral_source_files(self) -> Dict[str, Path]:
+        """
+        Find the **newest** Coral.Managed build output files across all known
+        build-output and staging locations.
+
+        Returns:
+            Dict mapping file type to Path, or empty dict if not found.
+        """
+        direct_dirs, rglob_roots = self._get_assembly_search_dirs()
+
+        dll_path = self._find_latest_file("Coral.Managed.dll", direct_dirs, rglob_roots)
+        if dll_path is None:
+            return {}
+
+        # Companion files live next to the DLL
+        result: Dict[str, Path] = {"dll": dll_path}
+        dll_dir = dll_path.parent
+        for key, name in [("runtimeconfig", "Coral.Managed.runtimeconfig.json"),
+                          ("deps", "Coral.Managed.deps.json")]:
+            companion = dll_dir / name
+            if companion.is_file():
+                result[key] = companion
+            else:
+                # Companion might be newer elsewhere; search broadly
+                found = self._find_latest_file(name, direct_dirs, rglob_roots)
+                if found:
+                    result[key] = found
+
+        return result
     
     def deploy_coral(self, source_path: str = None) -> Dict[str, Any]:
         """
@@ -652,54 +733,30 @@ class CSharpProjectManager:
     
     def find_o3de_core_source_files(self) -> Dict[str, Path]:
         """
-        Find O3DE.Core build output files from various possible locations.
-        
+        Find the **newest** O3DE.Core build output files across all known
+        build-output and staging locations.
+
         Returns:
-            Dict mapping file type to Path, or empty dict if not found
+            Dict mapping file type to Path, or empty dict if not found.
         """
-        engine_root = Path(paths.engroot)
-        
-        # Possible locations for O3DE.Core build output
-        # Priority: CMake staging dir > Release build > Debug build
-        search_locations = [
-            # CMake staging directory (created by O3DESharp.StageO3DECore target)
-            engine_root / "Gems" / "O3DESharp" / "bin" / "O3DE.Core",
-            # Direct C# build output - Release
-            engine_root / "Gems" / "O3DESharp" / "Assets" / "Scripts" / "O3DE.Core" / "bin" / "Release" / "net8.0",
-            # Direct C# build output - Debug  
-            engine_root / "Gems" / "O3DESharp" / "Assets" / "Scripts" / "O3DE.Core" / "bin" / "Debug" / "net8.0",
-            # Alternative net9.0 targets
-            engine_root / "Gems" / "O3DESharp" / "Assets" / "Scripts" / "O3DE.Core" / "bin" / "Release" / "net9.0",
-            engine_root / "Gems" / "O3DESharp" / "Assets" / "Scripts" / "O3DE.Core" / "bin" / "Debug" / "net9.0",
-        ]
-        
-        # Files we need to find
-        required_files = {
-            "dll": "O3DE.Core.dll",
-            "deps": "O3DE.Core.deps.json"
-        }
-        
-        found_files = {}
-        
-        for search_root in search_locations:
-            if not search_root.exists():
-                continue
-            
-            # Check for files directly in this location
-            all_found = True
-            for key, filename in required_files.items():
-                file_path = search_root / filename
-                if file_path.exists():
-                    found_files[key] = file_path
-                else:
-                    all_found = False
-                    break
-            
-            if all_found:
-                return found_files
-            found_files.clear()
-        
-        return found_files
+        direct_dirs, rglob_roots = self._get_assembly_search_dirs()
+
+        dll_path = self._find_latest_file("O3DE.Core.dll", direct_dirs, rglob_roots)
+        if dll_path is None:
+            return {}
+
+        result: Dict[str, Path] = {"dll": dll_path}
+        dll_dir = dll_path.parent
+        for key, name in [("deps", "O3DE.Core.deps.json")]:
+            companion = dll_dir / name
+            if companion.is_file():
+                result[key] = companion
+            else:
+                found = self._find_latest_file(name, direct_dirs, rglob_roots)
+                if found:
+                    result[key] = found
+
+        return result
     
     def deploy_o3de_core(self, source_path: str = None) -> Dict[str, Any]:
         """
@@ -1160,28 +1217,115 @@ class CSharpProjectManager:
         return projects
     
     def list_scripts(self, project_path: Path) -> List[Dict[str, Any]]:
-        """List all C# scripts in a project."""
-        scripts = []
-        project_path = Path(project_path)
+        """
+        List all C# scripts in a project with intelligent caching.
         
+        Uses in-memory cache based on file modification times to avoid
+        re-parsing files that haven't changed.
+        """
+        import time
+        project_path = Path(project_path)
+        project_key = str(project_path)
+        
+        # Check project-level cache
+        current_time = time.time()
+        if project_key in self._project_scripts_cache:
+            cache_time, cached_scripts = self._project_scripts_cache[project_key]
+            if (current_time - cache_time) < self._cache_ttl:
+                # Check if any files have been modified
+                cache_valid = True
+                for cs_file in project_path.glob("*.cs"):
+                    file_key = str(cs_file)
+                    if file_key in self._script_cache:
+                        cached_mtime, _ = self._script_cache[file_key]
+                        try:
+                            current_mtime = cs_file.stat().st_mtime
+                            if current_mtime != cached_mtime:
+                                cache_valid = False
+                                break
+                        except:
+                            cache_valid = False
+                            break
+                    else:
+                        # New file found
+                        cache_valid = False
+                        break
+                
+                if cache_valid:
+                    return cached_scripts
+        
+        # Cache miss or invalid - rebuild
+        scripts = []
         for cs_file in project_path.glob("*.cs"):
-            # Parse the file to extract class info
-            content = cs_file.read_text()
-            class_name = cs_file.stem
-            namespace = self._extract_namespace(content)
-            base_class = self._extract_base_class(content, class_name)
+            file_key = str(cs_file)
+            try:
+                current_mtime = cs_file.stat().st_mtime
+            except:
+                continue
             
-            scripts.append({
-                "file_name": cs_file.name,
-                "class_name": class_name,
-                "full_name": f"{namespace}.{class_name}" if namespace else class_name,
-                "namespace": namespace,
-                "base_class": base_class,
-                "is_script_component": base_class == "ScriptComponent",
-                "path": str(cs_file)
-            })
+            # Check file-level cache
+            if file_key in self._script_cache:
+                cached_mtime, cached_data = self._script_cache[file_key]
+                if cached_mtime == current_mtime:
+                    # File unchanged, use cached data
+                    scripts.append(cached_data)
+                    continue
+            
+            # Parse file (not in cache or modified)
+            try:
+                content = cs_file.read_text(encoding='utf-8', errors='ignore')
+                class_name = cs_file.stem
+                namespace = self._extract_namespace(content)
+                base_class = self._extract_base_class(content, class_name)
+                
+                script_data = {
+                    "file_name": cs_file.name,
+                    "class_name": class_name,
+                    "full_name": f"{namespace}.{class_name}" if namespace else class_name,
+                    "namespace": namespace,
+                    "base_class": base_class,
+                    "is_script_component": base_class == "ScriptComponent",
+                    "file_path": str(cs_file),  # Changed from 'path' to 'file_path' for consistency
+                    "path": str(cs_file)  # Keep for backward compatibility
+                }
+                
+                # Update file-level cache
+                self._script_cache[file_key] = (current_mtime, script_data)
+                scripts.append(script_data)
+                
+            except Exception as e:
+                print(f"[O3DESharp] Error parsing {cs_file.name}: {e}")
+                continue
+        
+        # Update project-level cache
+        self._project_scripts_cache[project_key] = (current_time, scripts)
         
         return scripts
+    
+    def invalidate_cache(self, project_path: Path = None):
+        """
+        Invalidate the script discovery cache.
+        
+        Args:
+            project_path: Optional specific project to invalidate. If None, clears all caches.
+        """
+        if project_path is None:
+            self._script_cache.clear()
+            self._project_scripts_cache.clear()
+            print("[O3DESharp] Cleared all script caches")
+        else:
+            project_key = str(Path(project_path))
+            if project_key in self._project_scripts_cache:
+                del self._project_scripts_cache[project_key]
+            
+            # Also clear file-level cache for this project
+            project_path = Path(project_path)
+            for cs_file in project_path.glob("*.cs"):
+                file_key = str(cs_file)
+                if file_key in self._script_cache:
+                    del self._script_cache[file_key]
+            
+            print(f"[O3DESharp] Cleared cache for project: {project_path}")
     
     def _extract_namespace(self, content: str) -> Optional[str]:
         """Extract namespace from C# file content."""

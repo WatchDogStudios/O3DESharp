@@ -1,0 +1,47 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>netstandard2.0</TargetFramework>
+    <LangVersion>latest</LangVersion>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>disable</ImplicitUsings>
+    <RootNamespace>O3DESharp.BindingGenerator.Tasks</RootNamespace>
+    <AssemblyName>O3DESharp.BindingGenerator.Tasks</AssemblyName>
+    <Version>1.0.0</Version>
+    <Authors>Contributors to the Open 3D Engine Project</Authors>
+    <Company>Contributors to the Open 3D Engine Project</Company>
+    <Product>O3DE C# Binding Generator MSBuild Tasks</Product>
+    <Description>MSBuild tasks for design-time C# binding generation</Description>
+    <Copyright>Copyright (c) Contributors to the Open 3D Engine Project</Copyright>
+    
+    <!-- Important for MSBuild tasks -->
+    <CopyLocalLockFileAssemblies>true</CopyLocalLockFileAssemblies>
+    <GeneratePackageOnBuild>true</GeneratePackageOnBuild>
+    <PackageId>O3DESharp.BindingGenerator.Tasks</PackageId>
+    <PackageVersion>1.0.0</PackageVersion>
+    <PackageDescription>MSBuild tasks for O3DE C# binding generation</PackageDescription>
+    <PackageLicenseExpression>Apache-2.0 OR MIT</PackageLicenseExpression>
+    <RepositoryUrl>https://github.com/o3de/o3de</RepositoryUrl>
+    <RepositoryType>git</RepositoryType>
+    
+    <!-- Build task package output -->
+    <BuildOutputTargetFolder>tasks</BuildOutputTargetFolder>
+    <DevelopmentDependency>true</DevelopmentDependency>
+    <NoPackageAnalysis>true</NoPackageAnalysis>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.Build.Framework" Version="17.8.3" />
+    <PackageReference Include="Microsoft.Build.Utilities.Core" Version="17.8.3" />
+    <PackageReference Include="System.Text.Json" Version="8.0.5" />
+  </ItemGroup>
+
+  <!-- Include the targets file in the package -->
+  <ItemGroup>
+    <None Include="build\O3DESharp.BindingGenerator.Tasks.targets" Pack="true" PackagePath="build\" />
+    <None Include="build\O3DESharp.BindingGenerator.Tasks.props" Pack="true" PackagePath="build\" />
+    <None Include="buildMultiTargeting\O3DESharp.BindingGenerator.Tasks.targets" Pack="true" PackagePath="buildMultiTargeting\" />
+    <None Include="buildMultiTargeting\O3DESharp.BindingGenerator.Tasks.props" Pack="true" PackagePath="buildMultiTargeting\" />
+  </ItemGroup>
+
+</Project>

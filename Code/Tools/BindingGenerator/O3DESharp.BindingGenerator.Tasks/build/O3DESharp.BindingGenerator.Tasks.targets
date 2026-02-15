@@ -1,0 +1,91 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Copyright (c) Contributors to the Open 3D Engine Project.
+  For complete copyright and license terms please see the LICENSE at the root of this distribution.
+
+  SPDX-License-Identifier: Apache-2.0 OR MIT
+-->
+<Project xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+
+  <!-- Import the UsingTask from the tasks assembly -->
+  <UsingTask 
+    TaskName="O3DESharp.BindingGenerator.Tasks.GenerateBindingsTask" 
+    AssemblyFile="$(MSBuildThisFileDirectory)..\tasks\netstandard2.0\O3DESharp.BindingGenerator.Tasks.dll" />
+
+  <!-- 
+    O3DE Binding Generation Target
+    Runs before Compile to ensure IntelliSense works with generated files
+  -->
+  <Target Name="O3DEGenerateBindings" 
+          BeforeTargets="BeforeCompile;CoreCompile"
+          Condition="'$(O3DEGenerateBindings)' != 'false' AND Exists('$(O3DEProjectPath)')">
+    
+    <Message Importance="normal" Text="O3DE: Generating C# bindings for $(MSBuildProjectName)..." />
+    
+    <GenerateBindingsTask
+      ProjectPath="$(O3DEProjectPath)"
+      ConfigPath="$(O3DEBindingConfig)"
+      GeneratorPath="$(O3DEGeneratorPath)"
+      Gems="@(O3DEGems)"
+      Verbose="$(O3DEVerbose)"
+      Force="$(O3DEForceRegen)"
+      Incremental="$(O3DEIncremental)">
+      <Output TaskParameter="GeneratedFiles" ItemName="O3DEGeneratedFiles" />
+    </GenerateBindingsTask>
+
+    <!-- Include generated files in the compilation -->
+    <ItemGroup>
+      <Compile Include="@(O3DEGeneratedFiles)" Condition="'@(O3DEGeneratedFiles)' != ''" />
+    </ItemGroup>
+
+    <Message Importance="normal" Text="O3DE: Generated @(O3DEGeneratedFiles->Count()) binding files." />
+  </Target>
+
+  <!--
+    Design-time target for IDE support
+    Runs during design-time builds to provide IntelliSense
+  -->
+  <Target Name="O3DEDesignTimeGenerate"
+          BeforeTargets="DesignTimeMarkupCompilation"
+          Condition="'$(DesignTimeBuild)' == 'true' AND '$(O3DEDesignTimeGenerate)' != 'false' AND Exists('$(O3DEProjectPath)')">
+    
+    <Message Importance="low" Text="O3DE: Design-time binding generation..." />
+    
+    <GenerateBindingsTask
+      ProjectPath="$(O3DEProjectPath)"
+      ConfigPath="$(O3DEBindingConfig)"
+      GeneratorPath="$(O3DEGeneratorPath)"
+      Gems="@(O3DEGems)"
+      Verbose="false"
+      Force="false"
+      Incremental="true">
+      <Output TaskParameter="GeneratedFiles" ItemName="O3DEGeneratedFiles" />
+    </GenerateBindingsTask>
+
+    <ItemGroup>
+      <Compile Include="@(O3DEGeneratedFiles)" Condition="'@(O3DEGeneratedFiles)' != ''" />
+    </ItemGroup>
+  </Target>
+
+  <!--
+    Clean target to remove generated files
+  -->
+  <Target Name="O3DECleanBindings" 
+          AfterTargets="Clean"
+          Condition="'$(O3DECleanBindings)' == 'true'">
+    
+    <Message Importance="normal" Text="O3DE: Cleaning generated binding files..." />
+    
+    <ItemGroup>
+      <O3DEGeneratedFilesToDelete Include="$(O3DEOutputPath)\**\*.g.cs" />
+      <O3DEGeneratedFilesToDelete Include="$(O3DEOutputPath)\**\*.g.cpp" />
+      <O3DEGeneratedFilesToDelete Include="$(O3DEOutputPath)\**\*.g.h" />
+      <O3DEGeneratedFilesToDelete Include="$(O3DEOutputPath)\**\metadata.json" />
+    </ItemGroup>
+
+    <Delete Files="@(O3DEGeneratedFilesToDelete)" />
+    
+    <Message Importance="normal" Text="O3DE: Deleted @(O3DEGeneratedFilesToDelete->Count()) generated files." />
+  </Target>
+
+</Project>

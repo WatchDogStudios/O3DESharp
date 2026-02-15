@@ -42,10 +42,10 @@ namespace O3DESharp
                 editContext->Class<CSharpScriptComponentConfig>("C# Script Configuration", "Configuration for a C# script component")
                     ->ClassElement(AZ::Edit::ClassElements::EditorData, "")
                         ->Attribute(AZ::Edit::Attributes::AutoExpand, true)
-                    ->DataElement(AZ::Edit::UIHandlers::Default, &CSharpScriptComponentConfig::m_scriptClassName, 
+                    ->DataElement(AZ::Edit::UIHandlers::Default, &CSharpScriptComponentConfig::m_scriptClassName,
                         "Script Class", "The fully qualified C# class name (e.g., MyGame.PlayerController)")
                         ->Attribute(AZ::Edit::Attributes::ChangeNotify, AZ::Edit::PropertyRefreshLevels::EntireTree)
-                    ->DataElement(AZ::Edit::UIHandlers::Default, &CSharpScriptComponentConfig::m_assemblyPath, 
+                    ->DataElement(AZ::Edit::UIHandlers::Default, &CSharpScriptComponentConfig::m_assemblyPath,
                         "Assembly Path", "Optional: Path to the assembly containing the script (leave empty for default)")
                     ;
             }
@@ -75,9 +75,8 @@ namespace O3DESharp
                     editContext->Class<CSharpScriptComponent>("C# Script", "Attaches a C# script to this entity")
                         ->ClassElement(AZ::Edit::ClassElements::EditorData, "")
                             ->Attribute(AZ::Edit::Attributes::Category, "Scripting")
-                            ->Attribute(AZ::Edit::Attributes::Icon, "Icons/Components/Script.svg")
-                            ->Attribute(AZ::Edit::Attributes::ViewportIcon, "Icons/Components/Viewport/Script.svg")
-                            ->Attribute(AZ::Edit::Attributes::AppearsInAddComponentMenu, AZ_CRC_CE("Game"))
+                            ->Attribute(AZ::Edit::Attributes::Icon, "Icons/Components/csharp.svg")
+                            ->Attribute(AZ::Edit::Attributes::ViewportIcon, "Icons/Components/Viewport/csharp.svg")
                             ->Attribute(AZ::Edit::Attributes::AutoExpand, true)
                             ->Attribute(AZ::Edit::Attributes::HelpPageURL, "")
                         ->DataElement(AZ::Edit::UIHandlers::Default, &CSharpScriptComponent::m_config, "Configuration", "")
@@ -234,11 +233,14 @@ namespace O3DESharp
         {
             // Call OnUpdate on the managed instance
             m_scriptInstance.InvokeMethod("OnUpdate", deltaTime);
+
+            // Process any scheduled Invoke/InvokeRepeating actions
+            m_scriptInstance.InvokeMethod("ProcessPendingInvocations", deltaTime);
         }
     }
 
     void CSharpScriptComponent::OnTransformChanged(
-        [[maybe_unused]] const AZ::Transform& local, 
+        [[maybe_unused]] const AZ::Transform& local,
         [[maybe_unused]] const AZ::Transform& world)
     {
         // Optionally notify the script of transform changes
@@ -324,7 +326,7 @@ namespace O3DESharp
         // Set the EntityId field on the script base class
         // The C# ScriptComponent base class has an EntityId property
         AZ::u64 entityId = static_cast<AZ::u64>(GetEntityId());
-        
+
         try
         {
             // The C# ScriptComponent class has a field "m_entityId" that stores the native entity ID

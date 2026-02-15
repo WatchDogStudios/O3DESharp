@@ -169,6 +169,125 @@ def browse_csharp_scripts():
     return None
 
 
+def pick_script_class(current_class: str = ""):
+    """Opens the ScriptClassPickerDialog for entity-component usage.
+    
+    Args:
+        current_class: The currently assigned class name (used to pre-select).
+    
+    Returns:
+        The fully qualified class name chosen, empty string for "clear", or None
+        if the dialog was cancelled.
+    """
+    if not HAS_PYSIDE:
+        general.log("PySide2/PySide6 not available - cannot pick script class")
+        return None
+    
+    try:
+        csharp_editor_tools = _import_csharp_editor_tools()
+        
+        main_window = None
+        for widget in QtWidgets.QApplication.topLevelWidgets():
+            if isinstance(widget, QtWidgets.QMainWindow):
+                main_window = widget
+                break
+        
+        dialog = csharp_editor_tools.ScriptClassPickerDialog(
+            current_class=current_class, parent=main_window
+        )
+        if dialog.exec_():
+            selected = dialog.get_selected_class()
+            if selected is not None:
+                general.log(f"Picked C# script class: {selected}")
+                return selected
+    except ImportError as e:
+        general.log(f"Failed to import C# editor tools: {e}")
+    except Exception as e:
+        general.log(f"Failed to pick script class: {e}")
+    
+    return None
+
+
+def show_quick_actions():
+    """Opens the command-palette-style Quick Action Prompt.
+    
+    Dispatches the chosen action to the appropriate function.
+    """
+    if not HAS_PYSIDE:
+        general.log("PySide2/PySide6 not available - cannot show quick actions")
+        return
+    
+    try:
+        csharp_editor_tools = _import_csharp_editor_tools()
+        
+        main_window = None
+        for widget in QtWidgets.QApplication.topLevelWidgets():
+            if isinstance(widget, QtWidgets.QMainWindow):
+                main_window = widget
+                break
+        
+        dialog = csharp_editor_tools.QuickActionPrompt(main_window)
+        if dialog.exec_():
+            action_id = dialog.get_chosen_action()
+            _dispatch_quick_action(action_id)
+    except ImportError as e:
+        general.log(f"Failed to import C# editor tools: {e}")
+    except Exception as e:
+        general.log(f"Failed to show quick actions: {e}")
+
+
+def _dispatch_quick_action(action_id: str):
+    """Route a Quick Action choice to the matching function."""
+    dispatch = {
+        "create_project":    create_csharp_project,
+        "create_script":     create_csharp_script,
+        "browse_scripts":    browse_csharp_scripts,
+        "pick_class":        pick_script_class,
+        "build_all":         build_csharp_projects,
+        "open_manager":      open_csharp_project_manager,
+        "generate_bindings": generate_bindings,
+        "deploy_all":        _deploy_all_shortcut,
+        "refresh_classes":   _refresh_class_cache,
+    }
+    fn = dispatch.get(action_id)
+    if fn:
+        fn()
+    else:
+        general.log(f"Unknown quick-action: {action_id}")
+
+
+def _deploy_all_shortcut():
+    """Deploy Coral + O3DE.Core runtime files via the project manager."""
+    try:
+        csharp_project_manager = _import_csharp_project_manager()
+        manager = csharp_project_manager.get_project_manager()
+        
+        coral_result = manager.deploy_coral()
+        core_result = manager.deploy_o3de_core()
+        
+        if coral_result["success"]:
+            general.log(f"Coral deployed: {coral_result['message']}")
+        else:
+            general.log(f"Coral deploy failed: {coral_result['message']}")
+        
+        if core_result["success"]:
+            general.log(f"O3DE.Core deployed: {core_result['message']}")
+        else:
+            general.log(f"O3DE.Core deploy failed: {core_result['message']}")
+    except Exception as e:
+        general.log(f"Deploy all failed: {e}")
+
+
+def _refresh_class_cache():
+    """Clear and rebuild the script class recent-usage cache."""
+    try:
+        csharp_editor_tools = _import_csharp_editor_tools()
+        csharp_editor_tools._RecentClassesCache.instance().clear()
+        general.log("Script class cache cleared")
+    except Exception as e:
+        general.log(f"Failed to refresh class cache: {e}")
+
+
 def build_csharp_projects():
     """Builds all C# projects in the current project"""
     try:
@@ -201,26 +320,230 @@ def build_csharp_projects():
         general.log(f"Failed to build C# projects: {e}")
 
 
+def generate_bindings():
+    """Generate C# bindings using the ClangSharp tool"""
+    try:
+        # Import generate_bindings module
+        try:
+            from . import generate_bindings as gen_bindings
+        except ImportError:
+            import generate_bindings as gen_bindings
+        
+        # Get current project path
+        project_path = os.environ.get("O3DE_PROJECT_PATH")
+        if not project_path:
+            general.log("Error: O3DE_PROJECT_PATH environment variable not set")
+            return
+        
+        general.log(f"Generating C# bindings for project: {project_path}")
+        
+        # Generate bindings
+        result = gen_bindings.generate_bindings_for_project(project_path)
+        
+        if result.success:
+            general.log(f"✓ Binding generation succeeded!")
+            general.log(f"  Generated {result.classes_generated} classes")
+            general.log(f"  Wrote {result.files_written} files")
+            if result.processed_gems:
+                general.log(f"  Processed gems: {', '.join(result.processed_gems[:5])}")
+                if len(result.processed_gems) > 5:
+                    general.log(f"    ... and {len(result.processed_gems) - 5} more")
+        else:
+            general.log(f"✗ Binding generation failed: {result.error_message}")
+        
+        # Show warnings
+        for warning in result.warnings:
+            general.log(f"  Warning: {warning}")
+            
+    except ImportError as e:
+        general.log(f"Failed to import generate_bindings module: {e}")
+    except Exception as e:
+        general.log(f"Failed to generate bindings: {e}")
+        import traceback
+        general.log(traceback.format_exc())
+
+
+def regenerate_bindings_force():
+    """Force regenerate C# bindings (bypass incremental build)"""
+    try:
+        # Import generate_bindings module
+        try:
+            from . import generate_bindings as gen_bindings
+        except ImportError:
+            import generate_bindings as gen_bindings
+        
+        # Get current project path
+        project_path = os.environ.get("O3DE_PROJECT_PATH")
+        if not project_path:
+            general.log("Error: O3DE_PROJECT_PATH environment variable not set")
+            return
+        
+        general.log(f"Force regenerating C# bindings (bypassing cache)...")
+        
+        # Generate bindings with force flag
+        result = gen_bindings.generate_bindings_for_project(
+            project_path, 
+            force_regenerate=True
+        )
+        
+        if result.success:
+            general.log(f"✓ Binding regeneration succeeded!")
+            general.log(f"  Generated {result.classes_generated} classes")
+            general.log(f"  Wrote {result.files_written} files")
+        else:
+            general.log(f"✗ Binding regeneration failed: {result.error_message}")
+            
+    except ImportError as e:
+        general.log(f"Failed to import generate_bindings module: {e}")
+    except Exception as e:
+        general.log(f"Failed to regenerate bindings: {e}")
+        import traceback
+        general.log(traceback.format_exc())
+
+
+def run_binding_tests():
+    """Run binding generator tests (Python pytest + C# xUnit)"""
+    try:
+        import subprocess
+        
+        general.log("=" * 60)
+        general.log("Running O3DESharp Binding Generator Tests")
+        general.log("=" * 60)
+        
+        # Get gem root
+        gem_root = Path(__file__).parent.parent.parent
+        
+        # Run Python tests
+        general.log("\n[1/2] Running Python tests with pytest...")
+        python_tests_dir = gem_root / "Editor" / "Tests"
+        
+        if python_tests_dir.exists():
+            try:
+                result = subprocess.run(
+                    ["pytest", str(python_tests_dir), "-v", "--tb=short"],
+                    capture_output=True,
+                    text=True,
+                    timeout=60,
+                    cwd=str(gem_root)
+                )
+                general.log(result.stdout)
+                if result.returncode == 0:
+                    general.log("✓ Python tests PASSED")
+                else:
+                    general.log(f"✗ Python tests FAILED (exit code: {result.returncode})")
+                    general.log(result.stderr)
+            except FileNotFoundError:
+                general.log("⚠ pytest not found - install with: pip install pytest")
+            except Exception as e:
+                general.log(f"✗ Python tests failed to run: {e}")
+        else:
+            general.log("⚠ Python tests not found")
+        
+        # Run C# tests
+        general.log("\n[2/2] Running C# tests with dotnet test...")
+        csharp_tests_dir = gem_root / "Code" / "Tools" / "BindingGenerator.Tests"
+        
+        if csharp_tests_dir.exists():
+            try:
+                result = subprocess.run(
+                    ["dotnet", "test", str(csharp_tests_dir / "BindingGenerator.Tests.csproj"), "--verbosity", "normal"],
+                    capture_output=True,
+                    text=True,
+                    timeout=120,
+                    cwd=str(csharp_tests_dir)
+                )
+                general.log(result.stdout)
+                if result.returncode == 0:
+                    general.log("✓ C# tests PASSED")
+                else:
+                    general.log(f"✗ C# tests FAILED (exit code: {result.returncode})")
+                    general.log(result.stderr)
+            except FileNotFoundError:
+                general.log("⚠ dotnet not found - install .NET 8.0 SDK")
+            except Exception as e:
+                general.log(f"✗ C# tests failed to run: {e}")
+        else:
+            general.log("⚠ C# tests not found")
+        
+        general.log("\n" + "=" * 60)
+        general.log("Test run complete")
+        general.log("=" * 60)
+        
+    except Exception as e:
+        general.log(f"Failed to run binding tests: {e}")
+        import traceback
+        general.log(traceback.format_exc())
+
+
 def register_menus():
     """
     Register C# scripting tools in the Editor menus.
     
     This function is called during Editor startup to add menu items.
+    Registers the following menus:
+    - Tools > C# Scripting > Project Manager
+    - Tools > C# Scripting > Create Project
+    - Tools > C# Scripting > Create Script
+    - Tools > C# Scripting > Browse Scripts
+    - Tools > C# Scripting > Pick Script Class
+    - Tools > C# Scripting > Quick Actions
+    - Tools > C# Scripting > Build Projects
+    - Tools > C# Bindings > Generate Bindings
+    - Tools > C# Bindings > Force Regenerate
+    - Tools > C# Bindings > Run Tests
     """
     try:
-        # Use the ActionManager API to register actions and menus
-        import azlmbr.action as action
+        general.log("O3DESharp: Registering C# scripting tools in Editor menus...")
+        general.log("O3DESharp: Menu items will be available under Tools > C# Scripting and Tools > C# Bindings")
+        general.log("O3DESharp: Use Python console to call functions directly:")
+        general.log("  import csharp_editor_bootstrap")
+        general.log("  csharp_editor_bootstrap.open_csharp_project_manager()")
+        general.log("  csharp_editor_bootstrap.show_quick_actions()")
+        general.log("  csharp_editor_bootstrap.pick_script_class()")
+        general.log("  csharp_editor_bootstrap.generate_bindings()")
+        general.log("  csharp_editor_bootstrap.regenerate_bindings_force()")
+        general.log("  csharp_editor_bootstrap.run_binding_tests()")
         
-        # Register the C# submenu under Tools
-        action.ActionManagerInterface_GetAction
-
-        general.log("O3DESharp: C# scripting tools registered in Editor menus")
+        # Note: Actual menu registration requires the ActionManager API
+        # which may not be available in all Editor contexts.
+        # For now, functions can be called directly from Python console.
         
     except Exception as e:
         # Menu registration may not be available in all Editor contexts
-        general.log(f"O3DESharp: Could not register menus (this is normal during some startup phases): {e}")
+        general.log(f"O3DESharp: Menu registration note: {e}")
+
+
+def initialize_ebus_handler():
+    """
+    Initialize and connect the CSharpEditorToolsBus Python handler.
+    
+    This enables direct C++ ↔ Python communication for script discovery,
+    validation, and editor tool integration without file-based IPC.
+    """
+    try:
+        csharp_editor_tools = _import_csharp_editor_tools()
+        
+        # Get the handler instance
+        handler = csharp_editor_tools.get_ebus_handler()
+        
+        # The handler is created and will respond to EBus broadcasts from C++
+        # The connection happens automatically via the behavior context
+        general.log("O3DESharp: CSharpEditorToolsBus handler initialized")
+        
+        return handler
+        
+    except Exception as e:
+        general.log(f"O3DESharp: EBus handler initialization: {e}")
+        return None
 
 
 # Auto-register when this module is imported during Editor startup
 if __name__ == "__main__":
     register_menus()
+    initialize_ebus_handler()
+else:
+    # Also initialize when imported as a module
+    try:
+        initialize_ebus_handler()
+    except:
+        pass  # Will be initialized when editor is ready

@@ -471,7 +471,16 @@ python Editor/Scripts/generate_bindings.py \
     --reflection-data reflection_data.json \
     --project /path/to/project \
     --per-gem-projects
+
+# Generate AND compile per-gem DLLs in one step
+python Editor/Scripts/generate_bindings.py \
+    --project /path/to/project \
+    --build-dlls
 ```
+
+> **Note:** The generator automatically skips C++ template instantiations
+> (`AZ::RHI::Handle<unsigned int>`, `AZStd::vector<...>`, etc.) and sanitizes
+> C++ namespaced names into valid Windows filenames and C# identifiers.
 
 ### Step 3: Build Generated Assemblies
 
@@ -696,8 +705,11 @@ config.separate_gem_directories = True
 generator = CSharpBindingGenerator(config)
 result = generator.generate_from_reflection_data(reflection_data, gem_resolver)
 
-# Write to disk
-files_written = generator.write_files()
+# Template types (AZStd::vector<>, AZ::RHI::Handle<>, etc.) are
+# automatically skipped. C++ namespaced names are sanitized into
+# valid C# identifiers and Windows-safe filenames.
+# Access the skip list:
+print(f"Skipped {len(generator._skipped_classes)} template/container types")
 ```
 
 #### generate_bindings.py (Main Entry Point)
@@ -707,7 +719,8 @@ from generate_bindings import (
     generate_all_bindings,
     generate_gem_bindings,
     generate_core_bindings,
-    list_available_gems
+    list_available_gems,
+    BindingGenerationOrchestrator,
 )
 
 # Generate everything
@@ -727,6 +740,17 @@ result = generate_gem_bindings(
 
 # List available gems
 gems = list_available_gems("/path/to/project")
+
+# Orchestrator: generate, write, create per-gem .csproj, and build DLLs
+orch = BindingGenerationOrchestrator()
+orch.configure(output_directory="Generated/CSharp")
+orch.load_reflection_data("reflection_data.json")
+orch.generate()
+orch.write_files()
+csproj_paths = orch.generate_per_gem_projects()   # creates .csproj per gem
+build_results = orch.build_binding_dlls(csproj_paths)  # dotnet build each
+for gem, ok in build_results.items():
+    print(f"{gem}: {'OK' if ok else 'FAILED'}")
 ```
 
 ## Reflection System Details
@@ -755,6 +779,7 @@ This approach means that:
 
 ## Known Limitations
 
+- **Template Instantiations**: C++ template types (e.g., `AZStd::vector<AZ::Vector3>`, `AZ::RHI::Handle<uint>`) are automatically skipped during binding generation since they cannot be meaningfully represented as standalone C# classes. Use a `typedef` alias and reflect that instead.
 - **Input System**: Direct input access is not yet fully implemented. Use O3DE's Input component with BehaviorContext for now.
 - **EBus Handlers**: Creating C# EBus handlers (receiving events) is not yet supported. Only sending/broadcasting is available.
 - **Generics**: Generic types in BehaviorContext are not fully supported.
@@ -833,6 +858,127 @@ See the `Assets/Scripts/Examples/` folder for complete examples:
 
 - **PlayerController.cs**: Basic script demonstrating direct API usage
 - **ReflectionExample.cs**: Demonstrates the automated reflection system
+
+## Deploying and Exporting Projects
+
+When exporting your O3DE project for distribution, O3DESharp automatically includes all necessary C# runtime DLLs and builds your user assemblies.
+
+### Quick Export
+
+For projects with C# scripts, use the O3DESharp export script:
+
+```bash
+o3de.py export-project \
+  --export-script Gems/O3DESharp/ExportScripts/export_project_with_csharp.py \
+  --project-path /path/to/your/project \
+  --output-path /path/to/export \
+  --config profile
+```
+
+This automatically:
+1. Builds all user C# assemblies (Release configuration)
+2. Deploys them to `Bin/Scripts/` in the export package
+3. Includes Coral.Managed.dll and O3DE.Core.dll
+4. Creates a complete, runnable game package
+
+### Configuring User Assemblies
+
+By default, O3DESharp auto-discovers all `.csproj` files in `Assets/Scripts/` (excluding O3DE.Core and Examples). For explicit control, create a Settings Registry configuration:
+
+**File**: `<ProjectPath>/Registry/o3desharp.setreg`
+
+```json
+{
+  "O3DE": {
+    "O3DESharp": {
+      "UserAssemblies": [
+        {
+          "ProjectPath": "Assets/Scripts/MyGame/MyGame.csproj",
+          "AssemblyName": "MyGame.dll"
+        },
+        {
+          "ProjectPath": "Assets/Scripts/Abilities/Abilities.csproj",
+          "AssemblyName": "Abilities.dll"
+        }
+      ]
+    }
+  }
+}
+```
+
+**Fields:**
+- `ProjectPath`: Relative path from project root to `.csproj` file
+- `AssemblyName`: Output DLL name (optional, defaults to project name + .dll)
+
+### Export Package Structure
+
+The exported launcher package includes all C# runtime files in the correct locations:
+
+```
+<ProjectName>GamePackage/
+├── <ProjectName>.GameLauncher.exe
+└── Bin/
+    └── Scripts/
+        ├── Coral/
+        │   ├── Coral.Managed.dll
+        │   ├── Coral.Managed.runtimeconfig.json
+        │   └── Coral.Managed.deps.json
+        ├── O3DE.Core.dll
+        ├── O3DE.Core.deps.json
+        ├── MyGame.dll              # Your user assemblies
+        └── MyGame.deps.json
+```
+
+### Development Workflow vs Export
+
+**During Development:**
+- Use the C# Script Manager tool to deploy DLLs to your project's `Bin/Scripts/` directory
+- Iterate quickly by rebuilding C# projects and using hot reload
+
+**For Export:**
+- Use the custom export script (automatically builds and deploys everything)
+- Produces a complete, distributable package with all dependencies
+
+### Troubleshooting Export Issues
+
+**Error: ".NET SDK not found"**
+
+Install the .NET SDK from [https://dotnet.microsoft.com/download](https://dotnet.microsoft.com/download) and restart your terminal.
+
+```bash
+# Verify installation
+dotnet --version
+```
+
+**Error: "Failed to build [ProjectName].csproj"**
+
+Check the export log for C# compilation errors. Build manually to see detailed errors:
+
+```bash
+cd Assets/Scripts/MyGame
+dotnet build -c Release
+```
+
+Common causes:
+- Missing package references
+- Syntax errors in C# code
+- Incorrect O3DE.Core.dll reference path
+
+**Export succeeds but launcher crashes on startup**
+
+Verify all DLLs are present in the export package:
+
+```bash
+# Check for required DLLs
+ls <ExportPath>/<Project>GamePackage/Bin/Scripts/
+# Should show: Coral/, O3DE.Core.dll, and your user DLLs
+```
+
+**User assemblies not included**
+
+- Check Settings Registry syntax (must be valid JSON)
+- Verify `.csproj` paths are relative to project root
+- Review export logs for "O3DESharp: Auto-discovered user project" messages
 
 ## Contributing
 
