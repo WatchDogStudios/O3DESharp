@@ -9,9 +9,7 @@ Code/Tools/BindingGenerator/**/obj/**
 Assets/Scripts/Generated/
 Assets/Scripts/Generated/**/*.g.cs
 Assets/Scripts/Generated/**/*.cs
-Assets/Scripts/**/Metadata.g.cs
-Assets/Scripts/**/FluentExtensions.g.cs
-Assets/Scripts/**/InternalCalls.g.cs
+Assets/Scripts/**/*.g.cs
 Assets/Scripts/**/metadata.json
 
 # Generated C++ registration code (build artifacts)

@@ -6,7 +6,7 @@ O3DESharp is a Gem that adds C# scripting support to the Open 3D Engine (O3DE) u
 
 O3DESharp enables game developers to write gameplay logic in C# instead of (or alongside) C++ and Lua. It provides:
 
-- **Full .NET 8.0 Support**: Write scripts using modern C# features
+- **Full .NET 9.0 Support**: Write scripts using modern C# features
 - **Hot Reload**: Recompile and reload C# assemblies without restarting the editor
 - **Native Interop**: Seamless communication between C++ and C# code
 - **Familiar API**: Entity/Component model similar to other popular engines
@@ -14,7 +14,7 @@ O3DESharp enables game developers to write gameplay logic in C# instead of (or a
 
 ## Requirements
 
-- **.NET 8.0 SDK**: Download from [https://dotnet.microsoft.com/download](https://dotnet.microsoft.com/download)
+- **.NET 9.0 SDK**: Download from [https://dotnet.microsoft.com/download](https://dotnet.microsoft.com/download)
 - **Supported Platforms**: Windows x64, Linux x64 (JIT & AOT), iOS, Mac, A *very popular* blue gaming console, Xbox, Switch 1 & 2 (AOT Only)
 
 ## Installation
@@ -41,7 +41,7 @@ O3DESharp enables game developers to write gameplay logic in C# instead of (or a
 
 1. Create a new C# class library project:
    ```bash
-   dotnet new classlib -n MyGameScripts -f net8.0
+   dotnet new classlib -n MyGameScripts -f net9.0
    ```
 
 2. Add a reference to O3DE.Core.dll
@@ -790,7 +790,7 @@ This approach means that:
 
 ### ".NET runtime not found"
 
-Ensure the .NET 8.0 SDK is installed and available in your PATH:
+Ensure the .NET 9.0 SDK is installed and available in your PATH:
 ```bash
 dotnet --version
 ```

@@ -37,15 +37,18 @@ function (o3de_sharp_netverify)
                 message(FATAL_ERROR "Failed to download dotnet install script: ${DOWNLOAD_STATUS}")
             endif()
 
+            # Channel matches the TFM used by O3DE.Core and Coral.Managed.runtimeconfig.json.
+            # Keep these in sync when bumping the runtime.
+            set(O3DESHARP_DOTNET_CHANNEL "9.0")
             if(WIN32)
                 execute_process(
-                    COMMAND powershell -ExecutionPolicy Bypass -File "${INSTALL_SCRIPT}" -InstallDir "${DOTNET_INSTALL_DIR}" -Channel LTS
+                    COMMAND powershell -ExecutionPolicy Bypass -File "${INSTALL_SCRIPT}" -InstallDir "${DOTNET_INSTALL_DIR}" -Channel ${O3DESHARP_DOTNET_CHANNEL}
                     RESULT_VARIABLE INSTALL_RESULT
                 )
             else()
                 execute_process(COMMAND chmod +x "${INSTALL_SCRIPT}")
                 execute_process(
-                    COMMAND "${INSTALL_SCRIPT}" --install-dir "${DOTNET_INSTALL_DIR}" --channel LTS
+                    COMMAND "${INSTALL_SCRIPT}" --install-dir "${DOTNET_INSTALL_DIR}" --channel ${O3DESHARP_DOTNET_CHANNEL}
                     RESULT_VARIABLE INSTALL_RESULT
                 )
             endif()

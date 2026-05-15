@@ -25,6 +25,10 @@ if(NOT PAL_TRAIT_O3DESHARP_SUPPORTED)
     return()
 endif()
 
+# Locate (or install) a .NET SDK before we try to build C# projects.
+# Sets DOTNET_EXECUTABLE in this scope, used by binding generator and C# test custom targets below.
+o3de_sharp_netverify()
+
 # CORAL CLONE INFO
 # ===========================
 # NOTE(Mikael A.): Stay on main, do not change to internal coral branch!
@@ -113,9 +117,9 @@ set(O3DE_CORE_SCRIPTS_DIR "${gem_root_for_o3de_core}/Assets/Scripts/O3DE.Core")
 set(O3DE_CORE_STAGING_DIR "${gem_root_for_o3de_core}/bin/O3DE.Core")
 
 # Determine O3DE.Core build output path (Release build preferred, fallback to Debug)
-# The C# project builds to bin/<Configuration>/net8.0/
-set(O3DE_CORE_BUILD_OUTPUT_RELEASE "${O3DE_CORE_SCRIPTS_DIR}/bin/Release/net8.0")
-set(O3DE_CORE_BUILD_OUTPUT_DEBUG "${O3DE_CORE_SCRIPTS_DIR}/bin/Debug/net8.0")
+# The C# project builds to bin/<Configuration>/net9.0/
+set(O3DE_CORE_BUILD_OUTPUT_RELEASE "${O3DE_CORE_SCRIPTS_DIR}/bin/Release/net9.0")
+set(O3DE_CORE_BUILD_OUTPUT_DEBUG "${O3DE_CORE_SCRIPTS_DIR}/bin/Debug/net9.0")
 
 # Use generator expression to pick the right config, with Release as fallback
 # For C# projects, we typically want Release for deployment
@@ -182,7 +186,7 @@ if(EXISTS "${BINDING_GENERATOR_SOURCE_DIR}/O3DESharp.BindingGenerator/O3DESharp.
         SOURCE_DIR "${BINDING_GENERATOR_SOURCE_DIR}"
         BINARY_DIR "${BINDING_GENERATOR_BINARY_DIR}"
         CONFIGURE_COMMAND ""
-        BUILD_COMMAND dotnet build "${BINDING_GENERATOR_SOURCE_DIR}/O3DESharp.BindingGenerator/O3DESharp.BindingGenerator.csproj" 
+        BUILD_COMMAND ${DOTNET_EXECUTABLE} build "${BINDING_GENERATOR_SOURCE_DIR}/O3DESharp.BindingGenerator/O3DESharp.BindingGenerator.csproj"
             -c ${BINDING_GENERATOR_CONFIG}
             -o "${BINDING_GENERATOR_OUTPUT_DIR}"
         INSTALL_COMMAND ""
@@ -212,9 +216,9 @@ if(EXISTS "${BINDING_GENERATOR_SOURCE_DIR}/O3DESharp.BindingGenerator/O3DESharp.
             COMMENT "O3DESharp: Generating C# bindings with ClangSharp tool"
             COMMAND ${CMAKE_COMMAND} -E echo "Checking if C# bindings need regeneration..."
             COMMAND ${CMAKE_COMMAND} -E make_directory "${BINDINGS_OUTPUT_DIR}"
-            COMMAND dotnet run 
-                --project "${BINDING_GENERATOR_SOURCE_DIR}/O3DESharp.BindingGenerator/O3DESharp.BindingGenerator.csproj" 
-                -- generate 
+            COMMAND ${DOTNET_EXECUTABLE} run
+                --project "${BINDING_GENERATOR_SOURCE_DIR}/O3DESharp.BindingGenerator/O3DESharp.BindingGenerator.csproj"
+                -- generate
                 --project "${CMAKE_SOURCE_DIR}"
                 --output "${BINDINGS_OUTPUT_DIR}"
                 --incremental
@@ -635,7 +639,7 @@ if(PAL_TRAIT_BUILD_TESTS_SUPPORTED)
             # Create custom target to run C# tests with dotnet test
             add_custom_target(${gem_name}.Tests.BindingGenerator
                 COMMAND ${CMAKE_COMMAND} -E echo "Running O3DESharp C# Binding Generator tests..."
-                COMMAND dotnet test "${CSHARP_TESTS_DIR}/BindingGenerator.Tests.csproj" --verbosity normal
+                COMMAND ${DOTNET_EXECUTABLE} test "${CSHARP_TESTS_DIR}/BindingGenerator.Tests.csproj" --verbosity normal
                 WORKING_DIRECTORY "${CSHARP_TESTS_DIR}"
                 COMMENT "Running O3DESharp ClangSharp binding generator tests with xUnit"
                 DEPENDS O3DESharp.BindingGenerator
@@ -649,7 +653,7 @@ if(PAL_TRAIT_BUILD_TESTS_SUPPORTED)
             if(BUILD_TESTING)
                 add_test(
                     NAME O3DESharp.Tests.BindingGenerator
-                    COMMAND dotnet test "${CSHARP_TESTS_DIR}/BindingGenerator.Tests.csproj" --verbosity normal
+                    COMMAND ${DOTNET_EXECUTABLE} test "${CSHARP_TESTS_DIR}/BindingGenerator.Tests.csproj" --verbosity normal
                     WORKING_DIRECTORY "${CSHARP_TESTS_DIR}"
                 )
                 set_tests_properties(O3DESharp.Tests.BindingGenerator PROPERTIES

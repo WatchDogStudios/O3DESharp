@@ -24,7 +24,7 @@
   </ItemGroup>
 
   <ItemGroup>
-    <ProjectReference Include="..\O3DESharp.BindingGenerator\O3DESharp.BindingGenerator.csproj" />
+    <ProjectReference Include="..\BindingGenerator\O3DESharp.BindingGenerator\O3DESharp.BindingGenerator.csproj" />
   </ItemGroup>
 
   <ItemGroup>
