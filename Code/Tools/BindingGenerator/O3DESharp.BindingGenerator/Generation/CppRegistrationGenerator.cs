@@ -7,6 +7,7 @@
  */
 
 using System;
+using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using System.Text;
@@ -59,19 +60,24 @@ namespace O3DESharp.BindingGenerator.Generation
             // match the corresponding InternalCalls field name on the C# side -
             // CSharpCodeGenerator.InternalCallFieldName is the single source of
             // truth for that mangling so overloads disambiguate consistently on
-            // both sides of the interop.
+            // both sides of the interop. The C++ signature mirrors the
+            // delegate* unmanaged<...> shape on the C# side, with each marshal
+            // type mapped back to its C++ equivalent (IntPtr -> void*,
+            // Vector3 -> InteropVector3, etc.). The implementations live in
+            // hand-written code elsewhere; this file only forward-declares
+            // and registers.
             foreach (var parsedClass in bindings.Classes)
             {
                 foreach (var method in parsedClass.Methods)
                 {
                     var funcName = CSharpCodeGenerator.InternalCallFieldName(parsedClass.Name, method, parsedClass.Methods);
-                    sb.AppendLine($"    void {funcName}(/* parameters */);");
+                    sb.AppendLine($"    {BuildCppSignature(funcName, method)};");
                 }
             }
 
             foreach (var function in bindings.Functions)
             {
-                sb.AppendLine($"    void {function.Name}(/* parameters */);");
+                sb.AppendLine($"    {BuildCppSignature(function.Name, function)};");
             }
 
             sb.AppendLine();
@@ -257,6 +263,127 @@ namespace O3DESharp.BindingGenerator.Generation
             {
                 Console.WriteLine($"[CppGen] {message}");
             }
+        }
+
+        // -------------------------------------------------------------------
+        // C++ signature emission
+        //
+        // Bridges the C# marshal types CSharpCodeGenerator.GetMarshalType
+        // produces (the actual types in the InternalCalls delegate* unmanaged
+        // signature) to C++ types suitable for a forward declaration. Both
+        // ends of the interop must agree on layout, so:
+        //   - IntPtr (C#)            -> void* (C++)
+        //   - bool/int/short/...     -> matching size-preserving C++ scalar
+        //   - Vector3 / Quaternion   -> InteropVector3 / InteropQuaternion
+        //                              (defined in ScriptBindings.h)
+        // Anything we don't recognise falls back to "void*" plus a /* comment */
+        // showing the original type so a human can still see what was intended.
+        // -------------------------------------------------------------------
+
+        /// <summary>Public for testing.</summary>
+        public static string BuildCppSignature(string funcName, ParsedMethod method)
+        {
+            var sb = new StringBuilder();
+            sb.Append(MapMarshalTypeToCpp(GetMarshalType(method.ReturnType)));
+            sb.Append(' ').Append(funcName).Append('(');
+
+            var parts = new List<string>();
+            if (!method.IsStatic)
+            {
+                parts.Add("void* thisPtr");
+            }
+            for (int i = 0; i < method.Parameters.Count; i++)
+            {
+                var p = method.Parameters[i];
+                var cpp = MapMarshalTypeToCpp(GetMarshalType(p.Type));
+                var paramName = string.IsNullOrEmpty(p.Name) ? $"arg{i}" : SanitizeCppIdentifier(p.Name);
+                parts.Add($"{cpp} {paramName}");
+            }
+            sb.Append(string.Join(", ", parts));
+            sb.Append(')');
+            return sb.ToString();
+        }
+
+        /// <summary>Public for testing. ParsedFunction overload (no 'this').</summary>
+        public static string BuildCppSignature(string funcName, ParsedFunction function)
+        {
+            var sb = new StringBuilder();
+            sb.Append(MapMarshalTypeToCpp(GetMarshalType(function.ReturnType)));
+            sb.Append(' ').Append(funcName).Append('(');
+
+            var parts = new List<string>();
+            for (int i = 0; i < function.Parameters.Count; i++)
+            {
+                var p = function.Parameters[i];
+                var cpp = MapMarshalTypeToCpp(GetMarshalType(p.Type));
+                var paramName = string.IsNullOrEmpty(p.Name) ? $"arg{i}" : SanitizeCppIdentifier(p.Name);
+                parts.Add($"{cpp} {paramName}");
+            }
+            sb.Append(string.Join(", ", parts));
+            sb.Append(')');
+            return sb.ToString();
+        }
+
+        /// <summary>
+        /// Same as <see cref="CSharpCodeGenerator.GetMarshalType"/>, but
+        /// re-implemented here rather than exposed to avoid widening the
+        /// public surface of the C# code generator. Keep in sync with the
+        /// C# side: any change there needs to match here.
+        /// </summary>
+        private static string GetMarshalType(ParsedType type)
+        {
+            var csType = type.CSharpTypeName;
+            if (type.IsPointer || type.IsReference || csType == "IntPtr")
+                return "IntPtr";
+            if (csType == "string")
+                return "IntPtr";
+            return csType;
+        }
+
+        private static string MapMarshalTypeToCpp(string marshal)
+        {
+            return marshal switch
+            {
+                "void"   => "void",
+                "bool"   => "bool",
+                "byte"   => "AZ::u8",
+                "sbyte"  => "AZ::s8",
+                "short"  => "AZ::s16",
+                "ushort" => "AZ::u16",
+                "int"    => "AZ::s32",
+                "uint"   => "AZ::u32",
+                "long"   => "AZ::s64",
+                "ulong"  => "AZ::u64",
+                "float"  => "float",
+                "double" => "double",
+                "char"   => "char",
+                "nint"   => "AZ::s64",
+                "nuint"  => "AZ::u64",
+                "IntPtr" => "void*",
+                "Vector2" => "O3DESharp::InteropVector2",
+                "Vector3" => "O3DESharp::InteropVector3",
+                "Quaternion" => "O3DESharp::InteropQuaternion",
+                _ => $"void* /* {marshal} */",
+            };
+        }
+
+        private static string SanitizeCppIdentifier(string raw)
+        {
+            if (string.IsNullOrEmpty(raw)) return "arg";
+            var sb = new StringBuilder(raw.Length);
+            for (int i = 0; i < raw.Length; i++)
+            {
+                char c = raw[i];
+                if (i == 0)
+                {
+                    sb.Append(char.IsLetter(c) || c == '_' ? c : '_');
+                }
+                else
+                {
+                    sb.Append(char.IsLetterOrDigit(c) || c == '_' ? c : '_');
+                }
+            }
+            return sb.ToString();
         }
     }
 }

@@ -169,6 +169,130 @@ public class GeneratorUnitTests
     }
 
     // --------------------------------------------------------------------
+    // CppRegistrationGenerator.BuildCppSignature
+    // (Phase 11 - emit real C++ forward decls instead of /* parameters */)
+    // --------------------------------------------------------------------
+
+    [Fact]
+    public void BuildCppSignature_InstanceVoidMethod_EmitsThisPointerOnly()
+    {
+        var method = new ParsedMethod
+        {
+            Name = "DoThing",
+            IsStatic = false,
+            ReturnType = new ParsedType { CSharpTypeName = "void" },
+        };
+        CppRegistrationGenerator.BuildCppSignature("MyClass_DoThing", method)
+            .Should().Be("void MyClass_DoThing(void* thisPtr)");
+    }
+
+    [Fact]
+    public void BuildCppSignature_StaticMethodNoArgs_OmitsThisPointer()
+    {
+        var method = new ParsedMethod
+        {
+            Name = "CreateDefault",
+            IsStatic = true,
+            ReturnType = new ParsedType { CSharpTypeName = "IntPtr" },
+        };
+        CppRegistrationGenerator.BuildCppSignature("MyClass_CreateDefault", method)
+            .Should().Be("void* MyClass_CreateDefault()");
+    }
+
+    [Fact]
+    public void BuildCppSignature_InstanceMethodWithMixedArgs_MapsEachType()
+    {
+        var method = new ParsedMethod
+        {
+            Name = "SetValues",
+            IsStatic = false,
+            ReturnType = new ParsedType { CSharpTypeName = "bool" },
+            Parameters =
+            {
+                new ParsedParameter { Name = "speed",    Type = new ParsedType { CSharpTypeName = "float" } },
+                new ParsedParameter { Name = "maxHits",  Type = new ParsedType { CSharpTypeName = "int" } },
+                new ParsedParameter { Name = "position", Type = new ParsedType { CSharpTypeName = "Vector3" } },
+                new ParsedParameter { Name = "owner",    Type = new ParsedType { CSharpTypeName = "IntPtr" } },
+            },
+        };
+        CppRegistrationGenerator.BuildCppSignature("MyClass_SetValues", method)
+            .Should()
+            .Be("bool MyClass_SetValues(void* thisPtr, float speed, AZ::s32 maxHits, O3DESharp::InteropVector3 position, void* owner)");
+    }
+
+    [Fact]
+    public void BuildCppSignature_ReferenceParameter_DegradesToVoidPointer()
+    {
+        // Phase 8 made GetMarshalType return IntPtr for any reference, so
+        // the C++ side sees a void* and is responsible for dereferencing.
+        var method = new ParsedMethod
+        {
+            Name = "Apply",
+            IsStatic = false,
+            ReturnType = new ParsedType { CSharpTypeName = "void" },
+            Parameters =
+            {
+                new ParsedParameter
+                {
+                    Name = "vec",
+                    Type = new ParsedType { CSharpTypeName = "Vector3", IsReference = true, IsConst = true },
+                },
+            },
+        };
+        CppRegistrationGenerator.BuildCppSignature("MyClass_Apply", method)
+            .Should().Be("void MyClass_Apply(void* thisPtr, void* vec)");
+    }
+
+    [Fact]
+    public void BuildCppSignature_StandaloneFunction_HandlesParameters()
+    {
+        var fn = new ParsedFunction
+        {
+            Name = "GlobalDoThing",
+            ReturnType = new ParsedType { CSharpTypeName = "Quaternion" },
+            Parameters =
+            {
+                new ParsedParameter { Name = "x", Type = new ParsedType { CSharpTypeName = "double" } },
+            },
+        };
+        CppRegistrationGenerator.BuildCppSignature("GlobalDoThing", fn)
+            .Should().Be("O3DESharp::InteropQuaternion GlobalDoThing(double x)");
+    }
+
+    [Fact]
+    public void BuildCppSignature_EmptyParameterName_SubstitutesArgN()
+    {
+        var method = new ParsedMethod
+        {
+            Name = "Take",
+            IsStatic = true,
+            ReturnType = new ParsedType { CSharpTypeName = "void" },
+            Parameters =
+            {
+                new ParsedParameter { Name = "", Type = new ParsedType { CSharpTypeName = "int" } },
+            },
+        };
+        CppRegistrationGenerator.BuildCppSignature("Util_Take", method)
+            .Should().Be("void Util_Take(AZ::s32 arg0)");
+    }
+
+    [Fact]
+    public void BuildCppSignature_UnknownMarshalType_FallsBackToCommentedVoidStar()
+    {
+        // Defensive: an unmapped C# type should produce a forward decl that
+        // still parses as C++ (void*) but flags itself with a comment so a
+        // human reviewer notices the gap.
+        var method = new ParsedMethod
+        {
+            Name = "Mystery",
+            IsStatic = true,
+            ReturnType = new ParsedType { CSharpTypeName = "MysteryType" },
+        };
+        CppRegistrationGenerator.BuildCppSignature("Util_Mystery", method)
+            .Should().Contain("/* MysteryType */");
+    }
+
+    // --------------------------------------------------------------------
     // BindingConfig: engine-required defines never disappear behind user JSON
     // --------------------------------------------------------------------
 
