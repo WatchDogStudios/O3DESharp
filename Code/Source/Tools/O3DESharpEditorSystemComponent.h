@@ -16,6 +16,7 @@
 namespace O3DESharp
 {
     class CSharpScriptClassPropertyHandler;
+    class CSharpExposedPropertiesHandler;
 }
 
 namespace O3DESharp
@@ -63,5 +64,13 @@ namespace O3DESharp
         // Owned by this component; raw pointer because the property-handler bus
         // takes ownership semantics through Register/UnregisterPropertyType.
         CSharpScriptClassPropertyHandler* m_scriptClassPropertyHandler = nullptr;
+
+        // Phase 10 scaffolding for typed exposed-property editor widgets.
+        // Registered with the property-handler bus under
+        // AZ_CRC_CE("CSharpExposedProperties") but the EditContext for
+        // CSharpScriptComponentConfig::m_exposedPropertyValues is still on
+        // the default UIHandler, so this handler is dormant until a
+        // follow-up flips that switch.
+        CSharpExposedPropertiesHandler* m_exposedPropertiesHandler = nullptr;
     };
 } // namespace O3DESharp

@@ -16,4 +16,6 @@ set(FILES
     Source/Tools/Components/EditorCSharpScriptComponent.cpp
     Source/Tools/Components/CSharpScriptClassPropertyHandler.h
     Source/Tools/Components/CSharpScriptClassPropertyHandler.cpp
+    Source/Tools/Components/CSharpExposedPropertiesHandler.h
+    Source/Tools/Components/CSharpExposedPropertiesHandler.cpp
 )

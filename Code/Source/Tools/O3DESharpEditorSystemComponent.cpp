@@ -10,6 +10,7 @@
 #include "O3DESharpEditorSystemComponent.h"
 #include "CSharpEditorToolsBus.h"
 #include "Components/CSharpScriptClassPropertyHandler.h"
+#include "Components/CSharpExposedPropertiesHandler.h"
 
 #include <O3DESharp/O3DESharpBus.h>
 #include <O3DESharp/O3DESharpTypeIds.h>
@@ -107,23 +108,45 @@ namespace O3DESharp
         // Register the C# script class property handler so EditorCSharpScriptComponent's
         // m_scriptClassName field gets the rich combo box + completer instead of a plain
         // text edit. The handler matches via AZ_CRC_CE("CSharpScriptClass").
+        using AzToolsFramework::PropertyTypeRegistrationMessages;
         if (m_scriptClassPropertyHandler == nullptr)
         {
             m_scriptClassPropertyHandler = aznew CSharpScriptClassPropertyHandler();
-            using AzToolsFramework::PropertyTypeRegistrationMessages;
             PropertyTypeRegistrationMessages::Bus::Broadcast(
                 &PropertyTypeRegistrationMessages::Bus::Events::RegisterPropertyType,
                 m_scriptClassPropertyHandler);
+        }
+
+        // Phase 10 scaffolding: register the typed exposed-properties handler
+        // under AZ_CRC_CE("CSharpExposedProperties"). Nothing in the
+        // EditContext refers to that CRC yet, so this is dormant - a future
+        // commit will flip CSharpScriptComponentConfig::m_exposedPropertyValues'
+        // DataElement UIHandler from Default to the new CRC after the typed
+        // widget tree has been validated in an editor.
+        if (m_exposedPropertiesHandler == nullptr)
+        {
+            m_exposedPropertiesHandler = aznew CSharpExposedPropertiesHandler();
+            PropertyTypeRegistrationMessages::Bus::Broadcast(
+                &PropertyTypeRegistrationMessages::Bus::Events::RegisterPropertyType,
+                m_exposedPropertiesHandler);
         }
     }
 
     void O3DESharpEditorSystemComponent::Deactivate()
     {
-        // Unregister + delete the property handler before tearing down anything else
-        // that it might depend on.
+        // Unregister + delete the property handlers before tearing down anything
+        // else that they might depend on.
+        using AzToolsFramework::PropertyTypeRegistrationMessages;
+        if (m_exposedPropertiesHandler != nullptr)
+        {
+            PropertyTypeRegistrationMessages::Bus::Broadcast(
+                &PropertyTypeRegistrationMessages::Bus::Events::UnregisterPropertyType,
+                m_exposedPropertiesHandler);
+            delete m_exposedPropertiesHandler;
+            m_exposedPropertiesHandler = nullptr;
+        }
         if (m_scriptClassPropertyHandler != nullptr)
         {
-            using AzToolsFramework::PropertyTypeRegistrationMessages;
             PropertyTypeRegistrationMessages::Bus::Broadcast(
                 &PropertyTypeRegistrationMessages::Bus::Events::UnregisterPropertyType,
                 m_scriptClassPropertyHandler);
