@@ -73,13 +73,25 @@ logger = logging.getLogger("O3DESharp.GenerateBindings")
 
 class BindingGenerationOrchestrator:
     """
-    High-level orchestrator for C# binding generation.
-    
-    Provides a convenient interface for configuring and running binding generation
-    from both the CLI and the Editor UI.
+    Legacy high-level orchestrator that drives CSharpBindingGenerator over a
+    BehaviorContext reflection JSON dump.
+
+    *** DEPRECATED ***
+    Use ClangSharpInvoker.generate_bindings instead - it shells out to
+    Code/Tools/BindingGenerator (the canonical C# / libclang generator) and
+    is the only path that receives correctness fixes going forward. This
+    class is retained until csharp_editor_tools._generate_bindings is
+    migrated; remove it when no editor UI path imports it.
     """
-    
+
     def __init__(self, engine_path: Optional[Path] = None):
+        import warnings as _w
+        _w.warn(
+            "BindingGenerationOrchestrator is deprecated. Use "
+            "ClangSharpInvoker.generate_bindings instead.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
         self.config = BindingGeneratorConfig()
         self.reflection_data: Optional[ReflectionData] = None
         self.gem_resolver: Optional[GemDependencyResolver] = None

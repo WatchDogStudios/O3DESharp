@@ -420,13 +420,29 @@ _ILLEGAL_FILENAME_CHARS = frozenset('<>:"/\\|?*')
 
 class CSharpBindingGenerator:
     """
-    Generator for C# bindings from reflection data.
-    
-    This is a legacy class maintained for backwards compatibility.
-    For new code, use the ClangSharp-based generator tool.
+    Legacy Python-based generator that consumes BehaviorContext reflection
+    JSON dumps and emits C# wrappers.
+
+    *** DEPRECATED ***
+    Replaced by Code/Tools/BindingGenerator (the ClangSharp-based C# tool).
+    Invoke that via ClangSharpInvoker.generate_bindings instead - it parses
+    headers directly, doesn't require a runtime reflection_data.json dump,
+    and is the only path that receives correctness fixes going forward.
+
+    This class is scheduled for removal once the remaining editor UI
+    callers (csharp_editor_tools._generate_bindings via
+    generate_bindings.BindingGenerationOrchestrator) migrate.
     """
-    
+
     def __init__(self, config: BindingGeneratorConfig = None):
+        import warnings as _w
+        _w.warn(
+            "CSharpBindingGenerator is deprecated. Use ClangSharpInvoker "
+            "(which shells out to Code/Tools/BindingGenerator) instead. "
+            "See Editor/Scripts/__init__.py docstring for the canonical entry points.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
         self.config = config or BindingGeneratorConfig()
         self.type_mapper = TypeMapper()
         self._generated_files: Dict[str, str] = {}
