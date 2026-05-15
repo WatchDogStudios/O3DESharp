@@ -257,23 +257,31 @@ namespace O3DE
         }
 
         /// <summary>
-        /// Creates a rotation that looks in the specified direction
+        /// Creates a rotation that orients the entity so its Forward axis (engine
+        /// convention: +Y) points along <paramref name="forward"/>, with the entity
+        /// Up axis (+Z) aligned with <paramref name="up"/> as closely as possible.
+        ///
+        /// O3DE is right-handed with X=right, Y=forward, Z=up. The basis vectors
+        /// of the resulting rotation match those columns directly, so
+        /// <c>Transform.Forward</c> on an entity whose <c>Rotation</c> is set to
+        /// <c>LookRotation(dir)</c> equals <c>dir</c>.
         /// </summary>
         public static Quaternion LookRotation(Vector3 forward, Vector3 up)
         {
+            // In an O3DE basis, right = cross(forward, up) gives the correct +X.
+            // (Using cross(up, forward) yields a Z-forward Unity-style left-handed
+            // result and was the source of a long-standing rotation bug.)
             forward = forward.Normalized;
-            Vector3 right = Vector3.Cross(up, forward).Normalized;
-            up = Vector3.Cross(forward, right);
+            Vector3 right = Vector3.Cross(forward, up).Normalized;
+            up = Vector3.Cross(right, forward);
 
-            float m00 = right.X;
-            float m01 = right.Y;
-            float m02 = right.Z;
-            float m10 = up.X;
-            float m11 = up.Y;
-            float m12 = up.Z;
-            float m20 = forward.X;
-            float m21 = forward.Y;
-            float m22 = forward.Z;
+            // Row r, column c. The rotation matrix has columns = basis vectors:
+            //   column 0 = right (X), column 1 = forward (Y), column 2 = up (Z).
+            // The matrix-to-quaternion conversion below uses the trace pattern, so
+            // we lay out the entries in (row, column) form to match.
+            float m00 = right.X;   float m01 = forward.X;   float m02 = up.X;
+            float m10 = right.Y;   float m11 = forward.Y;   float m12 = up.Y;
+            float m20 = right.Z;   float m21 = forward.Z;   float m22 = up.Z;
 
             float trace = m00 + m11 + m22;
             Quaternion q;

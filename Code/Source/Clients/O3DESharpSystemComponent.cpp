@@ -181,11 +181,18 @@ namespace O3DESharp
         }
 
         bool success = m_coralHostManager->ReloadUserAssemblies();
-        
+
         if (success)
         {
-            // Re-register script bindings after reload
+            // Re-register script bindings against the freshly-loaded core assembly.
             RegisterScriptBindings();
+
+            // Re-reflect the BehaviorContext. Any gem that registered new types
+            // since startup is now visible to NativeReflection, and any
+            // AZ::BehaviorMethod* pointers cached by the dispatcher are
+            // refreshed so we don't dereference dangling pointers after a
+            // reload that involves module load/unload.
+            ReflectBehaviorContext();
         }
 
         return success;

@@ -204,10 +204,15 @@ namespace O3DE.Reflection
         /// <returns>The result as a dynamic object, or null for void methods</returns>
         public static object? InvokeStaticMethod(string className, string methodName, params object[] args)
         {
-            string argsJson = SerializeArguments(args);
-            string resultJson;
-            unsafe { resultJson = ReflectionInternalCalls.Reflection_InvokeStaticMethod(className, methodName, argsJson); }
-            return DeserializeResult(resultJson);
+            // The native dispatcher (GenericDispatcher::Reflection_InvokeStaticMethod)
+            // currently returns {"error":"Not fully implemented"} unconditionally.
+            // Throwing here makes the gap obvious instead of letting callers parse a
+            // success-shaped JSON envelope that never arrives.
+            throw new NotImplementedException(
+                "NativeReflection.InvokeStaticMethod is not yet implemented in the native " +
+                "dispatcher (see Code/Source/Scripting/Reflection/GenericDispatcher.cpp). " +
+                "Use direct API methods (e.g. Entity / Transform / Physics) for now, or " +
+                "extend the dispatcher to parse argsJson and call BehaviorMethod::Call.");
         }
 
         /// <summary>
@@ -219,22 +224,10 @@ namespace O3DE.Reflection
         /// <returns>The result as a dynamic object, or null for void methods</returns>
         public static object? InvokeInstanceMethod(NativeObject instance, string methodName, params object[] args)
         {
-            if (instance == null || !instance.IsValid)
-            {
-                throw new ArgumentException("Invalid native object instance");
-            }
-
-            string argsJson = SerializeArguments(args);
-            string resultJson;
-            unsafe
-            {
-                resultJson = ReflectionInternalCalls.Reflection_InvokeInstanceMethod(
-                    instance.TypeName,
-                    methodName,
-                    instance.Handle,
-                    argsJson);
-            }
-            return DeserializeResult(resultJson);
+            // Native dispatcher stub returns "Not fully implemented". See InvokeStaticMethod above.
+            throw new NotImplementedException(
+                "NativeReflection.InvokeInstanceMethod is not yet implemented in the native dispatcher. " +
+                "Use direct API methods for now.");
         }
 
         /// <summary>
@@ -245,10 +238,10 @@ namespace O3DE.Reflection
         /// <returns>The result as a dynamic object, or null for void methods</returns>
         public static object? InvokeGlobalMethod(string methodName, params object[] args)
         {
-            string argsJson = SerializeArguments(args);
-            string resultJson;
-            unsafe { resultJson = ReflectionInternalCalls.Reflection_InvokeGlobalMethod(methodName, argsJson); }
-            return DeserializeResult(resultJson);
+            // Native dispatcher stub returns "Not fully implemented". See InvokeStaticMethod above.
+            throw new NotImplementedException(
+                "NativeReflection.InvokeGlobalMethod is not yet implemented in the native dispatcher. " +
+                "Use direct API methods for now.");
         }
 
         #endregion
@@ -264,27 +257,10 @@ namespace O3DE.Reflection
         /// <returns>The property value</returns>
         public static T? GetProperty<T>(NativeObject instance, string propertyName)
         {
-            if (instance == null || !instance.IsValid)
-            {
-                throw new ArgumentException("Invalid native object instance");
-            }
-
-            string resultJson;
-            unsafe
-            {
-                resultJson = ReflectionInternalCalls.Reflection_GetProperty(
-                    instance.TypeName,
-                    propertyName,
-                    instance.Handle);
-            }
-
-            object? result = DeserializeResult(resultJson);
-            if (result == null)
-            {
-                return default;
-            }
-
-            return (T)Convert.ChangeType(result, typeof(T));
+            // Native dispatcher stub. See InvokeStaticMethod above.
+            throw new NotImplementedException(
+                "NativeReflection.GetProperty is not yet implemented in the native dispatcher. " +
+                "Use direct API methods for now.");
         }
 
         /// <summary>
@@ -295,26 +271,10 @@ namespace O3DE.Reflection
         /// <param name="value">The value to set</param>
         public static void SetProperty(NativeObject instance, string propertyName, object value)
         {
-            if (instance == null || !instance.IsValid)
-            {
-                throw new ArgumentException("Invalid native object instance");
-            }
-
-            string valueJson = SerializeValue(value);
-            bool success;
-            unsafe
-            {
-                success = ReflectionInternalCalls.Reflection_SetProperty(
-                    instance.TypeName,
-                    propertyName,
-                    instance.Handle,
-                    valueJson);
-            }
-
-            if (!success)
-            {
-                throw new InvalidOperationException($"Failed to set property {instance.TypeName}.{propertyName}");
-            }
+            // Native dispatcher stub. See InvokeStaticMethod above.
+            throw new NotImplementedException(
+                "NativeReflection.SetProperty is not yet implemented in the native dispatcher. " +
+                "Use direct API methods for now.");
         }
 
         /// <summary>
@@ -325,14 +285,9 @@ namespace O3DE.Reflection
         /// <returns>The property value</returns>
         public static T? GetGlobalProperty<T>(string propertyName)
         {
-            string resultJson;
-            unsafe { resultJson = ReflectionInternalCalls.Reflection_GetGlobalProperty(propertyName); }
-            object? result = DeserializeResult(resultJson);
-            if (result == null)
-            {
-                return default;
-            }
-            return (T)Convert.ChangeType(result, typeof(T));
+            // Native dispatcher stub. See InvokeStaticMethod above.
+            throw new NotImplementedException(
+                "NativeReflection.GetGlobalProperty is not yet implemented in the native dispatcher.");
         }
 
         /// <summary>
@@ -342,14 +297,9 @@ namespace O3DE.Reflection
         /// <param name="value">The value to set</param>
         public static void SetGlobalProperty(string propertyName, object value)
         {
-            string valueJson = SerializeValue(value);
-            bool success;
-            unsafe { success = ReflectionInternalCalls.Reflection_SetGlobalProperty(propertyName, valueJson); }
-
-            if (!success)
-            {
-                throw new InvalidOperationException($"Failed to set global property {propertyName}");
-            }
+            // Native dispatcher stub. See InvokeStaticMethod above.
+            throw new NotImplementedException(
+                "NativeReflection.SetGlobalProperty is not yet implemented in the native dispatcher.");
         }
 
         #endregion

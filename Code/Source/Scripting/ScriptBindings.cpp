@@ -342,9 +342,25 @@ namespace O3DESharp
     void ScriptBindings::Transform_SetLocalScale(AZ::u64 entityId, InteropVector3 scale)
     {
         AZ::EntityId id(entityId);
-        // O3DE uses uniform scale, so we'll use the average or x component
-        float uniformScale = scale.x;
-        AZ::TransformBus::Event(id, &AZ::TransformBus::Events::SetLocalUniformScale, uniformScale);
+        // O3DE's AZ::Transform stores uniform scale only. If a script passes a
+        // non-uniform Vector3 we'd silently lose two components, so warn loudly
+        // and apply the X component as the uniform scale. Use a tiny epsilon
+        // because exact float equality across managed -> native marshalling is
+        // unreliable.
+        constexpr float kScaleEpsilon = 1e-4f;
+        if (AZStd::abs(scale.x - scale.y) > kScaleEpsilon ||
+            AZStd::abs(scale.x - scale.z) > kScaleEpsilon)
+        {
+            AZ_Warning(
+                "O3DESharp",
+                false,
+                "Transform.LocalScale assigned non-uniform (%.4f, %.4f, %.4f); O3DE only "
+                "supports uniform scale on a Transform. Applying X=%.4f and discarding Y/Z. "
+                "Use Transform.UniformScale for an unambiguous API.",
+                scale.x, scale.y, scale.z, scale.x);
+        }
+
+        AZ::TransformBus::Event(id, &AZ::TransformBus::Events::SetLocalUniformScale, scale.x);
     }
 
     float ScriptBindings::Transform_GetLocalUniformScale(AZ::u64 entityId)

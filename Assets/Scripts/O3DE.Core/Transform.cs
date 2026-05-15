@@ -146,8 +146,15 @@ namespace O3DE
         #region Scale
 
         /// <summary>
-        /// Gets or sets the local scale of this entity
+        /// Gets or sets the local scale of this entity as a Vector3.
         /// </summary>
+        /// <remarks>
+        /// <b>O3DE supports uniform scale only.</b> The getter returns
+        /// <c>(s, s, s)</c> for the uniform scale s; the setter applies only the
+        /// X component and logs a warning if Y or Z differ. Prefer
+        /// <see cref="UniformScale"/> for clarity.
+        /// </remarks>
+        [Obsolete("O3DE uses uniform scale only. Use Transform.UniformScale (float) instead; assigning a non-uniform Vector3 silently drops the Y and Z components.")]
         public Vector3 LocalScale
         {
             get
@@ -164,7 +171,8 @@ namespace O3DE
         }
 
         /// <summary>
-        /// Gets or sets the uniform local scale of this entity
+        /// Gets or sets the uniform local scale of this entity. This is the
+        /// preferred scale API — O3DE's transform only supports uniform scaling.
         /// </summary>
         public float UniformScale
         {
@@ -358,8 +366,10 @@ namespace O3DE
         /// <returns>The point in world space</returns>
         public Vector3 TransformPoint(Vector3 localPoint)
         {
-            // Apply scale, rotation, then translation
-            Vector3 scaled = localPoint * LocalScale;
+            // Apply scale, rotation, then translation. O3DE has uniform scale,
+            // so multiplying each component by UniformScale is exact.
+            float s = UniformScale;
+            Vector3 scaled = new Vector3(localPoint.X * s, localPoint.Y * s, localPoint.Z * s);
             Vector3 rotated = Rotation * scaled;
             return rotated + Position;
         }
@@ -371,10 +381,17 @@ namespace O3DE
         /// <returns>The point in local space</returns>
         public Vector3 InverseTransformPoint(Vector3 worldPoint)
         {
-            // Inverse of TransformPoint: subtract position, inverse rotate, inverse scale
+            // Inverse of TransformPoint: subtract position, inverse rotate, inverse scale.
+            // Uniform scale lets us divide each component by the same scalar.
             Vector3 translated = worldPoint - Position;
             Vector3 rotated = Rotation.Inverse * translated;
-            return rotated / LocalScale;
+            float s = UniformScale;
+            if (s == 0f)
+            {
+                return rotated;
+            }
+            float invS = 1f / s;
+            return new Vector3(rotated.X * invS, rotated.Y * invS, rotated.Z * invS);
         }
 
         /// <summary>

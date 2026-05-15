@@ -233,14 +233,11 @@ namespace O3DESharp
 
         if (m_scriptInstance.IsValid() && m_scriptInitialized)
         {
-            // Call OnUpdate on the managed instance
-            SafeInvokeMethod("OnUpdate", deltaTime);
-
-            // Process any scheduled Invoke/InvokeRepeating actions
-            if (!m_disabledByException)
-            {
-                SafeInvokeMethod("ProcessPendingInvocations", deltaTime);
-            }
+            // Single managed transition per frame: ScriptComponent.Tick(dt) calls
+            // OnUpdate then ProcessPendingInvocations on the managed side. This
+            // replaces the previous pair of InvokeMethod calls (one of which
+            // was unconditional even when no actions were scheduled).
+            SafeInvokeMethod("Tick", deltaTime);
         }
     }
 

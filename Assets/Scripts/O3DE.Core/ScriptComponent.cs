@@ -301,7 +301,28 @@ namespace O3DE
         }
 
         /// <summary>
-        /// Processes pending scheduled actions. Called internally by the C++ tick handler.
+        /// Combined per-frame entry point invoked by the C++ CSharpScriptComponent.
+        /// Runs the user's overridden OnUpdate then drains any scheduled
+        /// Invoke / InvokeRepeating actions in a single managed transition.
+        /// Marked non-virtual so user scripts cannot accidentally break the
+        /// scheduler by forgetting to call base.Tick.
+        /// </summary>
+        /// <param name="deltaTime">Seconds since the last tick.</param>
+        public void Tick(float deltaTime)
+        {
+            OnUpdate(deltaTime);
+
+            // Cheap early-out: skip the inner loop entirely when nothing is
+            // scheduled. m_scheduledActions stays null for scripts that never
+            // call Invoke / InvokeRepeating, which is the common case.
+            if (m_scheduledActions != null && m_scheduledActions.Count > 0)
+            {
+                ProcessPendingInvocations(deltaTime);
+            }
+        }
+
+        /// <summary>
+        /// Processes pending scheduled actions. Called internally by Tick.
         /// DO NOT call this directly.
         /// </summary>
         internal void ProcessPendingInvocations(float deltaTime)
