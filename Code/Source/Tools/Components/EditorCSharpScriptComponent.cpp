@@ -16,9 +16,12 @@
 #include <AzCore/Settings/SettingsRegistryMergeUtils.h>
 #include <AzCore/JSON/rapidjson.h>
 #include <AzCore/JSON/document.h>
+#include <AzCore/Interface/Interface.h>
 #include <AzFramework/API/ApplicationAPI.h>
 #include <AzToolsFramework/API/EditorPythonRunnerRequestsBus.h>
 #include <AzToolsFramework/API/ToolsApplicationAPI.h>
+
+#include <Scripting/CoralHostManager.h>
 
 namespace O3DESharp
 {
@@ -45,14 +48,23 @@ namespace O3DESharp
 
             if (AZ::EditContext* editContext = serializeContext->GetEditContext())
             {
-                // Define the config fields here - they will be shown via ShowChildrenOnly
+                // Define the config fields here - they will be shown via ShowChildrenOnly.
+                // The Script Class field uses the AZ_CRC_CE("CSharpScriptClass") UI handler
+                // (CSharpScriptClassPropertyHandler, registered by the editor system
+                // component). That gives the user a combo box backed by the Python
+                // CSharpEditorToolsBus handler instead of a plain text edit.
                 editContext->Class<EditorCSharpScriptConfig>("C# Script Configuration", "Configuration for a C# script component")
                     ->ClassElement(AZ::Edit::ClassElements::EditorData, "")
                         ->Attribute(AZ::Edit::Attributes::AutoExpand, true)
-                    ->DataElement(AZ::Edit::UIHandlers::Default, &EditorCSharpScriptConfig::m_scriptClassName,
+                    ->DataElement(AZ_CRC_CE("CSharpScriptClass"), &EditorCSharpScriptConfig::m_scriptClassName,
                         "Script Class", "The fully qualified C# class name (e.g., MyGame.PlayerController)")
                     ->DataElement(AZ::Edit::UIHandlers::Default, &EditorCSharpScriptConfig::m_assemblyPath,
                         "Assembly Path", "Optional: Path to the assembly containing the script (leave empty for default)")
+                    // Read-only feedback line so users immediately see why a typed class
+                    // name is unrecognised, instead of only finding out at runtime.
+                    ->DataElement(AZ::Edit::UIHandlers::Default, &EditorCSharpScriptConfig::m_validationStatus,
+                        "Status", "Result of validating the Script Class field against the loaded assemblies.")
+                        ->Attribute(AZ::Edit::Attributes::ReadOnly, true)
                     ;
             }
         }
@@ -169,11 +181,30 @@ namespace O3DESharp
             return;
         }
 
-        // TODO: When the O3DESharp system is initialized, we could validate
-        // that the class actually exists in the assembly. For now, we mark
-        // it as "Ready" if the format looks correct.
-        m_config.m_validationStatus = "Ready";
-        m_config.m_isValid = true;
+        // If the Coral host is up, ask it whether the class actually exists in any
+        // loaded user assembly. This is the only way to catch typos against the
+        // live assemblies short of running the game.
+        if (ClassExistsInAssembly(m_config.m_scriptClassName, m_config.m_assemblyPath))
+        {
+            m_config.m_validationStatus = "OK - class found in loaded assemblies";
+            m_config.m_isValid = true;
+        }
+        else
+        {
+            // Coral host not initialized yet, or the class isn't present in any
+            // loaded user assembly. Report the latter; the former only happens
+            // in early Activate / before the runtime gem comes up.
+            if (auto* coralHost = AZ::Interface<ICoralHostManager>::Get())
+            {
+                AZ_UNUSED(coralHost);
+                m_config.m_validationStatus = "Error: class not found in any loaded assembly";
+            }
+            else
+            {
+                m_config.m_validationStatus = "Coral host not initialized yet";
+            }
+            m_config.m_isValid = false;
+        }
     }
 
     AZ::Crc32 EditorCSharpScriptComponent::OnScriptClassNameChanged()
@@ -345,12 +376,22 @@ except Exception as e:
     }
 
     bool EditorCSharpScriptComponent::ClassExistsInAssembly(
-        [[maybe_unused]] const AZStd::string& className,
+        const AZStd::string& className,
         [[maybe_unused]] const AZStd::string& assemblyPath) const
     {
-        // TODO: Implement actual assembly inspection using Coral
-        // For now, return true to allow runtime validation
-        return true;
+        // assemblyPath is intentionally ignored here: CoralHostManager owns the unified
+        // load context and any class name lookup is satisfied by GetUserType iterating
+        // every currently-loaded user assembly. Per-assembly disambiguation can be
+        // added later if scripts ever live in non-default assemblies.
+        auto* coralHost = AZ::Interface<ICoralHostManager>::Get();
+        if (coralHost == nullptr)
+        {
+            // Host not initialized yet - we cannot validate. Defer the verdict to the
+            // ValidateScript caller, which surfaces this as "Coral host not initialized".
+            return false;
+        }
+
+        return coralHost->GetUserType(className) != nullptr;
     }
 
     void EditorCSharpScriptComponent::Init()

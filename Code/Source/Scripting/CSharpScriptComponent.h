@@ -174,6 +174,20 @@ namespace O3DESharp
         void SetEntityIdOnScript();
 
     private:
+        // Invoke a managed method, catching any exception thrown across the
+        // interop boundary. If a script's lifecycle method throws (e.g. an
+        // unhandled NullReferenceException in OnUpdate), this disables the
+        // component instead of re-throwing every frame. The first exception
+        // is logged via AZ_Error; subsequent ones are dropped silently.
+        void SafeInvokeMethod(const char* methodName) noexcept;
+        void SafeInvokeMethod(const char* methodName, float deltaTime) noexcept;
+
+        // Once a managed exception has propagated out of a lifecycle hook we
+        // detach from TickBus and treat the component as inert. This avoids
+        // the "every entity throws once per frame in Release" failure mode.
+        void DisableAfterUnhandledException(const char* methodName, const char* what);
+
+    private:
         CSharpScriptComponentConfig m_config;
 
         // The managed C# object instance
@@ -187,6 +201,10 @@ namespace O3DESharp
 
         // Flag to prevent re-entrant activation
         bool m_isActivating = false;
+
+        // Set after an unhandled exception in a lifecycle hook. Once true the
+        // component stops dispatching to the managed instance.
+        bool m_disabledByException = false;
     };
 
     // Template implementations

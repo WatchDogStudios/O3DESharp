@@ -9,7 +9,9 @@
 #include <AzCore/Serialization/SerializeContext.h>
 #include "O3DESharpEditorSystemComponent.h"
 #include "CSharpEditorToolsBus.h"
+#include "Components/CSharpScriptClassPropertyHandler.h"
 
+#include <O3DESharp/O3DESharpBus.h>
 #include <O3DESharp/O3DESharpTypeIds.h>
 
 #include <AzToolsFramework/ActionManager/Action/ActionManagerInterface.h>
@@ -17,6 +19,7 @@
 #include <AzToolsFramework/API/EditorPythonRunnerRequestsBus.h>
 #include <AzToolsFramework/Editor/ActionManagerIdentifiers/EditorContextIdentifiers.h>
 #include <AzToolsFramework/Editor/ActionManagerIdentifiers/EditorMenuIdentifiers.h>
+#include <AzToolsFramework/UI/PropertyEditor/PropertyEditorAPI.h>
 
 namespace O3DESharp
 {
@@ -25,6 +28,7 @@ namespace O3DESharp
     static constexpr const char* CSharpCreateProjectActionId = "o3de.action.o3desharp.createProject";
     static constexpr const char* CSharpCreateScriptActionId = "o3de.action.o3desharp.createScript";
     static constexpr const char* CSharpBuildProjectsActionId = "o3de.action.o3desharp.buildProjects";
+    static constexpr const char* CSharpReloadScriptsActionId = "o3de.action.o3desharp.reloadScripts";
 
     // Menu identifier for our submenu
     static constexpr const char* CSharpScriptingMenuId = "o3de.menu.o3desharp.scripting";
@@ -52,6 +56,10 @@ namespace O3DESharp
             behaviorContext->EBus<CSharpEditorToolsBus>("CSharpEditorToolsBus")
                 ->Attribute(AZ::Script::Attributes::Scope, AZ::Script::Attributes::ScopeFlags::Automation)
                 ->Attribute(AZ::Script::Attributes::Module, "editor")
+                // Handler<> exposes a Python-implementable handler class as
+                // azlmbr.editor.CSharpEditorToolsBusHandler. The Python side
+                // (csharp_editor_tools.py) derives from it and calls connect().
+                ->Handler<CSharpEditorToolsBusHandler>()
                 ->Event("GetAvailableScriptClasses", &CSharpEditorToolsBus::Events::GetAvailableScriptClasses)
                 ->Event("GetScriptClassNames", &CSharpEditorToolsBus::Events::GetScriptClassNames)
                 ->Event("ValidateScriptClass", &CSharpEditorToolsBus::Events::ValidateScriptClass)
@@ -95,10 +103,34 @@ namespace O3DESharp
         O3DESharpSystemComponent::Activate();
         AzToolsFramework::EditorEvents::Bus::Handler::BusConnect();
         AzToolsFramework::ActionManagerRegistrationNotificationBus::Handler::BusConnect();
+
+        // Register the C# script class property handler so EditorCSharpScriptComponent's
+        // m_scriptClassName field gets the rich combo box + completer instead of a plain
+        // text edit. The handler matches via AZ_CRC_CE("CSharpScriptClass").
+        if (m_scriptClassPropertyHandler == nullptr)
+        {
+            m_scriptClassPropertyHandler = aznew CSharpScriptClassPropertyHandler();
+            using AzToolsFramework::PropertyTypeRegistrationMessages;
+            PropertyTypeRegistrationMessages::Bus::Broadcast(
+                &PropertyTypeRegistrationMessages::Bus::Events::RegisterPropertyType,
+                m_scriptClassPropertyHandler);
+        }
     }
 
     void O3DESharpEditorSystemComponent::Deactivate()
     {
+        // Unregister + delete the property handler before tearing down anything else
+        // that it might depend on.
+        if (m_scriptClassPropertyHandler != nullptr)
+        {
+            using AzToolsFramework::PropertyTypeRegistrationMessages;
+            PropertyTypeRegistrationMessages::Bus::Broadcast(
+                &PropertyTypeRegistrationMessages::Bus::Events::UnregisterPropertyType,
+                m_scriptClassPropertyHandler);
+            delete m_scriptClassPropertyHandler;
+            m_scriptClassPropertyHandler = nullptr;
+        }
+
         AzToolsFramework::ActionManagerRegistrationNotificationBus::Handler::BusDisconnect();
         AzToolsFramework::EditorEvents::Bus::Handler::BusDisconnect();
         O3DESharpSystemComponent::Deactivate();
@@ -172,6 +204,24 @@ namespace O3DESharp
                 [this]() { BuildCSharpProjects(); }
             );
         }
+
+        // Register "Reload Scripts" action - triggers Coral host to unload and
+        // reload all user assemblies. Useful after rebuilding without restarting
+        // the editor; the README has long advertised this as "exact mechanism TBD",
+        // this is the explicit mechanism.
+        {
+            AzToolsFramework::ActionProperties actionProperties;
+            actionProperties.m_name = "Reload Scripts";
+            actionProperties.m_description = "Unload and reload all C# user assemblies (Debug / Profile builds only)";
+            actionProperties.m_category = "Scripting";
+
+            actionManagerInterface->RegisterAction(
+                EditorIdentifiers::MainWindowActionContextIdentifier,
+                CSharpReloadScriptsActionId,
+                actionProperties,
+                [this]() { ReloadCSharpScripts(); }
+            );
+        }
     }
 
     void O3DESharpEditorSystemComponent::OnMenuBindingHook()
@@ -202,6 +252,7 @@ namespace O3DESharp
         menuManagerInterface->AddActionToMenu(CSharpScriptingMenuId, CSharpCreateScriptActionId, 300);
         menuManagerInterface->AddSeparatorToMenu(CSharpScriptingMenuId, 350);
         menuManagerInterface->AddActionToMenu(CSharpScriptingMenuId, CSharpBuildProjectsActionId, 400);
+        menuManagerInterface->AddActionToMenu(CSharpScriptingMenuId, CSharpReloadScriptsActionId, 500);
     }
 
     // Helper to get Python code that sets up the O3DESharp module path
@@ -274,6 +325,29 @@ except Exception as e:
             pythonCode.c_str(),
             false
         );
+    }
+
+    void O3DESharpEditorSystemComponent::ReloadCSharpScripts()
+    {
+        // Dispatch to the runtime O3DESharpRequestBus which owns the Coral host
+        // and knows how to flush user assemblies. If the bus has no handler
+        // (system component not activated yet) we surface that to the editor log
+        // rather than silently dropping the action.
+        bool result = false;
+        O3DESharpRequestBus::BroadcastResult(result, &O3DESharpRequests::ReloadUserAssemblies);
+        if (result)
+        {
+            AZ_Printf("O3DESharp", "Reload Scripts: user assemblies reloaded successfully");
+        }
+        else
+        {
+            AZ_Warning(
+                "O3DESharp",
+                false,
+                "Reload Scripts: ReloadUserAssemblies returned false. Hot reload is only "
+                "available in Debug/Profile builds and requires the O3DESharp system "
+                "component to be active. Check the log for details.");
+        }
     }
 
     void O3DESharpEditorSystemComponent::BuildCSharpProjects()

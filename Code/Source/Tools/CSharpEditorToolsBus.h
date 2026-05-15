@@ -180,4 +180,85 @@ namespace O3DESharp
 
     using CSharpEditorToolsBus = AZ::EBus<CSharpEditorToolsRequests>;
 
+    /**
+     * BehaviorContext / Python handler binder for CSharpEditorToolsBus.
+     *
+     * Reflecting this type via ->Handler<CSharpEditorToolsBusHandler>() on the
+     * BehaviorContext lets Python scripts implement the bus by deriving from
+     * the auto-generated handler class (azlmbr.editor.CSharpEditorToolsBusHandler)
+     * and calling connect(). Without this binder the bus is callable from C++
+     * only and has no Python-side implementation, which is why the property
+     * handler dropdown used to come back empty.
+     */
+    class CSharpEditorToolsBusHandler
+        : public CSharpEditorToolsBus::Handler
+        , public AZ::BehaviorEBusHandler
+    {
+    public:
+        AZ_EBUS_BEHAVIOR_BINDER(
+            CSharpEditorToolsBusHandler,
+            "{4B5C6D7E-8F90-4213-9876-CDEF01234567}",
+            AZ::SystemAllocator,
+            GetAvailableScriptClasses,
+            GetScriptClassNames,
+            ValidateScriptClass,
+            OpenScriptPicker,
+            CreateNewScript,
+            OpenScriptInEditor,
+            InvalidateCache,
+            AddToRecentClasses);
+
+        AZStd::vector<ScriptClassInfo> GetAvailableScriptClasses(bool scriptsOnly) override
+        {
+            AZStd::vector<ScriptClassInfo> result;
+            CallResult(result, FN_GetAvailableScriptClasses, scriptsOnly);
+            return result;
+        }
+
+        AZStd::vector<AZStd::string> GetScriptClassNames(bool scriptsOnly) override
+        {
+            AZStd::vector<AZStd::string> result;
+            CallResult(result, FN_GetScriptClassNames, scriptsOnly);
+            return result;
+        }
+
+        ScriptValidationResult ValidateScriptClass(const AZStd::string& className) override
+        {
+            ScriptValidationResult result;
+            CallResult(result, FN_ValidateScriptClass, className);
+            return result;
+        }
+
+        AZStd::string OpenScriptPicker(const AZStd::string& currentClass) override
+        {
+            AZStd::string result;
+            CallResult(result, FN_OpenScriptPicker, currentClass);
+            return result;
+        }
+
+        AZStd::string CreateNewScript(const AZStd::string& defaultName, const AZStd::string& defaultNamespace) override
+        {
+            AZStd::string result;
+            CallResult(result, FN_CreateNewScript, defaultName, defaultNamespace);
+            return result;
+        }
+
+        bool OpenScriptInEditor(const AZStd::string& className) override
+        {
+            bool result = false;
+            CallResult(result, FN_OpenScriptInEditor, className);
+            return result;
+        }
+
+        void InvalidateCache() override
+        {
+            Call(FN_InvalidateCache);
+        }
+
+        void AddToRecentClasses(const AZStd::string& className) override
+        {
+            Call(FN_AddToRecentClasses, className);
+        }
+    };
+
 } // namespace O3DESharp

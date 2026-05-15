@@ -15,6 +15,11 @@
 
 namespace O3DESharp
 {
+    class CSharpScriptClassPropertyHandler;
+}
+
+namespace O3DESharp
+{
     /// System component for O3DESharp editor
     /// 
     /// This component handles editor-specific functionality for C# scripting:
@@ -53,5 +58,10 @@ namespace O3DESharp
         void CreateCSharpProject();
         void CreateCSharpScript();
         void BuildCSharpProjects();
+        void ReloadCSharpScripts();
+
+        // Owned by this component; raw pointer because the property-handler bus
+        // takes ownership semantics through Register/UnregisterPropertyType.
+        CSharpScriptClassPropertyHandler* m_scriptClassPropertyHandler = nullptr;
     };
 } // namespace O3DESharp

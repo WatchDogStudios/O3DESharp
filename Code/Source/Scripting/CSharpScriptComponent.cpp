@@ -155,6 +155,7 @@ namespace O3DESharp
 
         // Destroy current instance
         DestroyScriptInstance();
+        m_disabledByException = false; // re-arm for the new instance
 
         // Create new instance
         if (CreateScriptInstance())
@@ -163,7 +164,7 @@ namespace O3DESharp
             if (m_scriptInstance.IsValid())
             {
                 SetEntityIdOnScript();
-                m_scriptInstance.InvokeMethod("OnCreate");
+                SafeInvokeMethod("OnCreate");
             }
         }
     }
@@ -180,6 +181,7 @@ namespace O3DESharp
             return;
         }
         m_isActivating = true;
+        m_disabledByException = false; // re-arm on (re)activation
 
         AZLOG_INFO("CSharpScriptComponent: Activating script '%s' on entity '%s'",
             m_config.m_scriptClassName.c_str(),
@@ -192,10 +194,7 @@ namespace O3DESharp
             SetEntityIdOnScript();
 
             // Call OnCreate on the managed instance
-            if (m_scriptInstance.IsValid())
-            {
-                m_scriptInstance.InvokeMethod("OnCreate");
-            }
+            SafeInvokeMethod("OnCreate");
         }
 
         // Connect to tick bus to call OnUpdate
@@ -217,11 +216,9 @@ namespace O3DESharp
         AZ::TransformNotificationBus::Handler::BusDisconnect();
         AZ::TickBus::Handler::BusDisconnect();
 
-        // Call OnDestroy before destroying the instance
-        if (m_scriptInstance.IsValid())
-        {
-            m_scriptInstance.InvokeMethod("OnDestroy");
-        }
+        // Call OnDestroy before destroying the instance. Use the safe wrapper so
+        // a throwing OnDestroy doesn't tear down the rest of the gem shutdown.
+        SafeInvokeMethod("OnDestroy");
 
         // Destroy the managed instance
         DestroyScriptInstance();
@@ -229,13 +226,21 @@ namespace O3DESharp
 
     void CSharpScriptComponent::OnTick(float deltaTime, [[maybe_unused]] AZ::ScriptTimePoint time)
     {
+        if (m_disabledByException)
+        {
+            return;
+        }
+
         if (m_scriptInstance.IsValid() && m_scriptInitialized)
         {
             // Call OnUpdate on the managed instance
-            m_scriptInstance.InvokeMethod("OnUpdate", deltaTime);
+            SafeInvokeMethod("OnUpdate", deltaTime);
 
             // Process any scheduled Invoke/InvokeRepeating actions
-            m_scriptInstance.InvokeMethod("ProcessPendingInvocations", deltaTime);
+            if (!m_disabledByException)
+            {
+                SafeInvokeMethod("ProcessPendingInvocations", deltaTime);
+            }
         }
     }
 
@@ -243,6 +248,11 @@ namespace O3DESharp
         [[maybe_unused]] const AZ::Transform& local,
         [[maybe_unused]] const AZ::Transform& world)
     {
+        if (m_disabledByException)
+        {
+            return;
+        }
+
         // Optionally notify the script of transform changes
         // This could be used to call OnTransformChanged on the C# side
         if (m_scriptInstance.IsValid() && m_scriptInitialized)
@@ -250,8 +260,70 @@ namespace O3DESharp
             // The script can query the transform via the Transform API
             // We don't pass the transform data directly to avoid complex marshalling
             // Scripts that need to react to transform changes can override OnTransformChanged
-            m_scriptInstance.InvokeMethod("OnTransformChanged");
+            SafeInvokeMethod("OnTransformChanged");
         }
+    }
+
+    void CSharpScriptComponent::SafeInvokeMethod(const char* methodName) noexcept
+    {
+        if (m_disabledByException || !m_scriptInstance.IsValid())
+        {
+            return;
+        }
+
+        try
+        {
+            m_scriptInstance.InvokeMethod(methodName);
+        }
+        catch (const std::exception& ex)
+        {
+            DisableAfterUnhandledException(methodName, ex.what());
+        }
+        catch (...)
+        {
+            DisableAfterUnhandledException(methodName, "non-std::exception");
+        }
+    }
+
+    void CSharpScriptComponent::SafeInvokeMethod(const char* methodName, float deltaTime) noexcept
+    {
+        if (m_disabledByException || !m_scriptInstance.IsValid())
+        {
+            return;
+        }
+
+        try
+        {
+            m_scriptInstance.InvokeMethod(methodName, deltaTime);
+        }
+        catch (const std::exception& ex)
+        {
+            DisableAfterUnhandledException(methodName, ex.what());
+        }
+        catch (...)
+        {
+            DisableAfterUnhandledException(methodName, "non-std::exception");
+        }
+    }
+
+    void CSharpScriptComponent::DisableAfterUnhandledException(const char* methodName, const char* what)
+    {
+        m_disabledByException = true;
+
+        AZ_Error(
+            "O3DESharp",
+            false,
+            "CSharpScriptComponent: unhandled exception in '%s' on entity '%s' (script '%s'): %s. "
+            "Disabling this component for the rest of the session to avoid per-frame spam. "
+            "Reactivate the entity (or hot-reload the assembly) to retry.",
+            methodName,
+            GetEntity() ? GetEntity()->GetName().c_str() : "Unknown",
+            m_config.m_scriptClassName.c_str(),
+            what ? what : "<no message>");
+
+        // Detach from TickBus so we don't pay the dispatch cost every frame for
+        // a component we'll just no-op anyway.
+        AZ::TickBus::Handler::BusDisconnect();
     }
 
     bool CSharpScriptComponent::CreateScriptInstance()

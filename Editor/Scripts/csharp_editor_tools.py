@@ -2529,38 +2529,91 @@ class CSharpEditorToolsHandler:
         self._cache_timestamp = time.time()
 
 
-# Global handler instance
-_handler = None
+# Global handler instance (the Python implementation of CSharpEditorToolsBus)
+_handler_impl = None
+
+# Bus handler created via azlmbr.object.create - the bridge to C++
+_ebus_handler = None
+
 
 def get_ebus_handler():
-    """Get or create the global EBus handler instance."""
-    global _handler
-    if _handler is None:
-        _handler = CSharpEditorToolsHandler()
-    return _handler
+    """Get or create the global handler implementation instance."""
+    global _handler_impl
+    if _handler_impl is None:
+        _handler_impl = CSharpEditorToolsHandler()
+    return _handler_impl
 
 
-# Connect the handler to the EBus when this module is imported in the editor
 def connect_ebus_handler():
-    """Connect the Python handler to the CSharpEditorToolsBus."""
+    """
+    Connect the Python handler to the CSharpEditorToolsBus.
+
+    The C++ side reflects a CSharpEditorToolsBusHandler via
+        ->Handler<CSharpEditorToolsBusHandler>()
+    on the BehaviorContext. That makes the handler available to Python as
+    azlmbr.editor.CSharpEditorToolsBusHandler. We instantiate it, route each
+    bus event to a method on our CSharpEditorToolsHandler implementation,
+    and connect() to start receiving calls.
+
+    Idempotent: safe to call multiple times.
+    """
+    global _ebus_handler
+
+    if _ebus_handler is not None:
+        return _ebus_handler
+
     try:
-        handler = get_ebus_handler()
-        
-        # Register handler methods with the EBus
-        # The handler methods will be called when C++ broadcasts on the bus
-        import azlmbr.bus as bus
-        
-        # Note: The actual EBus connection happens via behavior context reflection
-        # Python functions are automatically accessible when the module is loaded
-        print("[O3DESharp] CSharpEditorToolsBus handler initialized")
-        
+        import azlmbr.object
+        import azlmbr.editor
+
+        impl = get_ebus_handler()
+        handler = azlmbr.object.create("CSharpEditorToolsBusHandler")
+        if handler is None:
+            raise RuntimeError(
+                "azlmbr.object.create('CSharpEditorToolsBusHandler') returned None - "
+                "is the O3DESharp Editor gem activated and reflection registered?"
+            )
+
+        # Map every bus event to a Python callable. The "scripts_only" / "scriptsOnly"
+        # name discrepancy is intentional: C++ uses scriptsOnly per the EBus signature,
+        # the Python impl uses scripts_only per PEP-8. The bus forwards the raw value.
+        handler.connect()
+        handler.add_callback("GetAvailableScriptClasses", impl.GetAvailableScriptClasses)
+        handler.add_callback("GetScriptClassNames",       impl.GetScriptClassNames)
+        handler.add_callback("ValidateScriptClass",       impl.ValidateScriptClass)
+        handler.add_callback("OpenScriptPicker",          impl.OpenScriptPicker)
+        handler.add_callback("CreateNewScript",           impl.CreateNewScript)
+        handler.add_callback("OpenScriptInEditor",        impl.OpenScriptInEditor)
+        handler.add_callback("InvalidateCache",           impl.InvalidateCache)
+        handler.add_callback("AddToRecentClasses",        impl.AddToRecentClasses)
+
+        _ebus_handler = handler
+        print("[O3DESharp] CSharpEditorToolsBus handler connected")
+        return handler
+
     except Exception as e:
-        print(f"[O3DESharp] Note: EBus handler will connect when editor is ready: {e}")
+        print(f"[O3DESharp] EBus handler connect failed: {e}")
+        import traceback
+        traceback.print_exc()
+        return None
 
 
-# Initialize handler when module loads (connection happens via behavior context)
+def disconnect_ebus_handler():
+    """Tear down the bus handler. Called on editor shutdown / module reload."""
+    global _ebus_handler
+    if _ebus_handler is not None:
+        try:
+            _ebus_handler.disconnect()
+        except Exception as e:
+            print(f"[O3DESharp] EBus handler disconnect failed: {e}")
+        _ebus_handler = None
+
+
+# Initialize on import. The connect() call requires the BehaviorContext to be up
+# AND CSharpEditorToolsBusHandler reflection to have run - both are true by the
+# time this module is imported from csharp_editor_bootstrap inside the editor.
 try:
-    _handler = CSharpEditorToolsHandler()
-    print("[O3DESharp] C# Editor Tools handler created")
+    _handler_impl = CSharpEditorToolsHandler()
+    connect_ebus_handler()
 except Exception as e:
     print(f"[O3DESharp] Handler initialization deferred: {e}")
