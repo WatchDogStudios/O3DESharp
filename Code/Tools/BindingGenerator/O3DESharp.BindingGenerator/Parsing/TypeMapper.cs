@@ -217,13 +217,22 @@ namespace O3DESharp.BindingGenerator.Parsing
                 }
             }
 
-            // Adjust for pointers — any pointer type becomes IntPtr
+            // Pointers always degrade to IntPtr at the interop boundary.
+            // The user can manually marshal back via Marshal.PtrToStructure /
+            // friends if they need the typed view.
             if (parsedType.IsPointer)
             {
                 parsedType.CSharpTypeName = "IntPtr";
             }
 
-            // References to non-blittable types → IntPtr
+            // References to non-blittable types still degrade to IntPtr - we
+            // can't ref-pass something whose layout C# doesn't understand.
+            // But for blittable types we KEEP the typed name plus the
+            // IsReference flag so CSharpCodeGenerator can emit a proper
+            // 'ref T' / 'in T' wrapper signature and pass the address to
+            // the InternalCalls delegate. The previous behavior collapsed
+            // 'AZ::Vector3&' to 'Vector3' (value), silently dropping the
+            // by-reference semantics - a real ABI mismatch.
             if (parsedType.IsReference && !IsBlittableType(parsedType.CSharpTypeName))
             {
                 parsedType.CSharpTypeName = "IntPtr";

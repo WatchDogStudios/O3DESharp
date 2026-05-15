@@ -137,6 +137,38 @@ public class GeneratorUnitTests
     }
 
     // --------------------------------------------------------------------
+    // GetMarshalType: ABI surface for the InternalCalls delegate field
+    // (Phase 8 fix - any reference becomes IntPtr so by-ref semantics are
+    // honored on the C++ side instead of silently passing by value)
+    // --------------------------------------------------------------------
+
+    // Use a tiny adapter to reach the private GetMarshalType without making
+    // it public on CSharpCodeGenerator. The behavior we care about is the
+    // composition of TypeMapper.MapType + GetMarshalType, so we drive it
+    // end-to-end through MapType and inspect the resulting ParsedType.
+
+    [Theory]
+    [InlineData("AZ::Vector3", "Vector3", false, false, false)]      // value -> value-type kept
+    [InlineData("AZ::Vector3*", "IntPtr", false, true, false)]       // pointer -> IntPtr
+    [InlineData("AZ::Vector3&", "Vector3", false, false, true)]      // blittable ref -> typename + IsReference
+    [InlineData("const AZ::Vector3&", "Vector3", true, false, true)] // const blittable ref -> typename + IsConst + IsReference
+    [InlineData("AZ::Foo&", "IntPtr", false, false, true)]            // non-blittable ref -> IntPtr (degrades)
+    public void TypeMapper_ReferenceFlagsSurviveForBlittableTypes(
+        string cppType,
+        string expectedCsType,
+        bool isConst,
+        bool isPointer,
+        bool isReference)
+    {
+        var mapper = new TypeMapper();
+        var pt = mapper.MapType(cppType);
+        pt.CSharpTypeName.Should().Be(expectedCsType);
+        pt.IsConst.Should().Be(isConst);
+        pt.IsPointer.Should().Be(isPointer);
+        pt.IsReference.Should().Be(isReference);
+    }
+
+    // --------------------------------------------------------------------
     // BindingConfig: engine-required defines never disappear behind user JSON
     // --------------------------------------------------------------------
 

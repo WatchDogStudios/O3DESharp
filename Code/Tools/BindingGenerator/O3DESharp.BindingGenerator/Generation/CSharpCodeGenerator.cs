@@ -422,7 +422,12 @@ namespace O3DESharp.BindingGenerator.Generation
                 args.Add("_nativeHandle");
             }
 
-            // Re-derive safe parameter names for args (must match the parameter list)
+            // Re-derive safe parameter names for args. For ref/in parameters
+            // to blittable types we pass the address as IntPtr - the wrapper
+            // method is already marked unsafe, and the InternalCalls field's
+            // delegate signature is "IntPtr" for any reference (see
+            // GetMarshalType). C# Unsafe.AsPointer is the standard way to
+            // get a stable address out of a ref / readonly ref.
             usedNames.Clear();
             for (int i = 0; i < method.Parameters.Count; i++)
             {
@@ -433,7 +438,27 @@ namespace O3DESharp.BindingGenerator.Generation
                     safePName += "_";
                 }
                 usedNames.Add(safePName);
-                args.Add(safePName);
+
+                bool isByRefBlittable = param.Type.IsReference && TypeMapper.IsBlittableType(param.Type.CSharpTypeName);
+                if (isByRefBlittable)
+                {
+                    if (param.Type.IsConst)
+                    {
+                        // 'in T' - need Unsafe.AsRef to drop the readonly so
+                        // we can grab the address. Safe because the unmanaged
+                        // signature receives it as IntPtr; the C++ side sees
+                        // it as 'const T*' which it does not write through.
+                        args.Add($"(IntPtr)System.Runtime.CompilerServices.Unsafe.AsPointer(ref System.Runtime.CompilerServices.Unsafe.AsRef(in {safePName}))");
+                    }
+                    else
+                    {
+                        args.Add($"(IntPtr)System.Runtime.CompilerServices.Unsafe.AsPointer(ref {safePName})");
+                    }
+                }
+                else
+                {
+                    args.Add(safePName);
+                }
             }
 
             var argsStr = string.Join(", ", args);
@@ -452,14 +477,28 @@ namespace O3DESharp.BindingGenerator.Generation
         }
 
         /// <summary>
-        /// Format a parameter with safe name and optional default value
+        /// Format a parameter with safe name and optional default value.
+        /// Honors C++ by-reference semantics for blittable types:
+        ///   const T&  -> "in T"
+        ///   T&        -> "ref T"
+        ///   T (value) -> "T"
+        /// Non-blittable references already collapsed to IntPtr in TypeMapper,
+        /// so they go through the default branch unchanged. Default values
+        /// can only attach to value parameters in C#; we suppress them for
+        /// ref/in parameters.
         /// </summary>
         private string FormatParameter(ParsedParameter param, string safeName)
         {
             var csType = param.Type.CSharpTypeName;
-            var result = $"{csType} {safeName}";
+            string prefix = "";
+            bool isByRefBlittable = param.Type.IsReference && TypeMapper.IsBlittableType(csType);
+            if (isByRefBlittable)
+            {
+                prefix = param.Type.IsConst ? "in " : "ref ";
+            }
+            var result = $"{prefix}{csType} {safeName}";
 
-            if (param.DefaultValue != null)
+            if (param.DefaultValue != null && !isByRefBlittable)
             {
                 var defaultValue = ConvertDefaultValue(param.DefaultValue, csType);
                 if (defaultValue != null)
@@ -668,25 +707,29 @@ namespace O3DESharp.BindingGenerator.Generation
         }
 
         /// <summary>
-        /// Get the appropriate unmanaged interop type for a ParsedType.
+        /// Get the appropriate unmanaged interop type for a ParsedType. This
+        /// is the type used in the InternalCalls delegate* unmanaged<>
+        /// signature - what the native side actually sees on the stack.
+        ///
+        /// Any reference (blittable or not) becomes IntPtr: ABI-wise C++
+        /// passes a T* under the hood, and the C# wrapper hands over
+        /// (IntPtr)&arg for blittable refs / a marshaled pointer for the
+        /// rest. Without this rule, "AZ::Vector3&" would marshal as
+        /// "Vector3" by value, silently losing by-reference semantics.
         /// </summary>
         private static string GetMarshalType(ParsedType type)
         {
             var csType = type.CSharpTypeName;
 
-            // Types that need special interop marshaling
-            if (type.IsPointer || csType == "IntPtr")
+            // Pointers and any kind of reference become IntPtr at the ABI.
+            if (type.IsPointer || type.IsReference || csType == "IntPtr")
                 return "IntPtr";
 
-            // Reference types passed as pointers in unmanaged code
-            if (type.IsReference && type.RequiresMarshaling)
-                return "IntPtr";
-
-            // String → IntPtr in unmanaged calling convention
+            // String → IntPtr in unmanaged calling convention.
             if (csType == "string")
                 return "IntPtr";
 
-            // Value types stay as-is
+            // Value types stay as-is.
             return csType;
         }
 
