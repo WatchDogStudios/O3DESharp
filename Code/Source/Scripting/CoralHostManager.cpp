@@ -176,13 +176,14 @@ namespace O3DESharp
         // Register internal calls (C++ functions exposed to C#)
         RegisterInternalCalls();
 
-        // Load user assembly if specified
-        if (!m_config.userAssemblyPath.empty())
+        // Load every configured user assembly (multi-assembly), or the legacy single one.
+        // Not loading any user assembly is OK - the user can call LoadAssembly later.
+        if (!m_config.userAssemblyPaths.empty() || !m_config.userAssemblyPath.empty())
         {
-            if (!LoadUserAssembly())
+            if (!LoadUserAssemblies())
             {
-                AZLOG_WARN("CoralHostManager: Failed to load user assembly: %s", m_config.userAssemblyPath.c_str());
-                // Not a fatal error - user can load it later
+                AZLOG_WARN("CoralHostManager: One or more user assemblies failed to load");
+                // Non-fatal.
             }
         }
 
@@ -206,11 +207,12 @@ namespace O3DESharp
         m_userTypeCache.clear();
 
         // Unload the unified context (contains both O3DE.Core and user assemblies)
-        if (m_coreAssembly != nullptr || m_userAssembly != nullptr)
+        if (m_coreAssembly != nullptr || !m_userAssemblies.empty())
         {
             m_hostInstance->UnloadAssemblyLoadContext(m_coreContext);
             m_coreAssembly = nullptr;
             m_userAssembly = nullptr;
+            m_userAssemblies.clear();
         }
 
         // Shutdown the .NET runtime
@@ -271,6 +273,7 @@ namespace O3DESharp
         m_hostInstance->UnloadAssemblyLoadContext(m_coreContext);
         m_coreAssembly = nullptr;
         m_userAssembly = nullptr;
+        m_userAssemblies.clear();
 
         // Create a new unified context
         m_coreContext = m_hostInstance->CreateAssemblyLoadContext("O3DEContext");
@@ -286,12 +289,12 @@ namespace O3DESharp
         // Re-register internal calls for the new context
         RegisterInternalCalls();
 
-        // Reload the user assembly
-        if (!m_config.userAssemblyPath.empty())
+        // Reload all user assemblies
+        if (!m_config.userAssemblyPaths.empty() || !m_config.userAssemblyPath.empty())
         {
-            if (!LoadUserAssembly())
+            if (!LoadUserAssemblies())
             {
-                AZLOG_ERROR("CoralHostManager: Failed to reload user assembly");
+                AZLOG_ERROR("CoralHostManager: Failed to reload user assemblies");
                 return false;
             }
         }
@@ -329,7 +332,7 @@ namespace O3DESharp
 
     Coral::Type* CoralHostManager::GetUserType(const AZStd::string& fullTypeName)
     {
-        if (!m_initialized || m_userAssembly == nullptr)
+        if (!m_initialized || m_userAssemblies.empty())
         {
             return nullptr;
         }
@@ -341,17 +344,25 @@ namespace O3DESharp
             return it->second;
         }
 
-        // Look up the type
-        Coral::Type& type = m_userAssembly->GetLocalType(std::string_view(fullTypeName.c_str(), fullTypeName.size()));
-        if (!type)
+        // Search every loaded user assembly. First match wins.
+        const std::string_view typeNameView(fullTypeName.c_str(), fullTypeName.size());
+        for (Coral::ManagedAssembly* assembly : m_userAssemblies)
         {
-            AZLOG_WARN("CoralHostManager: User type not found: %s", fullTypeName.c_str());
-            return nullptr;
+            if (assembly == nullptr)
+            {
+                continue;
+            }
+
+            Coral::Type& type = assembly->GetLocalType(typeNameView);
+            if (type)
+            {
+                m_userTypeCache[fullTypeName] = &type;
+                return &type;
+            }
         }
 
-        // Cache and return
-        m_userTypeCache[fullTypeName] = &type;
-        return &type;
+        AZLOG_WARN("CoralHostManager: User type not found in any loaded assembly: %s", fullTypeName.c_str());
+        return nullptr;
     }
 
     Coral::ManagedObject CoralHostManager::CreateInstance(Coral::Type& type)
@@ -437,39 +448,93 @@ namespace O3DESharp
         return true;
     }
 
+    bool CoralHostManager::LoadUserAssemblies()
+    {
+        // Build a deduplicated, ordered list of assemblies to load. The legacy
+        // userAssemblyPath (if set) goes last so it doesn't override the explicit list.
+        AZStd::vector<AZStd::string> toLoad;
+        toLoad.reserve(m_config.userAssemblyPaths.size() + 1);
+
+        auto alreadyQueued = [&toLoad](const AZStd::string& path) -> bool
+        {
+            for (const auto& existing : toLoad)
+            {
+                if (existing == path)
+                {
+                    return true;
+                }
+            }
+            return false;
+        };
+
+        for (const auto& path : m_config.userAssemblyPaths)
+        {
+            if (!path.empty() && !alreadyQueued(path))
+            {
+                toLoad.push_back(path);
+            }
+        }
+        if (!m_config.userAssemblyPath.empty() && !alreadyQueued(m_config.userAssemblyPath))
+        {
+            toLoad.push_back(m_config.userAssemblyPath);
+        }
+
+        if (toLoad.empty())
+        {
+            AZLOG_INFO("CoralHostManager: No user assemblies configured");
+            return true; // no-op success
+        }
+
+        size_t loaded = 0;
+        size_t failed = 0;
+        for (const AZStd::string& assemblyPath : toLoad)
+        {
+            AZLOG_INFO("CoralHostManager: Loading user assembly: %s", assemblyPath.c_str());
+
+            if (!AZ::IO::FileIOBase::GetInstance()->Exists(assemblyPath.c_str()))
+            {
+                AZLOG_ERROR("CoralHostManager: User assembly not found: %s", assemblyPath.c_str());
+                ++failed;
+                continue;
+            }
+
+            // NOTE: O3DE.Core.dll is already loaded in the same unified context
+            // (m_userContext == m_coreContext), so the user assembly can resolve
+            // its O3DE.Core dependency automatically.
+            Coral::ManagedAssembly& assembly = m_userContext.LoadAssembly(std::string(assemblyPath.c_str()));
+
+            if (assembly.GetLoadStatus() != Coral::AssemblyLoadStatus::Success)
+            {
+                AZLOG_ERROR("CoralHostManager: Failed to load user assembly: %s", assemblyPath.c_str());
+                ++failed;
+                continue;
+            }
+
+            m_userAssemblies.push_back(&assembly);
+            AZLOG_INFO("CoralHostManager: User assembly loaded: %s", assembly.GetName().data());
+            ++loaded;
+        }
+
+        // Keep m_userAssembly pointing at the first loaded assembly for back-compat
+        // with anything that still calls GetUserAssembly().
+        m_userAssembly = m_userAssemblies.empty() ? nullptr : m_userAssemblies.front();
+
+        AZLOG_INFO("CoralHostManager: Loaded %zu user assembly(ies), %zu failed", loaded, failed);
+        return loaded > 0 || failed == 0;
+    }
+
     bool CoralHostManager::LoadUserAssembly()
     {
-        if (m_config.userAssemblyPath.empty())
+        // Legacy single-assembly entry point. Delegate to the multi-assembly loader
+        // by temporarily routing the legacy path through it. This keeps the public
+        // API stable while ensuring the same logic (existence check, log lines,
+        // context routing) runs in one place.
+        if (m_config.userAssemblyPath.empty() && m_config.userAssemblyPaths.empty())
         {
             AZLOG_INFO("CoralHostManager: No user assembly path specified");
             return false;
         }
-
-        AZLOG_INFO("CoralHostManager: Loading user assembly: %s", m_config.userAssemblyPath.c_str());
-
-        // Check if file exists
-        if (!AZ::IO::FileIOBase::GetInstance()->Exists(m_config.userAssemblyPath.c_str()))
-        {
-            AZLOG_ERROR("CoralHostManager: User assembly not found: %s", m_config.userAssemblyPath.c_str());
-            return false;
-        }
-
-        // NOTE: O3DE.Core.dll is already loaded in the same unified context (m_userContext == m_coreContext)
-        // so the user assembly can resolve its O3DE.Core dependency automatically.
-        // We don't need to pre-load it separately.
-
-        Coral::ManagedAssembly& assembly = m_userContext.LoadAssembly(std::string(m_config.userAssemblyPath.c_str()));
-
-        if (assembly.GetLoadStatus() != Coral::AssemblyLoadStatus::Success)
-        {
-            AZLOG_ERROR("CoralHostManager: Failed to load user assembly");
-            return false;
-        }
-
-        m_userAssembly = &assembly;
-        AZLOG_INFO("CoralHostManager: User assembly loaded: %s", assembly.GetName().data());
-
-        return true;
+        return LoadUserAssemblies();
     }
 
     void CoralHostManager::RegisterInternalCalls()

@@ -32,8 +32,11 @@ o3de_sharp_netverify()
 # CORAL CLONE INFO
 # ===========================
 # NOTE(Mikael A.): Stay on main, do not change to internal coral branch!
+# Pin to a specific commit so dev and install paths are reproducible.
+# Bump this SHA in lockstep with the value embedded in the install code
+# block below (search for "O3DE_SUBDIRECTORY_INSTALL_CODE").
 set(CORAL_GIT_REPO "https://github.com/WatchDogStudios/Coral.git")
-set(CORAL_GIT_TAG "main")
+set(CORAL_GIT_TAG "0d3f30e0449956049fa330a3a44a47b7860a2409")
 
 # Disable Coral examples and tests before FetchContent to speed up configuration
 set(CORAL_EXAMPLE OFF CACHE BOOL "" FORCE)
@@ -266,8 +269,12 @@ endforeach()
 # that gets included in installers.  This is why we need to duplicate the github repo from above
 # and cannot reuse the variables above.  The rest of this file won't be there to refer to.
 set_property(DIRECTORY APPEND PROPERTY O3DE_SUBDIRECTORY_INSTALL_CODE [[
-    set(CORAL_GIT_REPO "https://github.com/StudioCherno/Coral.git")
-    set(CORAL_GIT_TAG "25437c915b452a08949d636d154a766d6c65601a")
+    # NOTE: Keep this repo + SHA in sync with the dev-side CORAL_GIT_REPO /
+    # CORAL_GIT_TAG above. Different values here mean dev builds and exported
+    # installer builds will fetch different Coral sources and cannot produce
+    # bit-identical binaries.
+    set(CORAL_GIT_REPO "https://github.com/WatchDogStudios/Coral.git")
+    set(CORAL_GIT_TAG "0d3f30e0449956049fa330a3a44a47b7860a2409")
     message(STATUS "O3DESharp Gem uses ${CORAL_GIT_REPO} (License: MIT)")
 
     set(coralLibraries Coral.Native)

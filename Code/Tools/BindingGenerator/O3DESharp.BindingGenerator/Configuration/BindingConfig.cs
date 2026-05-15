@@ -24,41 +24,20 @@ namespace O3DESharp.BindingGenerator.Configuration
         /// Per-gem specific configuration
         /// </summary>
         public Dictionary<string, GemSettings> Gems { get; set; } = new Dictionary<string, GemSettings>();
-    }
-
-    /// <summary>
-    /// Global settings that apply to all generated bindings
-    /// </summary>
-    public class GlobalSettings
-    {
-        /// <summary>
-        /// C# namespace for generated bindings (default: "O3DE")
-        /// </summary>
-        public string CSharpNamespace { get; set; } = "O3DE";
 
         /// <summary>
-        /// Output directory for generated C# code (relative to gem root)
+        /// Engine-required preprocessor defines that must always be in effect
+        /// when libclang parses O3DE headers. These macro suppressions are not
+        /// user-controllable: removing them breaks parsing of AZ_RTTI /
+        /// AZ_CLASS_ALLOCATOR / AZ_COMPONENT / etc. Anything the user puts in
+        /// <see cref="GlobalSettings.Defines"/> or <see cref="GemSettings.Defines"/>
+        /// is appended on top of this list.
         /// </summary>
-        public string CSharpOutputPath { get; set; } = "Assets/Scripts/{GemName}";
-
-        /// <summary>
-        /// Output directory for generated C++ code (relative to gem root)
-        /// </summary>
-        public string CppOutputPath { get; set; } = "Code/Source/Scripting/Generated";
-
-        /// <summary>
-        /// Additional include directories (system-wide)
-        /// </summary>
-        public List<string> IncludePaths { get; set; } = new List<string>();
-
-        /// <summary>
-        /// Platform-specific preprocessor defines
-        /// </summary>
-        public List<string> Defines { get; set; } = new List<string>
+        public static readonly IReadOnlyList<string> EngineRequiredDefines = new List<string>
         {
             "O3DE_EXPORT_CSHARP=__attribute__((annotate(\"export_csharp\")))",
             "AZ_COMPILER_CLANG=1",
-            // Platform defines for Windows parsing
+            // Default platform defines (override by adding to user Defines if cross-compiling)
             "AZ_PLATFORM_WINDOWS=1",
             "AZ_TRAIT_OS_IS_HOST_OS_PLATFORM=1",
             "_WIN64=1",
@@ -102,6 +81,40 @@ namespace O3DESharp.BindingGenerator.Configuration
             "AZ_SERIALIZE_FRIEND(...)=",
             "AZ_BEHAVIOR_CONTEXT_FRIEND=",
         };
+    }
+
+    /// <summary>
+    /// Global settings that apply to all generated bindings
+    /// </summary>
+    public class GlobalSettings
+    {
+        /// <summary>
+        /// C# namespace for generated bindings (default: "O3DE")
+        /// </summary>
+        public string CSharpNamespace { get; set; } = "O3DE";
+
+        /// <summary>
+        /// Output directory for generated C# code (relative to gem root)
+        /// </summary>
+        public string CSharpOutputPath { get; set; } = "Assets/Scripts/{GemName}";
+
+        /// <summary>
+        /// Output directory for generated C++ code (relative to gem root)
+        /// </summary>
+        public string CppOutputPath { get; set; } = "Code/Source/Scripting/Generated";
+
+        /// <summary>
+        /// Additional include directories (system-wide)
+        /// </summary>
+        public List<string> IncludePaths { get; set; } = new List<string>();
+
+        /// <summary>
+        /// User-supplied preprocessor defines. Appended on top of
+        /// <see cref="BindingConfig.EngineRequiredDefines"/> when building the
+        /// effective define list for libclang. JSON config files override this
+        /// list, but the engine defaults are always preserved.
+        /// </summary>
+        public List<string> Defines { get; set; } = new List<string>();
 
         /// <summary>
         /// Enable verbose logging

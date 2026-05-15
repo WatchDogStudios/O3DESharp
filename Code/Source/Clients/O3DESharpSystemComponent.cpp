@@ -592,20 +592,50 @@ namespace O3DESharp
         config.coreApiAssemblyPath = coreApiPath.c_str();
         m_coreAssemblyPath = config.coreApiAssemblyPath;
 
-        // User assembly path - the game's C# scripts compiled DLL
-        // TODO(Mikael A.): Multiplatform.....
-        AZ::IO::FixedMaxPath userAssemblyPath = projectPath / "Bin" / "Scripts" / "GameScripts.dll";
-        
+        // User assembly paths - the game's C# script DLLs.
+        //
+        // Resolution order (first match populates the list, others act as fallback):
+        //   1. /O3DE/O3DESharp/UserAssemblies     (array of { AssemblyName, ProjectPath }) - PREFERRED
+        //   2. /O3DE/O3DESharp/UserAssemblyPath   (single string, legacy)                   - FALLBACK
+        //   3. <ProjectPath>/Bin/Scripts/GameScripts.dll                                     - DEFAULT
+        //
+        // TODO(Mikael A.): Multiplatform path handling - currently assumes <ProjectPath>/Bin/Scripts/.
         if (auto settingsRegistry = AZ::SettingsRegistry::Get())
         {
-            AZStd::string userAssemblySetting;
-            if (settingsRegistry->Get(userAssemblySetting, "/O3DE/O3DESharp/UserAssemblyPath"))
+            // (1) Try the array form first. Iterate /O3DE/O3DESharp/UserAssemblies/*/AssemblyName.
+            auto visitorCallback =
+                [&](const AZ::SettingsRegistryInterface::VisitArgs& visitArgs, AZStd::string_view value)
             {
-                userAssemblyPath = AZ::IO::FixedMaxPath(userAssemblySetting.c_str());
+                if (visitArgs.m_fieldName == "AssemblyName" && !value.empty())
+                {
+                    AZ::IO::FixedMaxPath fullPath = projectPath / "Bin" / "Scripts" / AZStd::string(value).c_str();
+                    config.userAssemblyPaths.emplace_back(fullPath.c_str());
+                }
+                return AZ::SettingsRegistryInterface::VisitResponse::Continue;
+            };
+            settingsRegistry->Visit(visitorCallback, "/O3DE/O3DESharp/UserAssemblies");
+
+            // (2) If the array didn't contribute anything, fall back to the legacy single path.
+            if (config.userAssemblyPaths.empty())
+            {
+                AZStd::string userAssemblySetting;
+                if (settingsRegistry->Get(userAssemblySetting, "/O3DE/O3DESharp/UserAssemblyPath"))
+                {
+                    config.userAssemblyPaths.emplace_back(userAssemblySetting);
+                }
             }
         }
-        
-        config.userAssemblyPath = userAssemblyPath.c_str();
+
+        // (3) Final fallback if nothing was configured anywhere.
+        if (config.userAssemblyPaths.empty())
+        {
+            AZ::IO::FixedMaxPath defaultPath = projectPath / "Bin" / "Scripts" / "GameScripts.dll";
+            config.userAssemblyPaths.emplace_back(defaultPath.c_str());
+        }
+
+        // Keep the legacy single-path field populated with the first assembly for any
+        // code that still reads CoralHostConfig::userAssemblyPath directly.
+        config.userAssemblyPath = config.userAssemblyPaths.front();
         m_userAssemblyPath = config.userAssemblyPath;
 
         // Enable hot reload in development builds
@@ -619,7 +649,11 @@ namespace O3DESharp
         AZLOG_INFO("O3DESharpSystemComponent: Initializing Coral .NET Host");
         AZLOG_INFO("  Coral Directory: %s", config.coralDirectory.c_str());
         AZLOG_INFO("  Core API Assembly: %s", config.coreApiAssemblyPath.c_str());
-        AZLOG_INFO("  User Assembly: %s", config.userAssemblyPath.c_str());
+        AZLOG_INFO("  User Assemblies (%zu):", config.userAssemblyPaths.size());
+        for (const auto& userPath : config.userAssemblyPaths)
+        {
+            AZLOG_INFO("    %s", userPath.c_str());
+        }
         AZLOG_INFO("  Hot Reload: %s", config.enableHotReload ? "Enabled" : "Disabled");
 
         // Initialize the Coral host

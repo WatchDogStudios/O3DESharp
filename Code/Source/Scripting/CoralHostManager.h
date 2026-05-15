@@ -11,6 +11,7 @@
 #include <AzCore/base.h>
 #include <AzCore/std/string/string.h>
 #include <AzCore/std/containers/unordered_map.h>
+#include <AzCore/std/containers/vector.h>
 #include <AzCore/std/smart_ptr/unique_ptr.h>
 #include <AzCore/Memory/SystemAllocator.h>
 #include <AzCore/RTTI/RTTI.h>
@@ -31,7 +32,10 @@ namespace O3DESharp
     struct CoralHostConfig
     {
         AZStd::string coralDirectory;           // Path to Coral.Managed.dll and runtimeconfig
-        AZStd::string userAssemblyPath;         // Path to user's game assembly
+        AZStd::string userAssemblyPath;         // Legacy single-assembly path (kept for backward compat;
+                                                // prefer userAssemblyPaths). If non-empty and not already
+                                                // present in userAssemblyPaths it will be appended.
+        AZStd::vector<AZStd::string> userAssemblyPaths;  // Paths to all user game assemblies to load
         AZStd::string coreApiAssemblyPath;      // Path to O3DE.Core.dll (our API)
         bool enableHotReload = true;            // Enable assembly hot-reloading
     };
@@ -166,7 +170,13 @@ namespace O3DESharp
         // Load the core O3DE API assembly
         bool LoadCoreAssembly();
 
-        // Load the user's game assembly
+        // Load every user game assembly listed in the config (legacy userAssemblyPath
+        // plus everything in userAssemblyPaths). Returns true if at least one assembly
+        // was loaded successfully, or if no user assemblies were configured.
+        bool LoadUserAssemblies();
+
+        // Legacy single-assembly variant. Loads m_config.userAssemblyPath.
+        // Prefer LoadUserAssemblies() in new code.
         bool LoadUserAssembly();
 
         // Register all internal calls (C++ functions callable from C#)
@@ -187,6 +197,11 @@ namespace O3DESharp
 
         // Cached pointers to our assemblies
         Coral::ManagedAssembly* m_coreAssembly = nullptr;
+
+        // All user assemblies currently loaded. m_userAssembly (below) is kept as a
+        // convenience pointer to the first one so existing single-assembly APIs keep
+        // working; type lookups via GetUserType iterate the full vector.
+        AZStd::vector<Coral::ManagedAssembly*> m_userAssemblies;
         Coral::ManagedAssembly* m_userAssembly = nullptr;
 
         // Type cache for faster lookups

@@ -111,12 +111,19 @@ namespace O3DESharp.BindingGenerator.Configuration
 
         /// <summary>
         /// Expand ${VAR_NAME} references in all path-like configuration fields.
+        /// Also runs over Defines so users can write things like
+        /// `MY_INCLUDE_DIR=${MY_VAR}/include` in JSON config.
         /// </summary>
         private static void ExpandEnvironmentVariables(BindingConfig config)
         {
             for (int i = 0; i < config.Global.IncludePaths.Count; i++)
             {
                 config.Global.IncludePaths[i] = ExpandEnvVars(config.Global.IncludePaths[i]);
+            }
+
+            for (int i = 0; i < config.Global.Defines.Count; i++)
+            {
+                config.Global.Defines[i] = ExpandEnvVars(config.Global.Defines[i]);
             }
 
             config.Global.CSharpOutputPath = ExpandEnvVars(config.Global.CSharpOutputPath);
@@ -127,6 +134,10 @@ namespace O3DESharp.BindingGenerator.Configuration
                 for (int i = 0; i < gem.IncludePaths.Count; i++)
                 {
                     gem.IncludePaths[i] = ExpandEnvVars(gem.IncludePaths[i]);
+                }
+                for (int i = 0; i < gem.Defines.Count; i++)
+                {
+                    gem.Defines[i] = ExpandEnvVars(gem.Defines[i]);
                 }
             }
         }

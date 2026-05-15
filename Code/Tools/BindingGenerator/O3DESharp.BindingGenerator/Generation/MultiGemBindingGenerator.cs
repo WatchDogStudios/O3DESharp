@@ -445,7 +445,10 @@ namespace O3DESharp.BindingGenerator.Generation
 
         private List<string> BuildDefines(GemSettings settings)
         {
+            // Engine-required macros first; user globals override / extend; per-gem overrides last.
+            // Later entries win when libclang sees duplicate -D flags, so user wins over defaults.
             var defines = new List<string>();
+            defines.AddRange(Configuration.BindingConfig.EngineRequiredDefines);
             defines.AddRange(_config.Global.Defines);
             defines.AddRange(settings.Defines);
             return defines;
