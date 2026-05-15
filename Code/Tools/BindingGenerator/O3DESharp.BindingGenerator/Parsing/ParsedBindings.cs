@@ -34,6 +34,16 @@ namespace O3DESharp.BindingGenerator.Parsing
         /// Parsed enum declarations
         /// </summary>
         public List<ParsedEnum> Enums { get; set; } = new List<ParsedEnum>();
+
+        /// <summary>
+        /// Every header file libclang touched while parsing this gem - the gem's
+        /// own headers plus everything they transitively #include. Used by
+        /// BuildCache to invalidate when an upstream header (e.g. AzCore math)
+        /// changes, even though the gem's own headers did not.
+        ///
+        /// Populated by O3DEHeaderParser. Excludes system headers.
+        /// </summary>
+        public HashSet<string> SourceFiles { get; } = new HashSet<string>(System.StringComparer.OrdinalIgnoreCase);
     }
 
     /// <summary>

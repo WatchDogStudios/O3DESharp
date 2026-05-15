@@ -45,10 +45,22 @@ namespace O3DESharp.BindingGenerator.Caching
         public string ToolVersion { get; set; } = string.Empty;
 
         /// <summary>
-        /// Individual file hashes for dependency tracking
+        /// Individual file hashes for dependency tracking. Includes both the
+        /// direct gem headers and every transitively #included non-system
+        /// header reported by libclang during the previous parse.
         /// </summary>
         [JsonPropertyName("file_hashes")]
         public Dictionary<string, string> FileHashes { get; set; } = new Dictionary<string, string>();
+
+        /// <summary>
+        /// Fully-qualified paths of the direct header files the generator was
+        /// invoked with for this gem. Used by <see cref="BuildCache.NeedsRegeneration"/>
+        /// to detect when the user-visible input set changes. Subset of
+        /// <see cref="FileHashes"/>; older cache files written before this
+        /// field existed leave it empty and the cache treats them as a miss.
+        /// </summary>
+        [JsonPropertyName("direct_headers")]
+        public List<string> DirectHeaders { get; set; } = new List<string>();
 
         /// <summary>
         /// List of generated output files
@@ -147,46 +159,59 @@ namespace O3DESharp.BindingGenerator.Caching
                 }
             }
 
-            // Check individual file hashes
-            var currentFiles = headerFiles.ToList();
-            
-            // Check for new or removed files
-            var cachedFiles = entry.FileHashes.Keys.ToHashSet();
-            var currentFilesSet = currentFiles.Select(Path.GetFullPath).ToHashSet();
-
-            if (!cachedFiles.SetEquals(currentFilesSet))
+            // Compare the user-visible direct header set. Transitive includes
+            // (everything else in FileHashes) are content-checked below; we
+            // don't compare them as a set because libclang may legitimately
+            // discover a different transitive set on a re-parse if upstream
+            // headers were edited.
+            var currentDirect = headerFiles.Select(Path.GetFullPath).ToHashSet(StringComparer.OrdinalIgnoreCase);
+            var cachedDirect = entry.DirectHeaders.Count > 0
+                ? entry.DirectHeaders.ToHashSet(StringComparer.OrdinalIgnoreCase)
+                // Cache predates DirectHeaders: treat as miss so the next
+                // successful build populates it correctly.
+                : null;
+            if (cachedDirect == null)
             {
-                Log($"Cache miss for gem '{gemName}': File set changed");
+                Log($"Cache miss for gem '{gemName}': Cache predates direct-headers tracking");
+                return true;
+            }
+            if (!cachedDirect.SetEquals(currentDirect))
+            {
+                Log($"Cache miss for gem '{gemName}': Direct header set changed");
                 return true;
             }
 
-            // Check for content changes
-            foreach (var file in currentFiles)
+            // Hash-check every file we know about — direct AND transitive. A
+            // change in an upstream AzCore header now invalidates the cache
+            // even though the gem's own headers are byte-identical.
+            foreach (var kvp in entry.FileHashes)
             {
-                var fullPath = Path.GetFullPath(file);
-                if (!entry.FileHashes.TryGetValue(fullPath, out var cachedHash))
+                var fullPath = kvp.Key;
+                var cachedHash = kvp.Value;
+
+                if (!File.Exists(fullPath))
                 {
-                    Log($"Cache miss for gem '{gemName}': New file {file}");
+                    Log($"Cache miss for gem '{gemName}': File no longer exists: {fullPath}");
                     return true;
                 }
 
                 try
                 {
-                    var currentHash = FileHasher.ComputeFileHash(file);
+                    var currentHash = FileHasher.ComputeFileHash(fullPath);
                     if (currentHash != cachedHash)
                     {
-                        Log($"Cache miss for gem '{gemName}': File changed {file}");
+                        Log($"Cache miss for gem '{gemName}': File changed: {fullPath}");
                         return true;
                     }
                 }
                 catch
                 {
-                    Log($"Cache miss for gem '{gemName}': Cannot read file {file}");
+                    Log($"Cache miss for gem '{gemName}': Cannot read file: {fullPath}");
                     return true;
                 }
             }
 
-            Log($"Cache hit for gem '{gemName}': No changes detected");
+            Log($"Cache hit for gem '{gemName}': No changes detected (incl. {entry.FileHashes.Count - entry.DirectHeaders.Count} transitive header(s))");
             return false;
         }
 
@@ -199,6 +224,24 @@ namespace O3DESharp.BindingGenerator.Caching
         /// <param name="outputFiles">Generated output files</param>
         public void UpdateEntry(string gemName, IEnumerable<string> headerFiles, string configHash, IEnumerable<string> outputFiles)
         {
+            // Legacy overload - no transitive info, used by callers that only
+            // know the direct headers. Prefer the overload below.
+            UpdateEntry(gemName, headerFiles, Array.Empty<string>(), configHash, outputFiles);
+        }
+
+        /// <summary>
+        /// Update cache entry recording both the direct headers the generator
+        /// was invoked with and the transitive headers libclang reported during
+        /// parsing. The transitive set lets us invalidate when an upstream
+        /// header changes even though the gem's own headers did not.
+        /// </summary>
+        public void UpdateEntry(
+            string gemName,
+            IEnumerable<string> directHeaders,
+            IEnumerable<string> transitiveHeaders,
+            string configHash,
+            IEnumerable<string> outputFiles)
+        {
             var entry = new GemCacheEntry
             {
                 GemName = gemName,
@@ -208,12 +251,13 @@ namespace O3DESharp.BindingGenerator.Caching
                 OutputFiles = outputFiles.ToList()
             };
 
-            // Compute file hashes
-            foreach (var file in headerFiles)
+            // Record direct headers separately for the NeedsRegeneration set-comparison.
+            foreach (var file in directHeaders)
             {
                 try
                 {
                     var fullPath = Path.GetFullPath(file);
+                    entry.DirectHeaders.Add(fullPath);
                     entry.FileHashes[fullPath] = FileHasher.ComputeFileHash(file);
                 }
                 catch (Exception ex)
@@ -222,11 +266,34 @@ namespace O3DESharp.BindingGenerator.Caching
                 }
             }
 
+            // Add transitive (#included) headers to FileHashes only - they're not
+            // part of the "input set" the user passed.
+            foreach (var file in transitiveHeaders)
+            {
+                try
+                {
+                    var fullPath = Path.GetFullPath(file);
+                    if (entry.FileHashes.ContainsKey(fullPath))
+                    {
+                        continue; // already hashed as a direct header
+                    }
+                    if (!File.Exists(fullPath))
+                    {
+                        continue; // ignore files clang reported that aren't on disk
+                    }
+                    entry.FileHashes[fullPath] = FileHasher.ComputeFileHash(fullPath);
+                }
+                catch (Exception ex)
+                {
+                    Log($"Warning: Could not hash transitive file {file}: {ex.Message}");
+                }
+            }
+
             // Compute combined input hash
             entry.InputHash = FileHasher.ComputeStringHash(string.Join("|", entry.FileHashes.Values));
 
             _cacheData.Gems[gemName] = entry;
-            Log($"Updated cache entry for gem '{gemName}'");
+            Log($"Updated cache entry for gem '{gemName}': {entry.DirectHeaders.Count} direct + {entry.FileHashes.Count - entry.DirectHeaders.Count} transitive headers");
         }
 
         /// <summary>

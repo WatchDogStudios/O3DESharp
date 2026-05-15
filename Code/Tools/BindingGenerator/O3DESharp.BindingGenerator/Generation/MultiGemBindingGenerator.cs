@@ -211,12 +211,21 @@ namespace O3DESharp.BindingGenerator.Generation
             var coreAssemblyPath = ResolveCorePath(projectPath);
             projectGenerator.Generate(gem, csharpOutputPath, allGems, coreAssemblyPath);
 
-            // Update cache
+            // Update cache. Record both the direct headers we were asked to
+            // parse and every transitively-#included header libclang touched,
+            // so a change in an upstream AzCore header invalidates this gem's
+            // cache on the next run even though the gem's own headers are
+            // byte-identical.
             if (_buildCache != null)
             {
                 var configHash = ComputeConfigHash(gemSettings);
                 var outputFiles = CollectOutputFiles(csharpOutputPath, cppOutputPath);
-                _buildCache.UpdateEntry(gem.GemName, headerFiles, configHash, outputFiles);
+                _buildCache.UpdateEntry(
+                    gem.GemName,
+                    headerFiles,
+                    bindings.SourceFiles,
+                    configHash,
+                    outputFiles);
             }
 
             Console.WriteLine($"  [{gem.GemName}] Generated bindings");

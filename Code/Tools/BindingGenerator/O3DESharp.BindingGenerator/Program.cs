@@ -195,6 +195,19 @@ namespace O3DESharp.BindingGenerator
                 Console.WriteLine("O3DE C# Binding Generator");
                 Console.WriteLine("=========================\n");
 
+                // Resolve a relative --config against the project path so the
+                // lookup is stable regardless of CWD. This eliminates a class
+                // of "looks in the wrong place" bug we used to paper over with
+                // a duplicate binding_config.json under the tool directory.
+                if (!Path.IsPathRooted(configPath))
+                {
+                    var projectAbs = Path.GetFullPath(projectPath);
+                    var projectRoot = Directory.Exists(projectAbs)
+                        ? projectAbs
+                        : Path.GetDirectoryName(projectAbs) ?? projectAbs;
+                    configPath = Path.Combine(projectRoot, configPath);
+                }
+
                 // Load configuration
                 var config = BindingConfigLoader.Load(configPath);
                 config.Global.Verbose = verbose;

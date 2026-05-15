@@ -87,10 +87,15 @@ namespace O3DESharp.BindingGenerator.Generation
             // Generate InternalCalls file
             GenerateInternalCalls(validClasses, validFunctions, safeGemName, outputDirectory);
 
-            // Generate wrapper classes
+            // Generate wrapper classes. Build a set of class names being emitted
+            // in this gem so each generated class can reference its C++ base
+            // class as a C# base when that base is also being wrapped.
+            var emittedClassNames = new HashSet<string>(
+                validClasses.Select(c => SanitizeIdentifier(c.Name)),
+                StringComparer.Ordinal);
             foreach (var parsedClass in validClasses)
             {
-                GenerateWrapperClass(parsedClass, safeGemName, outputDirectory);
+                GenerateWrapperClass(parsedClass, safeGemName, outputDirectory, emittedClassNames);
             }
 
             // Generate enums
@@ -146,10 +151,10 @@ namespace O3DESharp.BindingGenerator.Generation
 
                 foreach (var method in validMethods)
                 {
-                    var fieldName = $"{safeClassName}_{SanitizeIdentifier(method.Name)}";
+                    var fieldName = InternalCallFieldName(safeClassName, method, validMethods);
                     if (!emittedFieldNames.Add(fieldName))
-                        continue; // Skip duplicate field names
-                    GenerateInternalCallDeclaration(sb, safeClassName, method);
+                        continue; // Defensive against same-class same-signature duplicates from libclang.
+                    GenerateInternalCallDeclaration(sb, safeClassName, method, validMethods);
                 }
 
                 sb.AppendLine();
@@ -181,9 +186,9 @@ namespace O3DESharp.BindingGenerator.Generation
             Log($"  Generated: {outputPath}");
         }
 
-        private void GenerateInternalCallDeclaration(StringBuilder sb, string className, ParsedMethod method)
+        private void GenerateInternalCallDeclaration(StringBuilder sb, string className, ParsedMethod method, IReadOnlyCollection<ParsedMethod> allMethodsInClass)
         {
-            var safeMethodName = SanitizeIdentifier(method.Name);
+            var fieldName = InternalCallFieldName(className, method, allMethodsInClass);
             var marshalTypes = new List<string>();
 
             // Add 'this' pointer for non-static methods
@@ -204,7 +209,7 @@ namespace O3DESharp.BindingGenerator.Generation
             var allTypes = new List<string>(marshalTypes) { returnMarshalType };
             var typesStr = string.Join(", ", allTypes);
 
-            sb.AppendLine($"        internal static delegate* unmanaged<{typesStr}> {className}_{safeMethodName};");
+            sb.AppendLine($"        internal static delegate* unmanaged<{typesStr}> {fieldName};");
         }
 
         private void GenerateStandaloneFunctionDeclaration(StringBuilder sb, ParsedFunction function)
@@ -219,7 +224,7 @@ namespace O3DESharp.BindingGenerator.Generation
             sb.AppendLine($"        internal static delegate* unmanaged<{typesStr}> {safeName};");
         }
 
-        private void GenerateWrapperClass(ParsedClass parsedClass, string gemName, string outputDirectory)
+        private void GenerateWrapperClass(ParsedClass parsedClass, string gemName, string outputDirectory, IReadOnlyCollection<string> emittedClassNames)
         {
             var safeClassName = SanitizeIdentifier(parsedClass.Name);
             var validMethods = GetValidMethods(parsedClass);
@@ -228,6 +233,21 @@ namespace O3DESharp.BindingGenerator.Generation
             // Skip if nothing to generate
             if (validMethods.Count == 0 && validProperties.Count == 0)
                 return;
+
+            // Resolve the C++ base class to a C# base name IF we're also
+            // generating a wrapper for it in this gem. We don't want to point
+            // at a base wrapper that doesn't exist (would fail to compile);
+            // we also can't point across gem boundaries here because the
+            // generated namespace differs and resolving that is a follow-up.
+            string? safeBaseClassName = null;
+            if (!string.IsNullOrEmpty(parsedClass.BaseClass))
+            {
+                var candidate = SanitizeIdentifier(parsedClass.BaseClass!);
+                if (candidate != safeClassName && emittedClassNames.Contains(candidate))
+                {
+                    safeBaseClassName = candidate;
+                }
+            }
 
             var sb = new StringBuilder();
 
@@ -251,37 +271,60 @@ namespace O3DESharp.BindingGenerator.Generation
 
             var hasInstanceMembers = validMethods.Any(m => !m.IsStatic) || validProperties.Count > 0;
 
-            sb.AppendLine($"    public class {safeClassName} : IDisposable");
-            sb.AppendLine("    {");
-
-            // Native handle for instance methods
-            if (hasInstanceMembers)
+            // Inheritance: if we resolved a base wrapper above, use it. The
+            // base already implements IDisposable and owns the native handle,
+            // so derived classes neither redeclare _nativeHandle / Dispose nor
+            // re-implement IDisposable.
+            if (safeBaseClassName != null)
             {
-                sb.AppendLine("        /// <summary>");
-                sb.AppendLine("        /// Pointer to the native C++ object.");
-                sb.AppendLine("        /// </summary>");
-                sb.AppendLine("        internal IntPtr _nativeHandle;");
-                sb.AppendLine();
-                sb.AppendLine("        /// <summary>");
-                sb.AppendLine($"        /// Wraps an existing native C++ {parsedClass.Name} pointer.");
-                sb.AppendLine("        /// </summary>");
-                sb.AppendLine($"        public {safeClassName}(IntPtr nativeHandle)");
-                sb.AppendLine("        {");
-                sb.AppendLine("            _nativeHandle = nativeHandle;");
-                sb.AppendLine("        }");
-                sb.AppendLine();
-                sb.AppendLine("        /// <inheritdoc/>");
-                sb.AppendLine("        public void Dispose()");
-                sb.AppendLine("        {");
-                sb.AppendLine("            _nativeHandle = IntPtr.Zero;");
-                sb.AppendLine("        }");
-                sb.AppendLine();
+                sb.AppendLine($"    public class {safeClassName} : {safeBaseClassName}");
+                sb.AppendLine("    {");
+
+                if (hasInstanceMembers)
+                {
+                    sb.AppendLine("        /// <summary>");
+                    sb.AppendLine($"        /// Wraps an existing native C++ {parsedClass.Name} pointer.");
+                    sb.AppendLine("        /// </summary>");
+                    sb.AppendLine($"        public {safeClassName}(IntPtr nativeHandle) : base(nativeHandle)");
+                    sb.AppendLine("        {");
+                    sb.AppendLine("        }");
+                    sb.AppendLine();
+                }
             }
             else
             {
-                sb.AppendLine("        /// <inheritdoc/>");
-                sb.AppendLine("        public void Dispose() { }");
-                sb.AppendLine();
+                sb.AppendLine($"    public class {safeClassName} : IDisposable");
+                sb.AppendLine("    {");
+
+                // Native handle for instance methods
+                if (hasInstanceMembers)
+                {
+                    sb.AppendLine("        /// <summary>");
+                    sb.AppendLine("        /// Pointer to the native C++ object.");
+                    sb.AppendLine("        /// </summary>");
+                    sb.AppendLine("        internal IntPtr _nativeHandle;");
+                    sb.AppendLine();
+                    sb.AppendLine("        /// <summary>");
+                    sb.AppendLine($"        /// Wraps an existing native C++ {parsedClass.Name} pointer.");
+                    sb.AppendLine("        /// </summary>");
+                    sb.AppendLine($"        public {safeClassName}(IntPtr nativeHandle)");
+                    sb.AppendLine("        {");
+                    sb.AppendLine("            _nativeHandle = nativeHandle;");
+                    sb.AppendLine("        }");
+                    sb.AppendLine();
+                    sb.AppendLine("        /// <inheritdoc/>");
+                    sb.AppendLine("        public void Dispose()");
+                    sb.AppendLine("        {");
+                    sb.AppendLine("            _nativeHandle = IntPtr.Zero;");
+                    sb.AppendLine("        }");
+                    sb.AppendLine();
+                }
+                else
+                {
+                    sb.AppendLine("        /// <inheritdoc/>");
+                    sb.AppendLine("        public void Dispose() { }");
+                    sb.AppendLine();
+                }
             }
 
             // Generate properties
@@ -295,10 +338,12 @@ namespace O3DESharp.BindingGenerator.Generation
                 sb.AppendLine();
             }
 
-            // Generate methods
+            // Generate methods. Pass the whole method list so each overload
+            // can compute the same InternalCalls field name that GenerateInternalCalls
+            // emitted for it.
             foreach (var method in validMethods)
             {
-                GenerateMethod(sb, safeClassName, method);
+                GenerateMethod(sb, safeClassName, method, validMethods);
             }
 
             sb.AppendLine("    }");
@@ -326,9 +371,10 @@ namespace O3DESharp.BindingGenerator.Generation
             sb.AppendLine();
         }
 
-        private void GenerateMethod(StringBuilder sb, string className, ParsedMethod method)
+        private void GenerateMethod(StringBuilder sb, string className, ParsedMethod method, IReadOnlyCollection<ParsedMethod> allMethodsInClass)
         {
             var safeMethodName = SanitizeIdentifier(method.Name);
+            var internalCallName = InternalCallFieldName(className, method, allMethodsInClass);
 
             if (!string.IsNullOrEmpty(method.Documentation))
             {
@@ -394,11 +440,11 @@ namespace O3DESharp.BindingGenerator.Generation
 
             if (csReturnType == "void")
             {
-                sb.AppendLine($"            InternalCalls.{className}_{safeMethodName}({argsStr});");
+                sb.AppendLine($"            InternalCalls.{internalCallName}({argsStr});");
             }
             else
             {
-                sb.AppendLine($"            return InternalCalls.{className}_{safeMethodName}({argsStr});");
+                sb.AppendLine($"            return InternalCalls.{internalCallName}({argsStr});");
             }
 
             sb.AppendLine("        }");
@@ -645,21 +691,80 @@ namespace O3DESharp.BindingGenerator.Generation
         }
 
         /// <summary>
-        /// Get the valid (bindable) methods from a parsed class.
-        /// Deduplicates by sanitized method name since InternalCalls fields are keyed
-        /// by ClassName_MethodName without parameter type info.
+        /// Get the valid (bindable) methods from a parsed class. Every overload
+        /// is preserved; <see cref="InternalCallFieldName"/> is responsible for
+        /// disambiguating them when emitting field / function names so the
+        /// InternalCalls layer can have multiple entries for the same C# name.
         /// </summary>
         private static List<ParsedMethod> GetValidMethods(ParsedClass parsedClass)
         {
-            var methods = parsedClass.Methods
+            return parsedClass.Methods
                 .Where(m => IsValidCSharpIdentifier(SanitizeIdentifier(m.Name)))
                 .Where(m => IsValidCSharpType(m.ReturnType.CSharpTypeName))
                 .Where(m => m.Parameters.All(p => IsValidCSharpType(p.Type.CSharpTypeName)))
                 .ToList();
+        }
 
-            // Deduplicate by sanitized name — keep only the first overload
-            // since InternalCalls can only have one field per ClassName_MethodName
-            return DeduplicateByName(methods, m => SanitizeIdentifier(m.Name));
+        /// <summary>
+        /// Compute the unique InternalCalls field name and BindingRegistration
+        /// symbol for a method on a class. When a method's sanitized name is
+        /// unique within its class the name is just <c>{ClassName}_{MethodName}</c>;
+        /// when it collides (i.e. the method is overloaded) every overload gets
+        /// a stable suffix derived from its arity and parameter types so each
+        /// overload has its own delegate* field and AddInternalCall entry.
+        ///
+        /// Both <see cref="CSharpCodeGenerator"/> and
+        /// <see cref="CppRegistrationGenerator"/> call this so the C# and C++
+        /// sides see the same names.
+        /// </summary>
+        public static string InternalCallFieldName(string className, ParsedMethod method, IReadOnlyCollection<ParsedMethod> allMethodsInClass)
+        {
+            var safeName = SanitizeIdentifier(method.Name);
+            int sameNameCount = 0;
+            foreach (var m in allMethodsInClass)
+            {
+                if (SanitizeIdentifier(m.Name) == safeName)
+                {
+                    sameNameCount++;
+                    if (sameNameCount > 1) break;
+                }
+            }
+
+            if (sameNameCount <= 1)
+            {
+                // Unique within the class - no need to mangle.
+                return $"{className}_{safeName}";
+            }
+
+            // Build a stable parameter-type mangle. Includes arity so that
+            // even parameterless overloads coexist (e.g. Foo() vs Foo(int)).
+            var sb = new StringBuilder();
+            sb.Append(className).Append('_').Append(safeName).Append('_').Append(method.Parameters.Count);
+            foreach (var p in method.Parameters)
+            {
+                sb.Append('_').Append(MangleType(p.Type.CSharpTypeName));
+            }
+            return sb.ToString();
+        }
+
+        /// <summary>
+        /// Turn a C# type name into a token safe to embed in an identifier.
+        /// We can't just use the raw type because it may contain dots, generics,
+        /// or other characters illegal in a C++/C# identifier.
+        /// </summary>
+        private static string MangleType(string csharpType)
+        {
+            if (string.IsNullOrEmpty(csharpType))
+            {
+                return "void";
+            }
+
+            var sb = new StringBuilder(csharpType.Length);
+            foreach (var c in csharpType)
+            {
+                sb.Append(char.IsLetterOrDigit(c) ? c : '_');
+            }
+            return sb.ToString();
         }
 
         /// <summary>

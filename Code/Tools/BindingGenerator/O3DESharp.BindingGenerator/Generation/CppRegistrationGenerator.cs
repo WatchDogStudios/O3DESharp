@@ -55,12 +55,16 @@ namespace O3DESharp.BindingGenerator.Generation
             sb.AppendLine($"namespace {bindings.GemName}::Generated");
             sb.AppendLine("{");
 
-            // Forward declarations for binding functions
+            // Forward declarations for binding functions. The function name MUST
+            // match the corresponding InternalCalls field name on the C# side -
+            // CSharpCodeGenerator.InternalCallFieldName is the single source of
+            // truth for that mangling so overloads disambiguate consistently on
+            // both sides of the interop.
             foreach (var parsedClass in bindings.Classes)
             {
                 foreach (var method in parsedClass.Methods)
                 {
-                    var funcName = $"{parsedClass.Name}_{method.Name}";
+                    var funcName = CSharpCodeGenerator.InternalCallFieldName(parsedClass.Name, method, parsedClass.Methods);
                     sb.AppendLine($"    void {funcName}(/* parameters */);");
                 }
             }
@@ -85,13 +89,14 @@ namespace O3DESharp.BindingGenerator.Generation
             sb.AppendLine($"        AZLOG_INFO(\"Registering {bindings.GemName} bindings to assembly '%s'\", assembly->GetName().data());");
             sb.AppendLine();
 
-            // Register each class's methods
+            // Register each class's methods. Same overload-aware name as the
+            // forward-decl block above.
             foreach (var parsedClass in bindings.Classes)
             {
                 sb.AppendLine($"        // {parsedClass.Name} bindings");
                 foreach (var method in parsedClass.Methods)
                 {
-                    var funcName = $"{parsedClass.Name}_{method.Name}";
+                    var funcName = CSharpCodeGenerator.InternalCallFieldName(parsedClass.Name, method, parsedClass.Methods);
                     sb.AppendLine($"        assembly->AddInternalCall(\"{bindings.GemName}.InternalCalls\", \"{funcName}\", reinterpret_cast<void*>(&{funcName}));");
                 }
             }

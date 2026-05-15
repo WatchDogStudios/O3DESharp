@@ -157,6 +157,26 @@ namespace O3DESharp.BindingGenerator.Parsing
                 // Visit all children of the translation unit
                 cursor.VisitChildren((childCursor, parent, _) =>
                 {
+                    // Record every non-system header that contributed a top-level
+                    // declaration to this parse. This captures transitive #includes
+                    // (e.g. AzCore/Math/Vector3.h pulled in by the gem's own header)
+                    // so BuildCache can invalidate when those upstream files change.
+                    var fileLoc = childCursor.Location;
+                    if (!fileLoc.IsInSystemHeader)
+                    {
+                        CXFile file;
+                        uint line, column, offset;
+                        clang.getFileLocation(fileLoc, (void**)&file, &line, &column, &offset);
+                        if (file.Handle != IntPtr.Zero)
+                        {
+                            var fileName = file.Name.CString;
+                            if (!string.IsNullOrEmpty(fileName))
+                            {
+                                bindings.SourceFiles.Add(System.IO.Path.GetFullPath(fileName));
+                            }
+                        }
+                    }
+
                     // Only process declarations from the main file
                     if (!childCursor.Location.IsFromMainFile)
                     {
