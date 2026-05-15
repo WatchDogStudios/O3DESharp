@@ -313,8 +313,19 @@ def build_user_csharp_assemblies(
 
     logger.info(f"O3DESharp: Found {len(user_projects)} user project(s) to build")
 
-    # Deployment target directory
-    deploy_path = pathlib.Path(launcher_build_path) / "bin" / build_config / "Bin" / "Scripts"
+    # Deployment target directory.
+    #
+    # Match the path the runtime actually reads from in
+    # O3DESharpSystemComponent::InitializeCoralHost, which is
+    # <ProjectPath>/Bin/Scripts/ (capital B). At export time the launcher build
+    # path IS the project directory laid out for shipping, so we land scripts
+    # at <launcher_build_path>/Bin/Scripts/.
+    #
+    # The previous "bin/<config>/Bin/Scripts" form created a nested case-
+    # mismatched directory on Linux (where "bin" and "Bin" are distinct) that
+    # the launcher never searched, so user scripts silently vanished from
+    # Linux exports.
+    deploy_path = pathlib.Path(launcher_build_path) / "Bin" / "Scripts"
     logger.info(f"O3DESharp: Deployment target: {deploy_path}")
 
     # Build and deploy each project

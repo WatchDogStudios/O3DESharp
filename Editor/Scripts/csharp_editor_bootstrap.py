@@ -9,6 +9,7 @@ O3DESharp Editor Bootstrap - Registers C# scripting tools in the Editor menus
 
 import sys
 import os
+import re
 from pathlib import Path
 
 import azlmbr.bus as bus
@@ -288,32 +289,92 @@ def _refresh_class_cache():
         general.log(f"Failed to refresh class cache: {e}")
 
 
+_MSBUILD_ERROR_RE = re.compile(
+    r"^(?P<file>.+?)\((?P<line>\d+),(?P<col>\d+)\):\s*"
+    r"error(?:\s+(?P<code>[A-Z]+\d+))?:\s*(?P<msg>.+?)\s*$"
+)
+_MSBUILD_WARN_RE = re.compile(
+    r"^(?P<file>.+?)\((?P<line>\d+),(?P<col>\d+)\):\s*"
+    r"warning(?:\s+(?P<code>[A-Z]+\d+))?:\s*(?P<msg>.+?)\s*$"
+)
+
+
+def _surface_dotnet_build_output(project_label, build_output):
+    """
+    Parse `dotnet build` stdout/stderr for MSBuild-formatted error and warning
+    lines and re-emit them through the O3DE editor log so the user sees compile
+    failures alongside the rest of the editor's diagnostics rather than only
+    inside the C# Project Manager dialog (which the editor console doesn't see).
+
+    Lines that don't match either pattern are skipped to keep the output
+    actionable.
+    """
+    if not build_output:
+        return
+    error_count = 0
+    warning_count = 0
+    for raw_line in build_output.splitlines():
+        line = raw_line.strip()
+        m = _MSBUILD_ERROR_RE.match(line)
+        if m:
+            error_count += 1
+            code = m.group("code") or "error"
+            general.log(
+                f"[O3DESharp][ERROR][{project_label}] {m.group('file')}({m.group('line')},{m.group('col')}): {code}: {m.group('msg')}"
+            )
+            continue
+        m = _MSBUILD_WARN_RE.match(line)
+        if m:
+            warning_count += 1
+            code = m.group("code") or "warning"
+            general.log(
+                f"[O3DESharp][warn][{project_label}] {m.group('file')}({m.group('line')},{m.group('col')}): {code}: {m.group('msg')}"
+            )
+    if error_count or warning_count:
+        general.log(
+            f"[O3DESharp] {project_label}: parsed {error_count} error(s), {warning_count} warning(s) from dotnet build output"
+        )
+
+
 def build_csharp_projects():
     """Builds all C# projects in the current project"""
     try:
         csharp_project_manager = _import_csharp_project_manager()
-        
+
         manager = csharp_project_manager.CSharpProjectManager()
         projects = manager.list_projects()
-        
+
         if not projects:
             general.log("No C# projects found to build")
             return
-        
+
         success_count = 0
         fail_count = 0
-        
+
         for project_path in projects:
+            label = str(project_path)
             general.log(f"Building: {project_path}")
-            if manager.build_project(project_path):
+
+            # build_project returns a dict; the previous `if manager.build_project(...)`
+            # check evaluated dict truthiness (always True) and so silently
+            # reported failed builds as successful.
+            result = manager.build_project(project_path)
+            ok = bool(result.get("success"))
+
+            # Always surface compile output to the editor console - both on
+            # failure (so the user can act on the error) and on success-with-
+            # warnings.
+            _surface_dotnet_build_output(label, result.get("build_output", ""))
+
+            if ok:
                 success_count += 1
-                general.log(f"  Build succeeded")
+                general.log(f"  Build succeeded: {result.get('output_path', '')}")
             else:
                 fail_count += 1
-                general.log(f"  Build FAILED")
-        
+                general.log(f"  Build FAILED: {result.get('message', 'unknown reason')}")
+
         general.log(f"Build complete: {success_count} succeeded, {fail_count} failed")
-        
+
     except ImportError as e:
         general.log(f"Failed to import C# project manager: {e}")
     except Exception as e:

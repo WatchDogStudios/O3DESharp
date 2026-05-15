@@ -22,6 +22,7 @@
 #include <AzToolsFramework/API/ToolsApplicationAPI.h>
 
 #include <Scripting/CoralHostManager.h>
+#include <Tools/CSharpEditorToolsBus.h>
 
 namespace O3DESharp
 {
@@ -283,50 +284,31 @@ except ImportError as e:
             return AZ::Edit::PropertyRefreshLevels::None;
         }
 
-        // Call Python script to open the script in the IDE
-        AZStd::string pythonScript = AZStd::string::format(
-            R"(
-import sys
-import os
-import subprocess
-import azlmbr.paths
+        // Dispatch to the Python-side CSharpEditorToolsBus::OpenScriptInEditor.
+        // That handler uses the cached class index to do an exact full-name
+        // match against the pre-discovered file paths (O(N)), then launches the
+        // OS-default editor for that path. Previously this method generated and
+        // executed an inline Python script that:
+        //   (a) walked every project and every script (O(projects * scripts)),
+        //   (b) did a substring match on file contents (false positives), and
+        //   (c) string-formatted m_scriptClassName directly into Python source
+        //       (Python-injection risk if a class name contained a quote).
+        // Going through the bus removes all three problems.
+        bool ok = false;
+        CSharpEditorToolsBus::BroadcastResult(
+            ok,
+            &CSharpEditorToolsBus::Events::OpenScriptInEditor,
+            m_config.m_scriptClassName);
 
-# Add O3DESharp Editor/Scripts to Python path if not already there
-o3desharp_scripts_path = os.path.join(azlmbr.paths.engroot, 'Gems', 'O3DESharp', 'Editor', 'Scripts')
-if o3desharp_scripts_path not in sys.path:
-    sys.path.insert(0, o3desharp_scripts_path)
-
-try:
-    import csharp_project_manager
-
-    manager = csharp_project_manager.CSharpProjectManager()
-    class_name = "%s"
-
-    # Find the script file based on class name
-    for project_path in manager.list_projects():
-        for script_path in manager.list_scripts(project_path):
-            # Check if this script contains our class
-            with open(script_path, 'r') as f:
-                content = f.read()
-                if class_name in content:
-                    # Open in default editor
-                    if os.name == 'nt':
-                        os.startfile(script_path)
-                    else:
-                        subprocess.run(['xdg-open', script_path])
-                    print(f"Opened script: {script_path}")
-                    break
-except Exception as e:
-    print(f"Could not open script: {e}")
-)",
-            m_config.m_scriptClassName.c_str()
-        );
-
-        AzToolsFramework::EditorPythonRunnerRequestBus::Broadcast(
-            &AzToolsFramework::EditorPythonRunnerRequestBus::Events::ExecuteByString,
-            pythonScript.c_str(),
-            false /* is file path */
-        );
+        if (!ok)
+        {
+            AZ_Warning(
+                "O3DESharp",
+                false,
+                "Could not open script for class '%s'. Check that the class name is "
+                "fully qualified and that the matching .cs file is in a discovered C# project.",
+                m_config.m_scriptClassName.c_str());
+        }
 
         return AZ::Edit::PropertyRefreshLevels::None;
     }

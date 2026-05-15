@@ -34,6 +34,11 @@ Editor/Scripts/*.deprecated
 
 tempclaude-*
 .vs
+
+# Python bytecode (Editor/Scripts, ExportScripts, etc.)
+__pycache__/
+*.pyc
+*.pyo
 Code/Tools/BindingGenerator/O3DESharp.BindingGenerator/.vs
 bin
 Code/Tools/BindingGenerator/O3DESharp.BindingGenerator/bin

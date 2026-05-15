@@ -110,8 +110,15 @@ namespace O3DESharp
         // Register the feature processor for rendering support
         AZ::RPI::FeatureProcessorFactory::Get()->RegisterFeatureProcessor<O3DESharpFeatureProcessor>();
 
-        // Auto-deploy the latest Coral.Managed and O3DE.Core DLLs before init
+        // Auto-deploy the latest Coral.Managed and O3DE.Core DLLs before init.
+        // This walks the build tree to pick the freshest output; it's a dev-time
+        // convenience and has no useful effect in shipping builds where Build/
+        // and _deps/ do not exist on the customer's machine. It also tries to
+        // write into <ProjectPath>/Bin/Scripts/ which is typically read-only on
+        // installed games. Guard it out of Release / monolithic builds.
+#if !defined(AZ_RELEASE_BUILD) && !defined(AZ_MONOLITHIC_BUILD)
         DeployLatestManagedAssemblies();
+#endif
 
         // Initialize the Coral .NET host
         InitializeCoralHost();
