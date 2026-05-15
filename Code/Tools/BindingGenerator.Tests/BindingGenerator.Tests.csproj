@@ -27,6 +27,18 @@
     <ProjectReference Include="..\BindingGenerator\O3DESharp.BindingGenerator\O3DESharp.BindingGenerator.csproj" />
   </ItemGroup>
 
+  <!--
+    Compile in the O3DE.Core ExposedProperty source so we can unit-test the
+    helper APIs without spinning up the full Coral runtime. The real
+    O3DE.Core.dll cannot be referenced directly here because it depends on
+    InternalCalls function-pointer fields that are only populated when Coral
+    loads the assembly. A tiny Debug stub (Stubs/DebugStub.cs in this project)
+    satisfies the one reference ExposedProperty.cs has on Debug.LogError.
+  -->
+  <ItemGroup>
+    <Compile Include="..\..\..\Assets\Scripts\O3DE.Core\ExposedProperty.cs" Link="O3DE.Core\ExposedProperty.cs" />
+  </ItemGroup>
+
   <ItemGroup>
     <Using Include="Xunit" />
     <Using Include="FluentAssertions" />

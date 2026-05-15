@@ -92,6 +92,35 @@ namespace MyGame
    - Set the "Script Class" field to `MyGame.PlayerController`
    - Run the game!
 
+### Exposing Fields to the Inspector — `[ExposedProperty]`
+
+Decorate any public field or public auto-property on a `ScriptComponent`
+subclass with `[ExposedProperty]` to make it editable in the inspector and
+serialized with the entity / prefab:
+
+```csharp
+public class PlayerController : ScriptComponent
+{
+    [ExposedProperty]
+    public float Speed = 10.0f;
+
+    [ExposedProperty("Maximum Health")]
+    public int MaxHealth = 100;
+
+    [ExposedProperty] public bool CanJump = true;
+}
+```
+
+The component config keeps a `name → value` map (`Exposed Properties` in the
+inspector). Values are applied to the managed instance before `OnCreate`
+runs, so your initialization code sees the editor-configured values.
+
+Supported types in the current slice: `bool`, integer types (`byte` /
+`sbyte` / `short` / `ushort` / `int` / `uint` / `long` / `ulong`),
+`float`, `double`, and `string`. Typed inspector widgets (sliders, color
+pickers, `Vector3` / `Quaternion` / enum support) are a planned follow-up;
+today the inspector shows a generic key/value editor.
+
 ## Two API Approaches
 
 O3DESharp provides two complementary approaches for accessing O3DE functionality:

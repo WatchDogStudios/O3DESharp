@@ -41,9 +41,10 @@ namespace O3DESharp
             }
 
             serializeContext->Class<EditorCSharpScriptConfig, AZ::ComponentConfig>()
-                ->Version(1)
+                ->Version(2) // bumped: added ExposedProperties
                 ->Field("ScriptClassName", &EditorCSharpScriptConfig::m_scriptClassName)
                 ->Field("AssemblyPath", &EditorCSharpScriptConfig::m_assemblyPath)
+                ->Field("ExposedProperties", &EditorCSharpScriptConfig::m_exposedPropertyValues)
                 // Note: m_validationStatus and m_isValid are not serialized - they are runtime state
                 ;
 
@@ -66,6 +67,14 @@ namespace O3DESharp
                     ->DataElement(AZ::Edit::UIHandlers::Default, &EditorCSharpScriptConfig::m_validationStatus,
                         "Status", "Result of validating the Script Class field against the loaded assemblies.")
                         ->Attribute(AZ::Edit::Attributes::ReadOnly, true)
+                    // [ExposedProperty] values. First-slice UX: generic
+                    // string->string map editor. Typed widgets (sliders, color
+                    // pickers, ...) are a planned follow-up.
+                    ->DataElement(AZ::Edit::UIHandlers::Default, &EditorCSharpScriptConfig::m_exposedPropertyValues,
+                        "Exposed Properties",
+                        "Values for [ExposedProperty]-decorated fields on the selected script. "
+                        "These are applied to the managed instance before OnCreate.")
+                        ->Attribute(AZ::Edit::Attributes::AutoExpand, true)
                     ;
             }
         }
@@ -154,6 +163,7 @@ namespace O3DESharp
     {
         m_config.m_scriptClassName = config.m_scriptClassName;
         m_config.m_assemblyPath = config.m_assemblyPath;
+        m_config.m_exposedPropertyValues = config.m_exposedPropertyValues;
         ValidateScript();
     }
 
@@ -162,6 +172,7 @@ namespace O3DESharp
         CSharpScriptComponentConfig config;
         config.m_scriptClassName = m_config.m_scriptClassName;
         config.m_assemblyPath = m_config.m_assemblyPath;
+        config.m_exposedPropertyValues = m_config.m_exposedPropertyValues;
         return config;
     }
 
@@ -392,10 +403,13 @@ except ImportError as e:
 
     void EditorCSharpScriptComponent::BuildGameEntity(AZ::Entity* gameEntity)
     {
-        // Create the runtime component with our configuration
+        // Create the runtime component with our configuration. Transfer the
+        // exposed-property map so the runtime component can hand values to
+        // the managed instance on Activate.
         CSharpScriptComponentConfig runtimeConfig;
         runtimeConfig.m_scriptClassName = m_config.m_scriptClassName;
         runtimeConfig.m_assemblyPath = m_config.m_assemblyPath;
+        runtimeConfig.m_exposedPropertyValues = m_config.m_exposedPropertyValues;
 
         auto* runtimeComponent = gameEntity->CreateComponent<CSharpScriptComponent>(runtimeConfig);
         AZ_UNUSED(runtimeComponent);

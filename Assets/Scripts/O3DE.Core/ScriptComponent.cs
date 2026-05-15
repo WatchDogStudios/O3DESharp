@@ -301,6 +301,21 @@ namespace O3DE
         }
 
         /// <summary>
+        /// Apply a JSON-encoded { "fieldName": "stringValue", ... } map of
+        /// <see cref="ExposedPropertyAttribute"/>-decorated values. Invoked by
+        /// the C++ <c>CSharpScriptComponent</c> after the managed instance has
+        /// been constructed but before <c>OnCreate</c> runs, so user code in
+        /// <c>OnCreate</c> sees the editor-configured values.
+        ///
+        /// Marked non-virtual so user subclasses can't accidentally short-
+        /// circuit the property application.
+        /// </summary>
+        public void ApplyExposedProperties(string valuesJson)
+        {
+            ExposedPropertyHelpers.ApplyFromJson(this, valuesJson);
+        }
+
+        /// <summary>
         /// Combined per-frame entry point invoked by the C++ CSharpScriptComponent.
         /// Runs the user's overridden OnUpdate then drains any scheduled
         /// Invoke / InvokeRepeating actions in a single managed transition.

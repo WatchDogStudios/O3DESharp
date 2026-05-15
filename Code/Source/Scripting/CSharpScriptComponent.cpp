@@ -32,9 +32,10 @@ namespace O3DESharp
             }
 
             serializeContext->Class<CSharpScriptComponentConfig, AZ::ComponentConfig>()
-                ->Version(1)
+                ->Version(2) // bumped: added m_exposedPropertyValues
                 ->Field("ScriptClassName", &CSharpScriptComponentConfig::m_scriptClassName)
                 ->Field("AssemblyPath", &CSharpScriptComponentConfig::m_assemblyPath)
+                ->Field("ExposedProperties", &CSharpScriptComponentConfig::m_exposedPropertyValues)
                 ;
 
             if (AZ::EditContext* editContext = serializeContext->GetEditContext())
@@ -47,6 +48,15 @@ namespace O3DESharp
                         ->Attribute(AZ::Edit::Attributes::ChangeNotify, AZ::Edit::PropertyRefreshLevels::EntireTree)
                     ->DataElement(AZ::Edit::UIHandlers::Default, &CSharpScriptComponentConfig::m_assemblyPath,
                         "Assembly Path", "Optional: Path to the assembly containing the script (leave empty for default)")
+                    // Phase 7 first slice: exposed [ExposedProperty] values are
+                    // shown as a generic key/value map. Typed per-field widgets
+                    // (sliders, color pickers, ...) are the planned follow-up.
+                    ->DataElement(AZ::Edit::UIHandlers::Default, &CSharpScriptComponentConfig::m_exposedPropertyValues,
+                        "Exposed Properties",
+                        "Values for [ExposedProperty]-decorated fields on the selected script. "
+                        "Edit name->value entries here; they are applied to the managed "
+                        "instance before OnCreate.")
+                        ->Attribute(AZ::Edit::Attributes::AutoExpand, true)
                     ;
             }
         }
@@ -164,6 +174,7 @@ namespace O3DESharp
             if (m_scriptInstance.IsValid())
             {
                 SetEntityIdOnScript();
+                PushExposedPropertiesToScript();
                 SafeInvokeMethod("OnCreate");
             }
         }
@@ -192,6 +203,10 @@ namespace O3DESharp
         {
             // Pass entity ID to the script
             SetEntityIdOnScript();
+
+            // Push editor-configured [ExposedProperty] values into the managed
+            // instance BEFORE OnCreate runs so user OnCreate code sees them.
+            PushExposedPropertiesToScript();
 
             // Call OnCreate on the managed instance
             SafeInvokeMethod("OnCreate");
@@ -300,6 +315,84 @@ namespace O3DESharp
         catch (...)
         {
             DisableAfterUnhandledException(methodName, "non-std::exception");
+        }
+    }
+
+    void CSharpScriptComponent::PushExposedPropertiesToScript()
+    {
+        if (m_disabledByException || !m_scriptInstance.IsValid())
+        {
+            return;
+        }
+        if (m_config.m_exposedPropertyValues.empty())
+        {
+            return;
+        }
+
+        // Build a flat { "name": "value", ... } JSON object. The values are
+        // already strings (the config map is string->string) so we just need
+        // to handle JSON escaping. Keep the encoder small / inline rather than
+        // pulling in rapidjson for one trivial use - O3DE.Core's
+        // ExposedPropertyHelpers.ParseSimpleStringMap accepts this shape.
+        auto escape = [](const AZStd::string& s) -> AZStd::string
+        {
+            AZStd::string out;
+            out.reserve(s.size() + 2);
+            for (char c : s)
+            {
+                switch (c)
+                {
+                case '"':  out += "\\\""; break;
+                case '\\': out += "\\\\"; break;
+                case '\n': out += "\\n";  break;
+                case '\r': out += "\\r";  break;
+                case '\t': out += "\\t";  break;
+                default:   out += c;      break;
+                }
+            }
+            return out;
+        };
+
+        AZStd::string json = "{";
+        bool first = true;
+        for (const auto& kv : m_config.m_exposedPropertyValues)
+        {
+            if (!first) { json += ","; }
+            first = false;
+            json += "\"";
+            json += escape(kv.first);
+            json += "\":\"";
+            json += escape(kv.second);
+            json += "\"";
+        }
+        json += "}";
+
+        // Hand the JSON to the managed instance. Coral marshals const char* to
+        // a managed string argument. The C# side reparses with its own minimal
+        // parser (ExposedPropertyHelpers.ParseSimpleStringMap) so we don't have
+        // to depend on System.Text.Json being trim-safe.
+        try
+        {
+            m_scriptInstance.InvokeMethod("ApplyExposedProperties", json.c_str());
+        }
+        catch (const std::exception& ex)
+        {
+            AZ_Warning(
+                "O3DESharp",
+                false,
+                "CSharpScriptComponent: ApplyExposedProperties failed on entity '%s' (script '%s'): %s",
+                GetEntity() ? GetEntity()->GetName().c_str() : "Unknown",
+                m_config.m_scriptClassName.c_str(),
+                ex.what());
+        }
+        catch (...)
+        {
+            AZ_Warning(
+                "O3DESharp",
+                false,
+                "CSharpScriptComponent: ApplyExposedProperties failed on entity '%s' (script '%s')",
+                GetEntity() ? GetEntity()->GetName().c_str() : "Unknown",
+                m_config.m_scriptClassName.c_str());
         }
     }
 

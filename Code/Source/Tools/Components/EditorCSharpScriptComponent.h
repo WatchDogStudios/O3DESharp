@@ -9,6 +9,7 @@
 #pragma once
 
 #include <Scripting/CSharpScriptComponent.h>
+#include <AzCore/std/containers/unordered_map.h>
 #include <AzToolsFramework/ToolsComponents/EditorComponentBase.h>
 
 namespace O3DESharp
@@ -39,6 +40,12 @@ namespace O3DESharp
 
         //! Whether the script class was found in the assembly
         bool m_isValid = false;
+
+        //! Values for [ExposedProperty]-decorated fields on the selected script.
+        //! Mirrors CSharpScriptComponentConfig::m_exposedPropertyValues;
+        //! transferred verbatim by BuildGameEntity / SetConfiguration /
+        //! GetConfiguration. See O3DE.ExposedPropertyAttribute (Phase 7).
+        AZStd::unordered_map<AZStd::string, AZStd::string> m_exposedPropertyValues;
     };
 
     /**

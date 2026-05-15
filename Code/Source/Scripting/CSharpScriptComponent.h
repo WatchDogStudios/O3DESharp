@@ -14,6 +14,7 @@
 #include <AzCore/Component/TickBus.h>
 #include <AzCore/Component/TransformBus.h>
 #include <AzCore/std/string/string.h>
+#include <AzCore/std/containers/unordered_map.h>
 #include <AzCore/RTTI/RTTI.h>
 #include <AzCore/Memory/SystemAllocator.h>
 #include <AzCore/Serialization/SerializeContext.h>
@@ -48,6 +49,19 @@ namespace O3DESharp
          * If empty, uses the default user assembly
          */
         AZStd::string m_assemblyPath;
+
+        /**
+         * Values for the script's [ExposedProperty]-decorated public fields,
+         * keyed by the C# field/property name. The values are stored as
+         * strings and parsed back into the field type on the managed side -
+         * see O3DE.ExposedPropertyHelpers in O3DE.Core.
+         *
+         * Edits in the inspector populate this map; CSharpScriptComponent::
+         * Activate serializes it to JSON and hands it to the managed
+         * instance via ScriptComponent::ApplyExposedProperties before
+         * OnCreate runs.
+         */
+        AZStd::unordered_map<AZStd::string, AZStd::string> m_exposedPropertyValues;
     };
 
     /**
@@ -172,6 +186,15 @@ namespace O3DESharp
          * Pass the entity ID to the managed instance so it knows which entity it belongs to
          */
         void SetEntityIdOnScript();
+
+        /**
+         * Serialize CSharpScriptComponentConfig::m_exposedPropertyValues to JSON
+         * and hand it to the managed instance via ScriptComponent::ApplyExposedProperties.
+         * Called once per managed-instance lifetime, between SetEntityIdOnScript
+         * and OnCreate, so user code in OnCreate sees the editor-configured values.
+         * No-op if the map is empty or the instance is invalid.
+         */
+        void PushExposedPropertiesToScript();
 
     private:
         // Invoke a managed method, catching any exception thrown across the
