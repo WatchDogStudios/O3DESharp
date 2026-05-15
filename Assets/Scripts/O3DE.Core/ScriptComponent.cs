@@ -316,6 +316,19 @@ namespace O3DE
         }
 
         /// <summary>
+        /// Return a JSON-encoded array describing every
+        /// <see cref="ExposedPropertyAttribute"/>-decorated member on this
+        /// instance's type. Used by the editor (Phase 7.5) to decide which
+        /// typed inspector widget to render for each field.
+        ///
+        /// Marked non-virtual to match <see cref="ApplyExposedProperties"/>.
+        /// </summary>
+        public string GetExposedPropertySchemaJson()
+        {
+            return ExposedPropertyHelpers.GetSchemaJson(this);
+        }
+
+        /// <summary>
         /// Combined per-frame entry point invoked by the C++ CSharpScriptComponent.
         /// Runs the user's overridden OnUpdate then drains any scheduled
         /// Invoke / InvokeRepeating actions in a single managed transition.

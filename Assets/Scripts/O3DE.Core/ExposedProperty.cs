@@ -73,7 +73,7 @@ namespace O3DE
     /// <c>ScriptComponent</c> so the reflection helpers can be unit-tested
     /// against a plain object.
     /// </summary>
-    public static class ExposedPropertyHelpers
+    public static partial class ExposedPropertyHelpers
     {
         /// <summary>
         /// Enumerate every <c>[ExposedProperty]</c>-decorated public field and
@@ -309,6 +309,146 @@ namespace O3DE
                 sb.Append(c);
             }
             throw new FormatException("Unterminated string.");
+        }
+    }
+
+    /// <summary>
+    /// Schema entry describing one <see cref="ExposedPropertyAttribute"/>-decorated
+    /// member - what the inspector needs to know to render the right typed widget.
+    /// </summary>
+    public sealed class ExposedPropertySchema
+    {
+        /// <summary>Field/property name as declared on the C# class.</summary>
+        public string Name { get; init; } = string.Empty;
+
+        /// <summary>Inspector label - <c>ExposedPropertyAttribute.DisplayName</c> or <see cref="Name"/>.</summary>
+        public string DisplayName { get; init; } = string.Empty;
+
+        /// <summary>
+        /// Short type tag the C++ side uses to pick the right widget. One of:
+        /// <c>"bool"</c>, <c>"byte"</c>, <c>"sbyte"</c>, <c>"short"</c>, <c>"ushort"</c>,
+        /// <c>"int"</c>, <c>"uint"</c>, <c>"long"</c>, <c>"ulong"</c>, <c>"float"</c>,
+        /// <c>"double"</c>, <c>"string"</c>, or <c>"other"</c> for unsupported types.
+        /// </summary>
+        public string TypeTag { get; init; } = "other";
+
+        /// <summary>Default value serialized via the same encoder as <see cref="ExposedPropertyHelpers.SnapshotDefaults"/>.</summary>
+        public string DefaultValue { get; init; } = string.Empty;
+
+        /// <summary>Optional tooltip set on <see cref="ExposedPropertyAttribute.Tooltip"/>.</summary>
+        public string? Tooltip { get; init; }
+    }
+
+    public static partial class ExposedPropertyHelpers
+    {
+        /// <summary>
+        /// Inspect a <see cref="ScriptComponent"/> instance and return the full
+        /// schema (name, display name, type tag, default value, tooltip) for
+        /// every <see cref="ExposedPropertyAttribute"/>-decorated member.
+        /// Walks the inheritance chain up to but not including
+        /// <see cref="ScriptComponent"/>.
+        ///
+        /// The C++ inspector calls this (via Coral) when the user picks a
+        /// script class, then renders one typed widget per entry on the
+        /// component's Exposed Properties row instead of the generic key/value
+        /// editor used in Phase 7.
+        /// </summary>
+        public static IReadOnlyList<ExposedPropertySchema> GetSchema(object instance)
+        {
+            var list = new List<ExposedPropertySchema>();
+            if (instance is null) return list;
+
+            foreach (var member in Enumerate(instance))
+            {
+                list.Add(new ExposedPropertySchema
+                {
+                    Name = member.Name,
+                    DisplayName = member.DisplayName,
+                    TypeTag = TypeTagFor(member.MemberType),
+                    DefaultValue = SerializeValue(member.GetValue(instance)),
+                    Tooltip = member.Tooltip,
+                });
+            }
+            return list;
+        }
+
+        /// <summary>
+        /// JSON-encoded form of <see cref="GetSchema"/>. The shape is a flat
+        /// array of objects; keys are camelCase to match the prevailing C++
+        /// JSON conventions in this codebase. Returns <c>"[]"</c> when the
+        /// instance has no exposed members.
+        ///
+        /// Output example:
+        /// <code>
+        /// [
+        ///   {"name":"Speed","displayName":"Speed","type":"float","default":"10","tooltip":""},
+        ///   {"name":"MaxHealth","displayName":"Maximum Health","type":"int","default":"100","tooltip":""}
+        /// ]
+        /// </code>
+        /// </summary>
+        public static string GetSchemaJson(object instance)
+        {
+            var schema = GetSchema(instance);
+            if (schema.Count == 0) return "[]";
+
+            var sb = new System.Text.StringBuilder();
+            sb.Append('[');
+            for (int i = 0; i < schema.Count; i++)
+            {
+                if (i > 0) sb.Append(',');
+                var s = schema[i];
+                sb.Append('{');
+                AppendJsonField(sb, "name", s.Name);          sb.Append(',');
+                AppendJsonField(sb, "displayName", s.DisplayName); sb.Append(',');
+                AppendJsonField(sb, "type", s.TypeTag);       sb.Append(',');
+                AppendJsonField(sb, "default", s.DefaultValue);   sb.Append(',');
+                AppendJsonField(sb, "tooltip", s.Tooltip ?? string.Empty);
+                sb.Append('}');
+            }
+            sb.Append(']');
+            return sb.ToString();
+        }
+
+        private static string TypeTagFor(Type t)
+        {
+            if (t == typeof(bool))   return "bool";
+            if (t == typeof(byte))   return "byte";
+            if (t == typeof(sbyte))  return "sbyte";
+            if (t == typeof(short))  return "short";
+            if (t == typeof(ushort)) return "ushort";
+            if (t == typeof(int))    return "int";
+            if (t == typeof(uint))   return "uint";
+            if (t == typeof(long))   return "long";
+            if (t == typeof(ulong))  return "ulong";
+            if (t == typeof(float))  return "float";
+            if (t == typeof(double)) return "double";
+            if (t == typeof(string)) return "string";
+            return "other";
+        }
+
+        private static void AppendJsonField(System.Text.StringBuilder sb, string key, string value)
+        {
+            sb.Append('"').Append(EscapeJson(key)).Append('"').Append(':');
+            sb.Append('"').Append(EscapeJson(value)).Append('"');
+        }
+
+        private static string EscapeJson(string s)
+        {
+            if (string.IsNullOrEmpty(s)) return s;
+            var sb = new System.Text.StringBuilder(s.Length + 2);
+            foreach (var c in s)
+            {
+                switch (c)
+                {
+                    case '"':  sb.Append("\\\""); break;
+                    case '\\': sb.Append("\\\\"); break;
+                    case '\n': sb.Append("\\n");  break;
+                    case '\r': sb.Append("\\r");  break;
+                    case '\t': sb.Append("\\t");  break;
+                    default:   sb.Append(c);       break;
+                }
+            }
+            return sb.ToString();
         }
     }
 

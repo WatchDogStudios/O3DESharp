@@ -226,6 +226,82 @@ namespace O3DESharp
         return type != nullptr;
     }
 
+    AZStd::string O3DESharpSystemComponent::GetExposedPropertySchemaJson(const AZStd::string& fullTypeName) const
+    {
+        // Empty array is the safe "no schema available" signal - the inspector
+        // falls back to the generic name/value map editor when it sees this.
+        constexpr const char* kEmpty = "[]";
+
+        if (!m_coralHostManager || !m_coralHostManager->IsInitialized() || fullTypeName.empty())
+        {
+            return kEmpty;
+        }
+
+        Coral::Type* scriptType = m_coralHostManager->GetUserType(fullTypeName);
+        if (scriptType == nullptr)
+        {
+            scriptType = m_coralHostManager->GetCoreType(fullTypeName);
+        }
+        if (scriptType == nullptr)
+        {
+            return kEmpty;
+        }
+
+        // Create a transient managed instance and call its (non-virtual)
+        // GetExposedPropertySchemaJson() instance method. We match the
+        // proven ApplyExposedProperties / OnCreate dispatch pattern rather
+        // than reaching into Coral::Type for a static-method invocation
+        // helper that may or may not be wired up.
+        //
+        // Documented caveat: script default ctors with side-effects (event
+        // subscriptions, log spam) WILL run once per inspector refresh -
+        // this matches Unity's familiar behavior for editor-time component
+        // introspection.
+        Coral::ManagedObject instance = scriptType->CreateInstance();
+        if (!instance.IsValid())
+        {
+            AZ_Warning(
+                "O3DESharp", false,
+                "GetExposedPropertySchemaJson: failed to construct transient instance of '%s'",
+                fullTypeName.c_str());
+            return kEmpty;
+        }
+
+        AZStd::string result = kEmpty;
+        try
+        {
+            Coral::String managed = instance.InvokeMethod<Coral::String>("GetExposedPropertySchemaJson");
+            const char* chars = managed.Data();
+            if (chars != nullptr)
+            {
+                result = chars;
+            }
+            // Intentionally not calling Coral::String::Free: the returned
+            // string is owned by the managed heap and reclaimed by the .NET
+            // GC. Explicitly freeing it here risked a double-free with
+            // older Coral builds. If a future Coral release requires
+            // explicit release, swap this for the documented Free / Drop
+            // call - it's the only resource concern in this method.
+        }
+        catch (const std::exception& ex)
+        {
+            AZ_Warning(
+                "O3DESharp", false,
+                "GetExposedPropertySchemaJson('%s') threw: %s",
+                fullTypeName.c_str(), ex.what());
+        }
+        catch (...)
+        {
+            AZ_Warning(
+                "O3DESharp", false,
+                "GetExposedPropertySchemaJson('%s') threw (non-std exception)",
+                fullTypeName.c_str());
+        }
+
+        instance.Destroy();
+        return result;
+    }
+
     AZStd::vector<AZStd::string> O3DESharpSystemComponent::GetAvailableScriptTypes() const
     {
         AZStd::vector<AZStd::string> types;

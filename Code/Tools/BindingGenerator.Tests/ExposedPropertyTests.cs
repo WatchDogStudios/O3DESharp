@@ -215,4 +215,85 @@ public class ExposedPropertyTests
         dict["b"].Should().Be("two\nlines");
         dict["c"].Should().Be("");
     }
+
+    // ---- GetSchema / GetSchemaJson (Phase 7.5 typed-widget foundation) -----
+
+    [Fact]
+    public void GetSchema_TagsKnownPrimitiveTypes()
+    {
+        var s = new SimpleScript();
+        var schema = ExposedPropertyHelpers.GetSchema(s);
+        var byName = schema.ToDictionary(x => x.Name, x => x);
+
+        byName["Speed"].TypeTag.Should().Be("float");
+        byName["MaxHealth"].TypeTag.Should().Be("int");
+        byName["CanJump"].TypeTag.Should().Be("bool");
+        byName["Tag"].TypeTag.Should().Be("string");
+        byName["Multiplier"].TypeTag.Should().Be("double");
+    }
+
+    [Fact]
+    public void GetSchema_DefaultsReflectCurrentInstanceValues()
+    {
+        var s = new SimpleScript { Speed = 42.5f, MaxHealth = 7, Tag = "boss" };
+        var byName = ExposedPropertyHelpers.GetSchema(s).ToDictionary(x => x.Name, x => x);
+
+        byName["Speed"].DefaultValue.Should().Be("42.5");
+        byName["MaxHealth"].DefaultValue.Should().Be("7");
+        byName["Tag"].DefaultValue.Should().Be("boss");
+    }
+
+    [Fact]
+    public void GetSchema_UnknownTypeTagsAsOther()
+    {
+        // A class with an unsupported field type (Guid). The schema entry
+        // should still be present so the editor can show a placeholder.
+        var instance = new UnsupportedTypeScript();
+        var schema = ExposedPropertyHelpers.GetSchema(instance);
+        var entry = schema.Single();
+        entry.Name.Should().Be("Id");
+        entry.TypeTag.Should().Be("other");
+    }
+
+    [Fact]
+    public void GetSchemaJson_RoundTripsThroughTheSameParserCppUses()
+    {
+        var s = new SimpleScript();
+        var json = ExposedPropertyHelpers.GetSchemaJson(s);
+
+        // Sanity: starts with [ and ends with ].
+        json.Should().StartWith("[").And.EndWith("]");
+
+        // Every supported member appears.
+        json.Should().Contain("\"name\":\"Speed\"");
+        json.Should().Contain("\"name\":\"MaxHealth\"");
+        json.Should().Contain("\"displayName\":\"Maximum Health\"");
+        json.Should().Contain("\"type\":\"float\"");
+        json.Should().Contain("\"type\":\"int\"");
+        json.Should().Contain("\"type\":\"bool\"");
+        json.Should().Contain("\"type\":\"string\"");
+        json.Should().Contain("\"type\":\"double\"");
+    }
+
+    [Fact]
+    public void GetSchemaJson_EscapesQuotesAndBackslashes()
+    {
+        // Construct an instance whose default value contains a quote so we can
+        // exercise the JSON-string escape path in the schema encoder.
+        var s = new SimpleScript { Tag = "name with \"quote\" and \\backslash" };
+        var json = ExposedPropertyHelpers.GetSchemaJson(s);
+        json.Should().Contain("name with \\\"quote\\\" and \\\\backslash");
+    }
+
+    [Fact]
+    public void GetSchemaJson_NoMembersReturnsEmptyArray()
+    {
+        ExposedPropertyHelpers.GetSchemaJson(new object()).Should().Be("[]");
+    }
+
+    private class UnsupportedTypeScript
+    {
+        [ExposedProperty]
+        public System.Guid Id = System.Guid.Empty;
+    }
 }

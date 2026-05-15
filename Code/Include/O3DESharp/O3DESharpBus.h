@@ -78,6 +78,22 @@ namespace O3DESharp
          */
         virtual AZStd::vector<AZStd::string> GetAvailableScriptTypes() const { return {}; }
 
+        /**
+         * Get a JSON-encoded schema of every <c>[ExposedProperty]</c>-decorated
+         * member on a script class. The shape is a flat array of objects:
+         *   <c>[{"name":"Speed","displayName":"Speed","type":"float","default":"10","tooltip":""}, ...]</c>
+         *
+         * Returns <c>"[]"</c> if the class has no exposed properties, doesn't
+         * exist, or the Coral host is not initialised. Used by the editor's
+         * typed exposed-property widget (Phase 7.5) to decide which Qt
+         * editor to render for each field.
+         *
+         * Caveat: the implementation constructs a temporary managed instance
+         * of the class to snapshot its default values. Script ctors with
+         * side-effects (event subscriptions, log spam, etc.) will run.
+         */
+        virtual AZStd::string GetExposedPropertySchemaJson([[maybe_unused]] const AZStd::string& fullTypeName) const { return "[]"; }
+
         // ============================================================
         // Configuration
         // ============================================================
