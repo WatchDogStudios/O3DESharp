@@ -8,6 +8,7 @@
 
 set(FILES
     Include/O3DESharp/O3DESharpBus.h
+    Include/O3DESharp/O3DESharpHotReloadBus.h
     Include/O3DESharp/O3DESharpTypeIds.h
     Include/O3DESharp/O3DESharpFeatureProcessorInterface.h
 )

@@ -218,6 +218,10 @@ namespace O3DESharp
         // Connect to transform notifications
         AZ::TransformNotificationBus::Handler::BusConnect(GetEntityId());
 
+        // Connect to hot-reload notifications so we tear down + rebuild
+        // our managed state around an assembly-context reload (Phase 13).
+        O3DESharpHotReloadNotificationBus::Handler::BusConnect();
+
         m_isActivating = false;
     }
 
@@ -228,6 +232,7 @@ namespace O3DESharp
             GetEntity() ? GetEntity()->GetName().c_str() : "Unknown");
 
         // Disconnect from buses
+        O3DESharpHotReloadNotificationBus::Handler::BusDisconnect();
         AZ::TransformNotificationBus::Handler::BusDisconnect();
         AZ::TickBus::Handler::BusDisconnect();
 
@@ -394,6 +399,43 @@ namespace O3DESharp
                 GetEntity() ? GetEntity()->GetName().c_str() : "Unknown",
                 m_config.m_scriptClassName.c_str());
         }
+    }
+
+    void CSharpScriptComponent::OnBeforeUserAssemblyReload()
+    {
+        // The Coral context is about to be unloaded; m_scriptType and
+        // m_scriptInstance will be dangling pointers in a moment. Tear them
+        // down BEFORE that happens. Calling OnDestroy is intentional - it
+        // mirrors what Deactivate does, giving user code a chance to clean
+        // up state, but we use the safe wrapper so an exception inside
+        // OnDestroy doesn't prevent the rest of the teardown.
+        if (m_scriptInstance.IsValid())
+        {
+            SafeInvokeMethod("OnDestroy");
+        }
+        DestroyScriptInstance();
+
+        // Detach from TickBus so we don't try to dispatch into the now-
+        // invalid context before OnAfterUserAssemblyReload reconstructs us.
+        AZ::TickBus::Handler::BusDisconnect();
+    }
+
+    void CSharpScriptComponent::OnAfterUserAssemblyReload()
+    {
+        // The user assemblies have been reloaded and internal calls are
+        // re-registered. Rebuild the managed instance, push exposed
+        // properties, and fire OnCreate - matching the Activate flow.
+        m_disabledByException = false;
+
+        if (CreateScriptInstance())
+        {
+            SetEntityIdOnScript();
+            PushExposedPropertiesToScript();
+            SafeInvokeMethod("OnCreate");
+        }
+
+        // Re-attach to TickBus so OnUpdate resumes firing.
+        AZ::TickBus::Handler::BusConnect();
     }
 
     void CSharpScriptComponent::DisableAfterUnhandledException(const char* methodName, const char* what)

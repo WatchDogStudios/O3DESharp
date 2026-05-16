@@ -9,6 +9,8 @@
 #include "CoralHostManager.h"
 #include "ScriptBindings.h"
 
+#include <O3DESharp/O3DESharpHotReloadBus.h>
+
 #include <AzCore/Console/ILogger.h>
 #include <AzCore/IO/FileIO.h>
 #include <AzCore/IO/Path/Path.h>
@@ -265,6 +267,15 @@ namespace O3DESharp
 
         AZLOG_INFO("CoralHostManager: Reloading user assemblies...");
 
+        // Broadcast OnBeforeUserAssemblyReload so every CSharpScriptComponent
+        // (and anything else that caches Coral handles) can release its
+        // managed state BEFORE the context unload below. Without this, every
+        // cached Coral::Type* / Coral::ManagedObject becomes a dangling
+        // pointer the instant UnloadAssemblyLoadContext runs and the next
+        // dispatch through them crashes.
+        O3DESharpHotReloadNotificationBus::Broadcast(
+            &O3DESharpHotReloadNotifications::OnBeforeUserAssemblyReload);
+
         // Clear type caches - both need to be cleared since we're reloading everything
         m_userTypeCache.clear();
         m_coreTypeCache.clear();
@@ -298,6 +309,12 @@ namespace O3DESharp
                 return false;
             }
         }
+
+        // Broadcast OnAfterUserAssemblyReload so every script component
+        // re-resolves its Coral::Type and reconstructs its managed instance
+        // against the freshly-loaded user assemblies.
+        O3DESharpHotReloadNotificationBus::Broadcast(
+            &O3DESharpHotReloadNotifications::OnAfterUserAssemblyReload);
 
         AZLOG_INFO("CoralHostManager: User assemblies reloaded successfully");
         return true;
