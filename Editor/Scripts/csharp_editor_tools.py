@@ -2321,17 +2321,21 @@ class CSharpEditorToolsHandler:
     def OpenScriptPicker(self, current_class):
         """
         Open the script class picker dialog.
-        
+
         Args:
             current_class: Currently selected class (for pre-selection)
-            
+
         Returns:
             Selected class name, or empty string if cancelled
         """
+        print(f"[O3DESharp] OpenScriptPicker(current_class={current_class!r}) - opening dialog")
         try:
             dialog = ScriptClassPickerDialog(current_class=current_class)
-            if dialog.exec_() == QDialog.Accepted:
+            result = dialog.exec_()
+            print(f"[O3DESharp] ScriptClassPickerDialog closed with result={result} (Accepted={QDialog.Accepted})")
+            if result == QDialog.Accepted:
                 selected = dialog.get_selected_class()
+                print(f"[O3DESharp] Selected class: {selected!r}")
                 if selected is not None:
                     # Add to recent classes if not empty
                     if selected:

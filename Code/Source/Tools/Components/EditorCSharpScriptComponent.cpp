@@ -247,11 +247,17 @@ namespace O3DESharp
         // implementation opened the dialog but only printed the result, never
         // updating the component, which is why "Browse Scripts..." appeared to
         // do nothing.
+        AZ_TracePrintf("O3DESharp", "OnBrowseScript: broadcasting OpenScriptPicker (current='%s')",
+            m_config.m_scriptClassName.c_str());
+
         AZStd::string selectedClass;
         CSharpEditorToolsBus::BroadcastResult(
             selectedClass,
             &CSharpEditorToolsBus::Events::OpenScriptPicker,
             m_config.m_scriptClassName);
+
+        AZ_TracePrintf("O3DESharp", "OnBrowseScript: BroadcastResult returned '%s'",
+            selectedClass.c_str());
 
         if (!selectedClass.empty())
         {
@@ -261,7 +267,12 @@ namespace O3DESharp
         }
 
         // Empty result = user cancelled or the Python EBus handler isn't
-        // connected. Nothing to refresh.
+        // connected. Warn so the user can tell those two apart.
+        AZ_Warning("O3DESharp", false,
+            "OnBrowseScript: OpenScriptPicker returned empty. Either the user cancelled "
+            "or the Python CSharpEditorToolsBus handler is not connected. Check the "
+            "console for '[O3DESharp] CSharpEditorToolsBus handler connected' on editor "
+            "startup; if missing, csharp_editor_bootstrap did not import the tools module.");
         return AZ::Edit::PropertyRefreshLevels::None;
     }
 
