@@ -482,6 +482,7 @@ if(PAL_TRAIT_BUILD_HOST_TOOLS)
         BUILD_DEPENDENCIES
             PUBLIC
                 AZ::AzToolsFramework
+                AZ::AzQtComponents
                 ${gem_name}.Private.Object
                 Gem::Atom_Utils.Static
                 Gem::Atom_Feature_Common.Public

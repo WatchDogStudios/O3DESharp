@@ -15,12 +15,20 @@
 #include <AzCore/JSON/rapidjson.h>
 #include <AzCore/std/string/conversions.h>
 
+// O3DE-styled wrappers around the corresponding Qt widgets. SpinBox /
+// DoubleSpinBox derive from QSpinBox / QDoubleSpinBox so all the qobject_cast
+// checks below continue to work; LineEdit and CheckBox are stylers that
+// operate on raw QLineEdit / QCheckBox instances. The widget choices are
+// intentionally narrow - the inspector framework expects these specific
+// widget kinds for its inline-edit conventions.
+#include <AzQtComponents/Components/Widgets/CheckBox.h>
+#include <AzQtComponents/Components/Widgets/LineEdit.h>
+#include <AzQtComponents/Components/Widgets/SpinBox.h>
+
 #include <QCheckBox>
-#include <QDoubleSpinBox>
 #include <QFormLayout>
 #include <QLabel>
 #include <QLineEdit>
-#include <QSpinBox>
 #include <QVBoxLayout>
 #include <QVariant>
 
@@ -105,19 +113,25 @@ namespace O3DESharp
 
         // Build the typed editor widget for a single schema entry. Returns a
         // freshly-allocated QWidget owned by the form layout; nullptr only on
-        // unrecoverable failure (caller falls back to QLineEdit).
+        // unrecoverable failure (caller falls back to a styled line edit).
+        // Uses AzQtComponents wrappers so the widgets pick up the editor
+        // theme and behave the same as the rest of the inspector.
         QWidget* BuildWidgetForType(const SchemaEntry& entry, const QString& initialValue, QWidget* parent)
         {
             const auto& t = entry.typeTag;
             if (t == "bool")
             {
+                // CheckBox is a styling helper that operates on a stock
+                // QCheckBox; the editor's default style applies automatically
+                // since the parent inherits from an AzQt-themed root, so no
+                // explicit applyXxxStyle call is needed here.
                 auto* cb = new QCheckBox(parent);
                 cb->setChecked(initialValue.compare(QStringLiteral("true"), Qt::CaseInsensitive) == 0);
                 return cb;
             }
             if (t == "int" || t == "short" || t == "sbyte")
             {
-                auto* sb = new QSpinBox(parent);
+                auto* sb = new AzQtComponents::SpinBox(parent);
                 sb->setRange(std::numeric_limits<int>::lowest(), std::numeric_limits<int>::max());
                 bool ok = false;
                 int v = initialValue.toInt(&ok);
@@ -126,7 +140,7 @@ namespace O3DESharp
             }
             if (t == "uint" || t == "ushort" || t == "byte")
             {
-                auto* sb = new QSpinBox(parent);
+                auto* sb = new AzQtComponents::SpinBox(parent);
                 sb->setRange(0, std::numeric_limits<int>::max()); // Qt's QSpinBox is int-only; uint clamps here
                 bool ok = false;
                 int v = initialValue.toInt(&ok);
@@ -135,7 +149,7 @@ namespace O3DESharp
             }
             if (t == "float" || t == "double")
             {
-                auto* sb = new QDoubleSpinBox(parent);
+                auto* sb = new AzQtComponents::DoubleSpinBox(parent);
                 sb->setRange(-1.0e12, 1.0e12);
                 sb->setDecimals(6);
                 bool ok = false;
@@ -143,9 +157,14 @@ namespace O3DESharp
                 if (ok) sb->setValue(v);
                 return sb;
             }
-            // string, long, ulong, or any unknown type -> line edit.
-            // 64-bit integer types use QLineEdit because Qt's spin widgets are
-            // bounded to int; the C# side parses strings either way.
+            // string, long, ulong, or any unknown type -> stock QLineEdit.
+            // AzQtComponents::LineEdit is a styling helper applied via static
+            // method calls; the parent's themed root cascades the default
+            // appearance to a regular QLineEdit, so we only need an explicit
+            // call here if we wanted error/search styling, which we don't
+            // for first-pass typed fields. 64-bit integer types deliberately
+            // use QLineEdit because Qt's spin widgets are bounded to int;
+            // the C# side parses strings either way.
             auto* le = new QLineEdit(parent);
             le->setText(initialValue);
             return le;
