@@ -70,6 +70,19 @@ namespace O3DESharp
                 ->Event("InvalidateCache", &CSharpEditorToolsBus::Events::InvalidateCache)
                 ->Event("AddToRecentClasses", &CSharpEditorToolsBus::Events::AddToRecentClasses)
                 ;
+
+            // Explicitly register the handler binder as a creatable Class so
+            // azlmbr.object.create("CSharpEditorToolsBusHandler") finds it
+            // from Python. ->Handler<>() on the bus reflection alone is not
+            // enough in this O3DE version - the BehaviorContext only sees
+            // the binder as a class when it's reflected as one. Without this
+            // the Python connect() path fails with:
+            //   No class by name of CSharpEditorToolsBusHandler in the
+            //   behavior context!
+            behaviorContext->Class<CSharpEditorToolsBusHandler>("CSharpEditorToolsBusHandler")
+                ->Attribute(AZ::Script::Attributes::Scope, AZ::Script::Attributes::ScopeFlags::Automation)
+                ->Attribute(AZ::Script::Attributes::Module, "editor")
+                ;
         }
     }
 
