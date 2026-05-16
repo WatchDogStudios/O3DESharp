@@ -56,366 +56,11 @@ from csharp_binding_generator import (
     BindingGeneratorConfig,
     BindingGeneratorResult,
     ClangSharpInvoker,
-    CSharpBindingGenerator,
-    ReflectionData,
-    load_reflection_data_from_json,
 )
 from gem_dependency_resolver import GemDependencyResolver, GemResolutionResult
 
 # Set up logging
 logger = logging.getLogger("O3DESharp.GenerateBindings")
-
-
-# ============================================================
-# BindingGenerationOrchestrator Class
-# ============================================================
-
-
-class BindingGenerationOrchestrator:
-    """
-    Legacy high-level orchestrator that drives CSharpBindingGenerator over a
-    BehaviorContext reflection JSON dump.
-
-    *** DEPRECATED ***
-    Use ClangSharpInvoker.generate_bindings instead - it shells out to
-    Code/Tools/BindingGenerator (the canonical C# / libclang generator) and
-    is the only path that receives correctness fixes going forward. This
-    class is retained until csharp_editor_tools._generate_bindings is
-    migrated; remove it when no editor UI path imports it.
-    """
-
-    def __init__(self, engine_path: Optional[Path] = None):
-        import warnings as _w
-        _w.warn(
-            "BindingGenerationOrchestrator is deprecated. Use "
-            "ClangSharpInvoker.generate_bindings instead.",
-            DeprecationWarning,
-            stacklevel=2,
-        )
-        self.config = BindingGeneratorConfig()
-        self.reflection_data: Optional[ReflectionData] = None
-        self.gem_resolver: Optional[GemDependencyResolver] = None
-        self._generated_files: dict = {}
-        self._generator: Optional[CSharpBindingGenerator] = None
-        self._project_path: Optional[str] = None
-        self._engine_path: Optional[Path] = engine_path or _SCRIPT_ENGINE_ROOT
-    
-    def configure(
-        self,
-        output_directory: str = None,
-        root_namespace: str = "O3DE",
-        generate_core: bool = True,
-        generate_gems: bool = True,
-        separate_gem_directories: bool = True,
-        generate_per_gem_projects: bool = True,
-        include_gems: List[str] = None,
-        exclude_gems: List[str] = None,
-        require_export_attribute: bool = False,
-        target_framework: str = "net9.0",
-        incremental_build: bool = True,
-    ):
-        """
-        Configure the binding generator.
-        
-        Args:
-            output_directory: Directory to write generated files
-            root_namespace: Root namespace for generated code (default: O3DE)
-            generate_core: Whether to generate core O3DE bindings
-            generate_gems: Whether to generate gem bindings
-            separate_gem_directories: Create separate directories per gem
-            generate_per_gem_projects: Generate .csproj per gem
-            include_gems: Only include these gems (None = all)
-            exclude_gems: Exclude these gems
-            require_export_attribute: Only export marked declarations
-            target_framework: Target .NET framework
-            incremental_build: Use incremental build caching
-        """
-        if output_directory:
-            self.config.output_directory = output_directory
-        self.config.root_namespace = root_namespace
-        self.config.generate_core = generate_core
-        self.config.generate_gems = generate_gems
-        self.config.separate_gem_directories = separate_gem_directories
-        self.config.generate_per_gem_projects = generate_per_gem_projects
-        self.config.include_gems = include_gems or []
-        self.config.exclude_gems = exclude_gems or []
-        self.config.require_export_attribute = require_export_attribute
-        self.config.target_framework = target_framework
-        self.config.incremental_build = incremental_build
-    
-    def load_reflection_data(self, json_path: str) -> bool:
-        """
-        Load reflection data from a JSON file.
-        
-        Args:
-            json_path: Path to reflection_data.json
-            
-        Returns:
-            True if loaded successfully, False otherwise
-        """
-        try:
-            self.reflection_data = load_reflection_data_from_json(json_path)
-            if self.reflection_data:
-                logger.info(
-                    f"Loaded reflection data: {len(self.reflection_data.classes)} classes, "
-                    f"{len(self.reflection_data.ebuses)} EBuses"
-                )
-                return True
-            else:
-                logger.error("Failed to parse reflection data")
-                return False
-        except Exception as e:
-            logger.error(f"Failed to load reflection data: {e}")
-            return False
-    
-    def discover_gems_from_project(self, project_path: str) -> GemResolutionResult:
-        """
-        Discover gems in the project.
-        
-        Args:
-            project_path: Path to the O3DE project root
-            
-        Returns:
-            GemResolutionResult with discovery results
-        """
-        self._project_path = project_path
-        self.gem_resolver = GemDependencyResolver(engine_path_hint=self._engine_path)
-        result = self.gem_resolver.discover_gems_from_project(project_path)
-        
-        if result.success:
-            logger.info(f"Discovered {len(result.active_gem_names)} active gems")
-        else:
-            logger.error(f"Gem discovery failed: {result.error_message}")
-        
-        return result
-    
-    def generate(self) -> BindingGeneratorResult:
-        """
-        Generate C# bindings based on loaded reflection data.
-        
-        Returns:
-            BindingGeneratorResult with generation statistics
-        """
-        if not self.reflection_data:
-            return BindingGeneratorResult(
-                success=False,
-                error_message="No reflection data loaded. Call load_reflection_data() first."
-            )
-        
-        try:
-            # Create generator
-            self._generator = CSharpBindingGenerator(self.config)
-            
-            # Generate from reflection data
-            self._generated_files = self._generator.generate_from_reflection_data(
-                self.reflection_data,
-                gem_resolver=self.gem_resolver
-            )
-            
-            # Count results
-            classes_count = len(self.reflection_data.classes)
-            ebuses_count = len(self.reflection_data.ebuses)
-            files_count = len(self._generated_files)
-            
-            # Get processed gems
-            processed_gems = []
-            if self.gem_resolver:
-                processed_gems = list(self.gem_resolver.get_active_gem_names())
-            
-            return BindingGeneratorResult(
-                success=True,
-                classes_generated=classes_count,
-                ebuses_generated=ebuses_count,
-                files_written=files_count,
-                processed_gems=processed_gems
-            )
-            
-        except Exception as e:
-            logger.exception("Error during binding generation")
-            return BindingGeneratorResult(
-                success=False,
-                error_message=str(e)
-            )
-    
-    def write_files(self) -> int:
-        """
-        Write generated files to disk.
-        
-        Returns:
-            Number of files written
-        """
-        if not self._generated_files:
-            logger.warning("No files to write")
-            return 0
-        
-        output_dir = Path(self.config.output_directory)
-        output_dir.mkdir(parents=True, exist_ok=True)
-        
-        files_written = 0
-        for rel_path, content in self._generated_files.items():
-            file_path = output_dir / rel_path
-            file_path.parent.mkdir(parents=True, exist_ok=True)
-            
-            try:
-                file_path.write_text(content, encoding='utf-8')
-                files_written += 1
-                logger.debug(f"Wrote: {file_path}")
-            except Exception as e:
-                logger.error(f"Failed to write {file_path}: {e}")
-        
-        logger.info(f"Wrote {files_written} files to {output_dir}")
-        return files_written
-
-    def generate_per_gem_projects(self) -> Dict[str, Path]:
-        """
-        Generate a .csproj file for each gem's generated bindings.
-
-        Returns:
-            Dictionary mapping gem name to its .csproj path.
-        """
-        if not self._generated_files:
-            logger.warning("No generated files — skipping .csproj generation")
-            return {}
-
-        output_dir = Path(self.config.output_directory)
-
-        # Group generated files by their top-level gem directory
-        gem_files: Dict[str, List[str]] = defaultdict(list)
-        for rel_path in self._generated_files:
-            parts = Path(rel_path).parts
-            gem_name = parts[0] if parts else "Core"
-            gem_files[gem_name].append(rel_path)
-
-        csproj_paths: Dict[str, Path] = {}
-
-        for gem_name, files in gem_files.items():
-            gem_dir = output_dir / gem_name
-            gem_dir.mkdir(parents=True, exist_ok=True)
-
-            assembly_name = f"O3DE.Bindings.{gem_name}"
-            namespace = f"{self.config.root_namespace}.{gem_name}"
-            framework = getattr(self.config, "target_framework", "net9.0")
-
-            # Resolve reference to O3DE.Core managed runtime
-            o3de_core_hint = ""
-            o3de_core_dll = self._find_o3de_core_dll()
-            if o3de_core_dll:
-                o3de_core_hint = (
-                    "  <ItemGroup>\n"
-                    f'    <Reference Include="O3DE.Core">\n'
-                    f'      <HintPath>{o3de_core_dll}</HintPath>\n'
-                    "    </Reference>\n"
-                    "  </ItemGroup>\n"
-                )
-
-            csproj_content = (
-                '<Project Sdk="Microsoft.NET.Sdk">\n'
-                "\n"
-                "  <PropertyGroup>\n"
-                f"    <TargetFramework>{framework}</TargetFramework>\n"
-                f"    <AssemblyName>{assembly_name}</AssemblyName>\n"
-                f"    <RootNamespace>{namespace}</RootNamespace>\n"
-                "    <Nullable>enable</Nullable>\n"
-                "    <ImplicitUsings>enable</ImplicitUsings>\n"
-                "    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>\n"
-                "    <EnableDefaultCompileItems>true</EnableDefaultCompileItems>\n"
-                "    <GenerateAssemblyInfo>false</GenerateAssemblyInfo>\n"
-                f"    <!-- Auto-generated by O3DESharp binding generator -->\n"
-                "  </PropertyGroup>\n"
-                "\n"
-                f"{o3de_core_hint}"
-                "\n"
-                "</Project>\n"
-            )
-
-            csproj_path = gem_dir / f"{assembly_name}.csproj"
-            try:
-                csproj_path.write_text(csproj_content, encoding="utf-8")
-                csproj_paths[gem_name] = csproj_path
-                logger.info(f"Generated project: {csproj_path}")
-            except Exception as e:
-                logger.error(f"Failed to write {csproj_path}: {e}")
-
-        return csproj_paths
-
-    def build_binding_dlls(self, csproj_paths: Dict[str, Path] = None) -> Dict[str, bool]:
-        """
-        Build the generated .csproj files into DLLs using ``dotnet build``.
-
-        Args:
-            csproj_paths: Dict of gem name → .csproj path.
-                          If None, calls generate_per_gem_projects() first.
-
-        Returns:
-            Dictionary mapping gem name to build success (True/False).
-        """
-        if csproj_paths is None:
-            csproj_paths = self.generate_per_gem_projects()
-
-        if not csproj_paths:
-            logger.warning("No .csproj files to build")
-            return {}
-
-        results: Dict[str, bool] = {}
-        for gem_name, csproj_path in csproj_paths.items():
-            logger.info(f"Building {gem_name} from {csproj_path} ...")
-            try:
-                proc = subprocess.run(
-                    ["dotnet", "build", str(csproj_path), "-c", "Release", "--nologo"],
-                    capture_output=True,
-                    text=True,
-                    timeout=120,
-                )
-                if proc.returncode == 0:
-                    logger.info(f"  {gem_name}: BUILD SUCCEEDED")
-                    results[gem_name] = True
-                else:
-                    logger.error(f"  {gem_name}: BUILD FAILED\n{proc.stdout}\n{proc.stderr}")
-                    results[gem_name] = False
-            except FileNotFoundError:
-                logger.error(
-                    "dotnet CLI not found — cannot compile bindings. "
-                    "Install the .NET SDK from https://dotnet.microsoft.com/download"
-                )
-                results[gem_name] = False
-                break
-            except subprocess.TimeoutExpired:
-                logger.error(f"  {gem_name}: build timed out after 120 s")
-                results[gem_name] = False
-
-        succeeded = sum(1 for v in results.values() if v)
-        logger.info(f"Build complete: {succeeded}/{len(results)} gems succeeded")
-        return results
-
-    def _find_o3de_core_dll(self) -> Optional[str]:
-        """Try to locate the O3DE.Core.dll managed runtime assembly."""
-        # Check common locations relative to the gem
-        search_roots: List[Path] = []
-
-        gem_root = Path(__file__).resolve().parent.parent.parent  # .../O3DESharp
-        search_roots.append(gem_root / "bin" / "O3DE.Core")
-        search_roots.append(gem_root / "bin" / "Coral")
-
-        if self._project_path:
-            proj = Path(self._project_path)
-            for cfg in ("profile", "debug", "release"):
-                search_roots.append(proj / "bin" / cfg / "Gems" / "O3DESharp")
-                search_roots.append(proj / "Bin" / cfg)
-
-        for root in search_roots:
-            candidate = root / "O3DE.Core.dll"
-            if candidate.exists():
-                return str(candidate)
-            # Also try rglob one level
-            if root.exists():
-                for hit in root.glob("**/O3DE.Core.dll"):
-                    return str(hit)
-
-        return None
-    
-    def get_generated_files(self) -> dict:
-        """Get the dictionary of generated file paths to content."""
-        return self._generated_files
 
 
 # ============================================================
@@ -933,30 +578,47 @@ def main() -> int:
         logger.error(f"Generation failed: {result.error_message}")
         return 1
 
-    # Build DLLs if requested
-    build_results = {}
+    # Build DLLs if requested. The ClangSharp tool already emits a .csproj
+    # per gem when --per-gem-projects is in effect (see
+    # Code/Tools/BindingGenerator/.../CSharpProjectGenerator.cs); we just
+    # walk the output tree and run `dotnet build` on each one. This used to
+    # live in the now-deleted BindingGenerationOrchestrator.build_binding_dlls.
+    build_results: Dict[str, bool] = {}
     if args.build_dlls:
         gen_dir = Path(config.output_directory)
-        cs_files = list(gen_dir.rglob("*.g.cs")) if gen_dir.exists() else []
-        if result.files_written == 0 and result.classes_generated == 0 and cs_files:
-            logger.warning(
-                f"Generator produced 0 new files but {len(cs_files)} old .g.cs files "
-                f"exist on disk in {gen_dir}. Rebuilding them with the current codebase. "
-                f"Use --force-regenerate to re-generate from scratch."
-            )
-        if not cs_files:
-            logger.warning("No .g.cs files found — skipping DLL build.")
+        csproj_files = list(gen_dir.rglob("*.csproj")) if gen_dir.exists() else []
+        if not csproj_files:
+            logger.warning("No .csproj files found in generation output - skipping DLL build.")
         else:
-            logger.info("Building generated bindings into DLLs ...")
-            engine = Path(args.engine) if args.engine else _SCRIPT_ENGINE_ROOT
-            orchestrator = BindingGenerationOrchestrator(engine_path=engine)
-            orchestrator.config = config
-            orchestrator._project_path = str(project_path)
-            for cs_file in cs_files:
-                rel = cs_file.relative_to(gen_dir).as_posix()
-                orchestrator._generated_files[rel] = cs_file.read_text(encoding="utf-8")
-            csproj_paths = orchestrator.generate_per_gem_projects()
-            build_results = orchestrator.build_binding_dlls(csproj_paths)
+            logger.info(f"Building {len(csproj_files)} generated .csproj into DLLs ...")
+            for csproj_path in csproj_files:
+                # Gem name is the parent directory of the .csproj per the
+                # tool's output layout.
+                gem_name = csproj_path.parent.name
+                logger.info(f"Building {gem_name} from {csproj_path} ...")
+                try:
+                    proc = subprocess.run(
+                        ["dotnet", "build", str(csproj_path), "-c", "Release", "--nologo"],
+                        capture_output=True,
+                        text=True,
+                        timeout=120,
+                    )
+                    if proc.returncode == 0:
+                        logger.info(f"  {gem_name}: BUILD SUCCEEDED")
+                        build_results[gem_name] = True
+                    else:
+                        logger.error(f"  {gem_name}: BUILD FAILED\n{proc.stdout}\n{proc.stderr}")
+                        build_results[gem_name] = False
+                except FileNotFoundError:
+                    logger.error(
+                        "dotnet CLI not found - cannot compile bindings. "
+                        "Install the .NET SDK from https://dotnet.microsoft.com/download"
+                    )
+                    build_results[gem_name] = False
+                    break
+                except subprocess.TimeoutExpired:
+                    logger.error(f"  {gem_name}: build timed out after 120 s")
+                    build_results[gem_name] = False
 
     # Print summary
     print("\n" + "=" * 70)

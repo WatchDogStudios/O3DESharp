@@ -9,25 +9,21 @@ O3DESharp Editor Scripts Package
 
 This package provides Python utilities for the O3DESharp editor integration.
 
-Main entry points (CANONICAL):
+Main entry points:
     - ClangSharpInvoker (from csharp_binding_generator):
         thin wrapper around `dotnet run` on Code/Tools/BindingGenerator,
-        the C# / libclang-based generator that replaced the legacy Python
-        BehaviorContext flow.
+        the C# / libclang-based generator. This is the only generator;
+        the previous Python BehaviorContext flow has been removed.
     - GemDependencyResolver (from gem_dependency_resolver):
         gem discovery + dependency walking used by the editor UI.
     - csharp_editor_tools / csharp_editor_bootstrap:
         Qt UI and Python entry points registered with the editor menu.
 
-Legacy / deprecated (still imported by some editor UI paths; pending
-removal once those paths migrate to ClangSharpInvoker):
-    - csharp_binding_generator.CSharpBindingGenerator       (Python codegen)
-    - csharp_binding_generator.ReflectionData (+ ReflectedClass etc.)
-    - generate_bindings.BindingGenerationOrchestrator       (Python orchestration)
-
-These remain in their modules but are no longer re-exported from this
-package's top level; import them via their concrete module if you need
-them, and prefer ClangSharpInvoker for new code.
+If you're looking for the pre-Phase-12 legacy classes
+(CSharpBindingGenerator, ReflectionData/ReflectedClass and friends,
+BindingGenerationOrchestrator, load_reflection_data_from_json,
+TypeMapper), they have been removed. The C# tool reads C++ headers
+directly and no longer needs the reflection_data.json intermediate.
 """
 
 import sys
