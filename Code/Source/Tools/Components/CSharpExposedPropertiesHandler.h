@@ -17,25 +17,27 @@
 namespace O3DESharp
 {
     /**
-     * Phase 10 scaffolding for the typed exposed-property inspector widgets.
+     * Property handler that renders <c>[ExposedProperty]</c>-decorated fields
+     * of a script class as typed inspector widgets (Phase 14).
      *
-     * Wraps a `AZStd::unordered_map<AZStd::string, AZStd::string>` (the field
-     * `CSharpScriptComponentConfig::m_exposedPropertyValues` stores) and is
-     * registered with `PropertyTypeRegistrationMessages::RegisterPropertyType`
-     * under the CRC `"CSharpExposedProperties"`.
+     * Wraps an <c>AZStd::unordered_map&lt;AZStd::string, AZStd::string&gt;</c>
+     * (the <c>CSharpScriptComponentConfig::m_exposedPropertyValues</c> field).
+     * Registered with <c>PropertyTypeRegistrationMessages</c> under
+     * <c>AZ_CRC_CE("CSharpExposedProperties")</c>.
      *
-     * **This handler is intentionally NOT wired up to the EditContext yet.**
-     * The Phase 7 generic key/value editor remains the user-visible inspector
-     * surface; switching the `DataElement` UIHandler from `Default` to
-     * `AZ_CRC_CE("CSharpExposedProperties")` is a follow-up commit that
-     * needs in-editor validation per typed widget. This file exists so that
-     * follow-up has somewhere to drop the per-type Qt widget code without
-     * having to re-figure-out the property-handler registration pattern.
+     * The widget tree is built from the schema JSON returned by
+     * <c>O3DESharpRequests::GetExposedPropertySchemaJson</c> for the script
+     * class currently selected in the sibling <c>m_scriptClassName</c> field.
+     * The class name is plumbed in via a custom Edit attribute
+     * (<c>AZ_CRC_CE("ScriptClassNameAttr")</c>) so the handler doesn't have
+     * to navigate <c>InstanceDataNode</c> pointers to find its sibling.
      *
-     * The placeholder `CreateGUI` queries the schema via
-     * `O3DESharpRequestBus::GetExposedPropertySchemaJson` and shows a
-     * one-line summary so the handler is observably wired without
-     * pretending to render real editors yet.
+     * Supported widget types this slice: <c>QCheckBox</c> (bool),
+     * <c>QSpinBox</c> (int/uint/short/ushort/byte/sbyte), <c>QDoubleSpinBox</c>
+     * (float/double, with a wide range so it doesn't artificially clamp),
+     * <c>QLineEdit</c> (string + fallback for any unknown type tag).
+     * Larger integer types (long / ulong) also use QLineEdit pending a
+     * 64-bit-range spin widget.
      */
     class CSharpExposedPropertiesHandler
         : public AzToolsFramework::PropertyHandler<AZStd::unordered_map<AZStd::string, AZStd::string>, QWidget>

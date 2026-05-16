@@ -67,14 +67,20 @@ namespace O3DESharp
                     ->DataElement(AZ::Edit::UIHandlers::Default, &EditorCSharpScriptConfig::m_validationStatus,
                         "Status", "Result of validating the Script Class field against the loaded assemblies.")
                         ->Attribute(AZ::Edit::Attributes::ReadOnly, true)
-                    // [ExposedProperty] values. First-slice UX: generic
-                    // string->string map editor. Typed widgets (sliders, color
-                    // pickers, ...) are a planned follow-up.
-                    ->DataElement(AZ::Edit::UIHandlers::Default, &EditorCSharpScriptConfig::m_exposedPropertyValues,
+                    // [ExposedProperty] values. Phase 14 switched the UI handler
+                    // from Default (a generic key/value map editor) to the
+                    // CSharpExposedPropertiesHandler, which queries the script's
+                    // schema via O3DESharpRequests::GetExposedPropertySchemaJson
+                    // and renders per-field typed widgets (QCheckBox / QSpinBox /
+                    // QDoubleSpinBox / QLineEdit). The ScriptClassNameAttr
+                    // attribute plumbs the sibling m_scriptClassName field into
+                    // the handler so it knows which schema to query.
+                    ->DataElement(AZ_CRC_CE("CSharpExposedProperties"), &EditorCSharpScriptConfig::m_exposedPropertyValues,
                         "Exposed Properties",
                         "Values for [ExposedProperty]-decorated fields on the selected script. "
                         "These are applied to the managed instance before OnCreate.")
                         ->Attribute(AZ::Edit::Attributes::AutoExpand, true)
+                        ->Attribute(AZ_CRC_CE("ScriptClassNameAttr"), &EditorCSharpScriptConfig::m_scriptClassName)
                     ;
             }
         }
