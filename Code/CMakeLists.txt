@@ -532,6 +532,26 @@ if(PAL_TRAIT_BUILD_HOST_TOOLS)
     # Add in CMake dependencies for each gem dependency listed in this gem's gem.json file
     # for the Tools and Builders gem variants
     o3de_add_variant_dependencies_for_gem_dependencies(GEM_NAME ${gem_name} VARIANTS Tools Builders)
+
+    # Deploy the C# Script component icons next to the Editor exe so the
+    # EditContext "Icon" / "ViewportIcon" attributes resolve. The editor
+    # warns "Unable to find icon path 'Icons/Components/csharp.svg' for
+    # component type: C# Script" otherwise, because SandboxIntegration
+    # searches paths relative to bin/<config>/ and the asset processor
+    # doesn't deploy these editor-time icons on its own.
+    get_property(gem_root_for_icons GLOBAL PROPERTY "@GEMROOT:${gem_name}@")
+    ly_add_target_files(
+        TARGETS ${gem_name}.Editor
+        FILES
+            "${gem_root_for_icons}/Assets/Editor/Icons/Components/csharp.svg"
+        OUTPUT_SUBDIRECTORY "Icons/Components"
+    )
+    ly_add_target_files(
+        TARGETS ${gem_name}.Editor
+        FILES
+            "${gem_root_for_icons}/Assets/Editor/Icons/Components/Viewport/csharp.svg"
+        OUTPUT_SUBDIRECTORY "Icons/Components/Viewport"
+    )
 endif()
 
 ################################################################################
