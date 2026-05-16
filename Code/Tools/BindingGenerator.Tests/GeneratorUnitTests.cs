@@ -293,6 +293,74 @@ public class GeneratorUnitTests
     }
 
     // --------------------------------------------------------------------
+    // Phase 15: stub body emission - each forward-declared function gets a
+    // linkable body that AZ_Warning's once and returns a zero-value.
+    // --------------------------------------------------------------------
+
+    [Fact]
+    public void EmitStubDefinition_VoidReturn_NoReturnStatement()
+    {
+        var method = new ParsedMethod
+        {
+            Name = "DoThing",
+            IsStatic = false,
+            ReturnType = new ParsedType { CSharpTypeName = "void" },
+        };
+        var sb = new System.Text.StringBuilder();
+        var sig = CppRegistrationGenerator.BuildCppSignature("MyClass_DoThing", method);
+        CppRegistrationGenerator.EmitStubDefinition(sb, "MyClass::DoThing", sig, method.ReturnType);
+
+        var emitted = sb.ToString();
+        emitted.Should().Contain("void MyClass_DoThing(void* thisPtr)");
+        emitted.Should().Contain("AZ_WarningOnce");
+        emitted.Should().Contain("MyClass::DoThing");
+        emitted.Should().NotContain("return ", "void stubs do not emit a return statement");
+    }
+
+    [Theory]
+    [InlineData("int", "0")]
+    [InlineData("uint", "0")]
+    [InlineData("long", "0")]
+    [InlineData("float", "0.0f")]
+    [InlineData("double", "0.0")]
+    [InlineData("bool", "false")]
+    [InlineData("Vector3", "O3DESharp::InteropVector3{}")]
+    [InlineData("Quaternion", "O3DESharp::InteropQuaternion{}")]
+    [InlineData("IntPtr", "nullptr")]
+    public void BuildStubReturnExpression_ProducesZeroValuePerMarshalType(string marshalType, string expected)
+    {
+        CppRegistrationGenerator.BuildStubReturnExpression(marshalType).Should().Be(expected);
+    }
+
+    [Fact]
+    public void EmitStubDefinition_ReferenceParam_StubReturnsZeroAndUsesParamName()
+    {
+        // Sanity: a stub for a method with a reference parameter should still
+        // produce a body that compiles - the parameter shows up by name (so
+        // AZ_WarningOnce can reference it without "unused parameter" errors
+        // if we ever start emitting that). Today the parameter is unused in
+        // the body but that's fine - AZ_WarningOnce doesn't complain.
+        var method = new ParsedMethod
+        {
+            Name = "Apply",
+            IsStatic = false,
+            ReturnType = new ParsedType { CSharpTypeName = "int" },
+            Parameters =
+            {
+                new ParsedParameter { Name = "vec",
+                    Type = new ParsedType { CSharpTypeName = "Vector3", IsReference = true, IsConst = true } },
+            },
+        };
+        var sb = new System.Text.StringBuilder();
+        var sig = CppRegistrationGenerator.BuildCppSignature("MyClass_Apply", method);
+        CppRegistrationGenerator.EmitStubDefinition(sb, "MyClass::Apply", sig, method.ReturnType);
+
+        var emitted = sb.ToString();
+        emitted.Should().Contain("AZ::s32 MyClass_Apply(void* thisPtr, void* vec)");
+        emitted.Should().Contain("return 0;");
+    }
+
+    // --------------------------------------------------------------------
     // BindingConfig: engine-required defines never disappear behind user JSON
     // --------------------------------------------------------------------
 

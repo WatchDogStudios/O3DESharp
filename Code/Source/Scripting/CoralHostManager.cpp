@@ -11,6 +11,24 @@
 
 #include <O3DESharp/O3DESharpHotReloadBus.h>
 
+namespace Coral
+{
+    class ManagedAssembly;
+}
+
+namespace O3DESharp::Generated
+{
+    // Forward declarations of the entry points emitted into
+    // Code/Source/Scripting/Generated/BindingRegistration.g.cpp by the
+    // binding generator. The placeholder version of the .g.cpp is a no-op;
+    // once the generator runs against the gem headers it overwrites the
+    // bodies with real AddInternalCall registrations + stub function
+    // implementations.
+    void RegisterBindings(Coral::ManagedAssembly* assembly);
+    void UnregisterBindings(Coral::ManagedAssembly* assembly);
+    bool HotReload(Coral::ManagedAssembly* oldAssembly, Coral::ManagedAssembly* newAssembly);
+}
+
 #include <AzCore/Console/ILogger.h>
 #include <AzCore/IO/FileIO.h>
 #include <AzCore/IO/Path/Path.h>
@@ -564,11 +582,19 @@ namespace O3DESharp
 
         AZLOG_INFO("CoralHostManager: Registering internal calls...");
 
-        // Register all C++ functions exposed to C# via ScriptBindings
-        // This sets the static function pointer fields in O3DE.InternalCalls (C#)
+        // Register all hand-written C++ functions exposed to C# via ScriptBindings.
+        // This sets the static function pointer fields in O3DE.InternalCalls (C#).
         // Must happen BEFORE user assemblies are loaded, in case loading triggers
-        // type initialization that calls into O3DE.Core
+        // type initialization that calls into O3DE.Core.
         ScriptBindings::RegisterAll(m_coreAssembly);
+
+        // Register any auto-generated bindings emitted by the binding
+        // generator into Code/Source/Scripting/Generated/. The placeholder
+        // version of this function is a no-op; once the generator has run
+        // it adds one AddInternalCall per [O3DE_EXPORT_CSHARP] method.
+        // Phase 15 wired this in - same assembly object so both registries
+        // populate the same InternalCalls field set on the C# side.
+        Generated::RegisterBindings(m_coreAssembly);
 
         AZLOG_INFO("CoralHostManager: Internal calls registered successfully");
     }

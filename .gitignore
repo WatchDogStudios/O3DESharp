@@ -12,11 +12,20 @@ Assets/Scripts/Generated/**/*.cs
 Assets/Scripts/**/*.g.cs
 Assets/Scripts/**/metadata.json
 
-# Generated C++ registration code (build artifacts)
-Code/Source/Scripting/Generated/
+# Generated C++ registration code (build artifacts).
+# Pattern is "ignore content, then un-ignore specific placeholder filenames".
+# We do NOT ignore the directory itself, because git cannot reach into an
+# ignored directory to un-ignore a specific file inside it.
 Code/Source/Scripting/Generated/**/*.g.cpp
 Code/Source/Scripting/Generated/**/*.g.h
 Code/Source/Scripting/Generated/**/*.cpp
+
+# Phase 15: commit a minimal placeholder version of these two files so fresh
+# clones can compile the runtime gem before anyone has invoked the binding
+# generator. They are still ".g" files (the generator overwrites them); we
+# only carve out an exception for the canonical entry points.
+!Code/Source/Scripting/Generated/BindingRegistration.g.cpp
+!Code/Source/Scripting/Generated/O3DESharp_HotReload.g.h
 
 # ClangSharp binding generation cache
 .o3desharp_bindings_generated

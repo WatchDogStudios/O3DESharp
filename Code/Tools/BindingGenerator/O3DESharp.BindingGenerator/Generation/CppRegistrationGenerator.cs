@@ -51,33 +51,34 @@ namespace O3DESharp.BindingGenerator.Generation
 
             sb.AppendLine("#include <Coral/Assembly.hpp>");
             sb.AppendLine("#include <AzCore/Console/ILogger.h>");
+            sb.AppendLine("#include <Scripting/ScriptBindings.h>  // InteropVector3 / InteropQuaternion");
             sb.AppendLine($"#include \"{bindings.GemName}_HotReload.g.h\"");
             sb.AppendLine();
             sb.AppendLine($"namespace {bindings.GemName}::Generated");
             sb.AppendLine("{");
+            sb.AppendLine("    // Generator-emitted stub bodies. Each function logs a one-shot");
+            sb.AppendLine("    // AZ_Warning and returns a zero-value of its return type so the");
+            sb.AppendLine("    // file links cleanly without hand-written implementations. To");
+            sb.AppendLine("    // replace a stub with a real binding, either:");
+            sb.AppendLine("    //   * provide a hand-written definition of the same function in");
+            sb.AppendLine("    //     a separate translation unit and remove the stub for that");
+            sb.AppendLine("    //     method here on the next regen; or");
+            sb.AppendLine("    //   * rerun the generator after marking the method as");
+            sb.AppendLine("    //     hand-implemented in your binding_config.json (future work).");
+            sb.AppendLine();
 
-            // Forward declarations for binding functions. The function name MUST
-            // match the corresponding InternalCalls field name on the C# side -
-            // CSharpCodeGenerator.InternalCallFieldName is the single source of
-            // truth for that mangling so overloads disambiguate consistently on
-            // both sides of the interop. The C++ signature mirrors the
-            // delegate* unmanaged<...> shape on the C# side, with each marshal
-            // type mapped back to its C++ equivalent (IntPtr -> void*,
-            // Vector3 -> InteropVector3, etc.). The implementations live in
-            // hand-written code elsewhere; this file only forward-declares
-            // and registers.
             foreach (var parsedClass in bindings.Classes)
             {
                 foreach (var method in parsedClass.Methods)
                 {
                     var funcName = CSharpCodeGenerator.InternalCallFieldName(parsedClass.Name, method, parsedClass.Methods);
-                    sb.AppendLine($"    {BuildCppSignature(funcName, method)};");
+                    EmitStubDefinition(sb, parsedClass.Name + "::" + method.Name, BuildCppSignature(funcName, method), method.ReturnType);
                 }
             }
 
             foreach (var function in bindings.Functions)
             {
-                sb.AppendLine($"    {BuildCppSignature(function.Name, function)};");
+                EmitStubDefinition(sb, function.Name, BuildCppSignature(function.Name, function), function.ReturnType);
             }
 
             sb.AppendLine();
@@ -364,6 +365,54 @@ namespace O3DESharp.BindingGenerator.Generation
                 "Vector3" => "O3DESharp::InteropVector3",
                 "Quaternion" => "O3DESharp::InteropQuaternion",
                 _ => $"void* /* {marshal} */",
+            };
+        }
+
+        /// <summary>
+        /// Emit a stub function definition matching the signature shape produced
+        /// by <see cref="BuildCppSignature(string, ParsedMethod)"/>. The body
+        /// logs a one-shot AZ_Warning describing the unimplemented binding and
+        /// returns a zero-value matching the return type. Used internally by
+        /// <see cref="GenerateRegistrationFile"/> when emitting linkable stubs;
+        /// public for golden-file testing.
+        /// </summary>
+        public static void EmitStubDefinition(StringBuilder sb, string humanLabel, string signature, ParsedType returnType)
+        {
+            sb.AppendLine($"    {signature}");
+            sb.AppendLine("    {");
+            sb.AppendLine($"        AZ_WarningOnce(\"O3DESharp\", false, \"Unimplemented binding stub: {humanLabel} - generator emitted a stub body; provide a real implementation to replace it.\");");
+
+            var marshal = GetMarshalType(returnType);
+            if (marshal != "void")
+            {
+                sb.AppendLine($"        return {BuildStubReturnExpression(marshal)};");
+            }
+            sb.AppendLine("    }");
+            sb.AppendLine();
+        }
+
+        /// <summary>
+        /// Return the C++ expression to emit as the stub return value for the
+        /// given marshal type. Mirrors <see cref="MapMarshalTypeToCpp"/> -
+        /// pointer-shaped types return <c>nullptr</c>, value types use default
+        /// construction <c>T{}</c>.
+        /// </summary>
+        public static string BuildStubReturnExpression(string marshalType)
+        {
+            return marshalType switch
+            {
+                "void"   => "",
+                "bool"   => "false",
+                "byte" or "sbyte" or "short" or "ushort" or
+                "int" or "uint" or "long" or "ulong" or
+                "char" or "nint" or "nuint" => "0",
+                "float"  => "0.0f",
+                "double" => "0.0",
+                "IntPtr" => "nullptr",
+                "Vector2" => "O3DESharp::InteropVector2{}",
+                "Vector3" => "O3DESharp::InteropVector3{}",
+                "Quaternion" => "O3DESharp::InteropQuaternion{}",
+                _ => "nullptr",
             };
         }
 

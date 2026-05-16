@@ -34,4 +34,12 @@ set(FILES
     # Exports reflection data to JSON for the Python binding generator
     Source/Scripting/Reflection/ReflectionDataExporter.h
     Source/Scripting/Reflection/ReflectionDataExporter.cpp
+
+    # Generator output (Phase 15). The binding generator overwrites these as
+    # part of its normal run; placeholder versions are committed so the gem
+    # links on fresh clones. RegisterBindings is called from
+    # CoralHostManager::RegisterInternalCalls alongside the hand-written
+    # ScriptBindings::RegisterAll.
+    Source/Scripting/Generated/BindingRegistration.g.cpp
+    Source/Scripting/Generated/O3DESharp_HotReload.g.h
 )
