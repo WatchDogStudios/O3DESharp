@@ -21,11 +21,16 @@ import azlmbr.bus as bus
 import azlmbr.editor as editor
 import azlmbr.paths as paths
 
-# Templates for C# project files
+# Templates for C# project files.
+#
+# TargetFramework MUST match O3DE.Core.csproj. Phase 1 bumped O3DE.Core to
+# net9.0; user projects that stayed on net8.0 hit error CS1705 at build time
+# because O3DE.Core.dll exports System.Runtime 9.0.0.0 but the user's project
+# references the 8.0.0.0 ref pack. Keep this in lockstep with O3DE.Core.csproj.
 CSPROJ_TEMPLATE = '''<Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
-    <TargetFramework>net8.0</TargetFramework>
+    <TargetFramework>net9.0</TargetFramework>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
     <OutputPath>bin/$(Configuration)</OutputPath>
@@ -307,15 +312,20 @@ class CSharpProjectManager:
                 return str(path)
         
         engine_root = Path(paths.engroot)
-        
-        # Try multiple possible locations for the managed assembly
+
+        # Try multiple possible locations for the managed assembly. net9.0 is
+        # listed first because O3DE.Core / Coral.Managed are built against
+        # net9 (see O3DE.Core.csproj). net8.0 entries stay for any pinned
+        # legacy build outputs sitting on disk from before the bump.
         possible_paths = [
             # CMake staging directory (created by O3DESharp.StageCoral target)
             engine_root / "Gems" / "O3DESharp" / "bin" / "Coral" / "Coral.Managed.dll",
             # Coral.Managed locations
+            engine_root / "Gems" / "O3DESharp" / "External" / "Coral" / "Coral.Managed" / "bin" / "Release" / "net9.0" / "Coral.Managed.dll",
             engine_root / "Gems" / "O3DESharp" / "External" / "Coral" / "Coral.Managed" / "bin" / "Release" / "net8.0" / "Coral.Managed.dll",
             engine_root / "Gems" / "O3DESharp" / "bin" / "Coral.Managed.dll",
-            # O3DE.Core locations (legacy)
+            # O3DE.Core locations
+            engine_root / "Gems" / "O3DESharp" / "Assets" / "Scripts" / "O3DE.Core" / "bin" / "Release" / "net9.0" / "O3DE.Core.dll",
             engine_root / "Gems" / "O3DESharp" / "Assets" / "Scripts" / "O3DE.Core" / "bin" / "Release" / "net8.0" / "O3DE.Core.dll",
             # Installed engine paths
             engine_root / "Gems" / "O3DESharp" / "bin" / "Release" / "Coral.Managed.dll",
