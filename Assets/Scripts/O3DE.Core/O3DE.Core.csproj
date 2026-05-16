@@ -7,6 +7,18 @@
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
     <LangVersion>latest</LangVersion>
 
+    <!--
+      MSBuild only recognises Debug + Release by default. O3DE's CMake build
+      uses Debug + Profile + Release, and CMake's include_external_msproject
+      writes a "Profile|AnyCPU" entry into the engine solution for this csproj.
+      Without an explicit Configurations list MSBuild rejects the solution
+      with: "The solution file specifies a project configuration ... that does
+      not exist for that project". Declaring Profile here lets the slnx
+      reference it cleanly.
+    -->
+    <Configurations>Debug;Profile;Release</Configurations>
+    <Platforms>AnyCPU</Platforms>
+
     <!-- Assembly Information -->
     <AssemblyName>O3DE.Core</AssemblyName>
     <RootNamespace>O3DE</RootNamespace>
@@ -27,13 +39,19 @@
     <DebugType>portable</DebugType>
     <DebugSymbols>true</DebugSymbols>
 
-    <!-- Optimization -->
+    <!-- Optimization. Profile is a Release-shaped build that keeps debug
+         symbols so profilers can resolve stacks. -->
     <Optimize Condition="'$(Configuration)' == 'Release'">true</Optimize>
+    <Optimize Condition="'$(Configuration)' == 'Profile'">true</Optimize>
     <Optimize Condition="'$(Configuration)' == 'Debug'">false</Optimize>
   </PropertyGroup>
 
   <PropertyGroup Condition="'$(Configuration)' == 'Debug'">
     <DefineConstants>DEBUG;TRACE;O3DE_DEBUG</DefineConstants>
+  </PropertyGroup>
+
+  <PropertyGroup Condition="'$(Configuration)' == 'Profile'">
+    <DefineConstants>TRACE;O3DE_PROFILE</DefineConstants>
   </PropertyGroup>
 
   <PropertyGroup Condition="'$(Configuration)' == 'Release'">

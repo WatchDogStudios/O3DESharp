@@ -15,6 +15,13 @@
     <Nullable>enable</Nullable>
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
     <LangVersion>latest</LangVersion>
+
+    <!-- Match O3DE.Core: declare Debug/Profile/Release so the engine slnx
+         can reference any of them through this project's ProjectReference
+         resolution without "configuration not found" errors. -->
+    <Configurations>Debug;Profile;Release</Configurations>
+    <Platforms>AnyCPU</Platforms>
+
     <AssemblyName>O3DESharp</AssemblyName>
     <RootNamespace>O3DE.O3DESharp</RootNamespace>
     <Version>1.0.0</Version>
