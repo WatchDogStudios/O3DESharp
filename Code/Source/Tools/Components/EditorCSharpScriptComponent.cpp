@@ -18,7 +18,6 @@
 #include <AzCore/JSON/document.h>
 #include <AzCore/Interface/Interface.h>
 #include <AzFramework/API/ApplicationAPI.h>
-#include <AzToolsFramework/API/EditorPythonRunnerRequestsBus.h>
 #include <AzToolsFramework/API/ToolsApplicationAPI.h>
 
 #include <Scripting/CoralHostManager.h>
@@ -241,64 +240,50 @@ namespace O3DESharp
 
     AZ::Crc32 EditorCSharpScriptComponent::OnBrowseScript()
     {
-        // Call Python script to show the script browser dialog
-        AzToolsFramework::EditorPythonRunnerRequestBus::Broadcast(
-            &AzToolsFramework::EditorPythonRunnerRequestBus::Events::ExecuteByString,
-            R"(
-import sys
-import os
-import azlmbr.paths
+        // Go through the CSharpEditorToolsBus instead of inline Python. The bus
+        // dispatches to OpenScriptPicker() on the connected Python handler,
+        // which pops the dialog AND returns the selected class - so we can
+        // assign it directly to the config field. The previous inline-Python
+        // implementation opened the dialog but only printed the result, never
+        // updating the component, which is why "Browse Scripts..." appeared to
+        // do nothing.
+        AZStd::string selectedClass;
+        CSharpEditorToolsBus::BroadcastResult(
+            selectedClass,
+            &CSharpEditorToolsBus::Events::OpenScriptPicker,
+            m_config.m_scriptClassName);
 
-# Add O3DESharp Editor/Scripts to Python path if not already there
-o3desharp_scripts_path = os.path.join(azlmbr.paths.engroot, 'Gems', 'O3DESharp', 'Editor', 'Scripts')
-if o3desharp_scripts_path not in sys.path:
-    sys.path.insert(0, o3desharp_scripts_path)
+        if (!selectedClass.empty())
+        {
+            m_config.m_scriptClassName = selectedClass;
+            ValidateScript();
+            return AZ::Edit::PropertyRefreshLevels::EntireTree;
+        }
 
-try:
-    import csharp_editor_tools
-    dialog = csharp_editor_tools.ScriptBrowserDialog()
-    if dialog.exec_():
-        selected_class = dialog.get_selected_class()
-        if selected_class:
-            print(f"Selected script class: {selected_class}")
-except ImportError as e:
-    print(f"Could not load C# editor tools: {e}")
-)",
-            false /* is file path */
-        );
-
-        return AZ::Edit::PropertyRefreshLevels::EntireTree;
+        // Empty result = user cancelled or the Python EBus handler isn't
+        // connected. Nothing to refresh.
+        return AZ::Edit::PropertyRefreshLevels::None;
     }
 
     AZ::Crc32 EditorCSharpScriptComponent::OnCreateScript()
     {
-        // Call Python script to show the create script dialog
-        AzToolsFramework::EditorPythonRunnerRequestBus::Broadcast(
-            &AzToolsFramework::EditorPythonRunnerRequestBus::Events::ExecuteByString,
-            R"(
-import sys
-import os
-import azlmbr.paths
+        // Same migration as OnBrowseScript: route through the EBus so the
+        // created class name flows back into m_config.m_scriptClassName.
+        AZStd::string createdClass;
+        CSharpEditorToolsBus::BroadcastResult(
+            createdClass,
+            &CSharpEditorToolsBus::Events::CreateNewScript,
+            AZStd::string{}, /* defaultName */
+            AZStd::string{}  /* defaultNamespace */);
 
-# Add O3DESharp Editor/Scripts to Python path if not already there
-o3desharp_scripts_path = os.path.join(azlmbr.paths.engroot, 'Gems', 'O3DESharp', 'Editor', 'Scripts')
-if o3desharp_scripts_path not in sys.path:
-    sys.path.insert(0, o3desharp_scripts_path)
+        if (!createdClass.empty())
+        {
+            m_config.m_scriptClassName = createdClass;
+            ValidateScript();
+            return AZ::Edit::PropertyRefreshLevels::EntireTree;
+        }
 
-try:
-    import csharp_editor_tools
-    dialog = csharp_editor_tools.CreateScriptDialog()
-    if dialog.exec_():
-        class_name = dialog.get_created_class_name()
-        if class_name:
-            print(f"Created new script class: {class_name}")
-except ImportError as e:
-    print(f"Could not load C# editor tools: {e}")
-)",
-            false /* is file path */
-        );
-
-        return AZ::Edit::PropertyRefreshLevels::EntireTree;
+        return AZ::Edit::PropertyRefreshLevels::None;
     }
 
     AZ::Crc32 EditorCSharpScriptComponent::OnEditScript()

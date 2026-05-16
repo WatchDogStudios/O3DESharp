@@ -2470,12 +2470,21 @@ def connect_ebus_handler():
     """
     Connect the Python handler to the CSharpEditorToolsBus.
 
-    The C++ side reflects a CSharpEditorToolsBusHandler via
-        ->Handler<CSharpEditorToolsBusHandler>()
-    on the BehaviorContext. That makes the handler available to Python as
-    azlmbr.editor.CSharpEditorToolsBusHandler. We instantiate it, route each
-    bus event to a method on our CSharpEditorToolsHandler implementation,
-    and connect() to start receiving calls.
+    The C++ side reflects the bus via
+        behaviorContext->EBus<CSharpEditorToolsBus>("CSharpEditorToolsBus")
+            ->Attribute(Module, "editor")
+            ->Handler<CSharpEditorToolsBusHandler>()
+    Because the EBus is in the "editor" script module, EditorPythonBindings
+    exposes the auto-generated handler factory as
+        azlmbr.editor.CSharpEditorToolsBusHandler()
+    Calling that returns a PythonProxyNotificationHandler bound to our bus,
+    with connect() / disconnect() / add_callback() available.
+
+    Note: do NOT use azlmbr.object.create("CSharpEditorToolsBusHandler") - that
+    looks up BehaviorContext::m_classes (regular class registry), not
+    BehaviorContext::m_ebuses, so it warns "No class by name ..." and returns
+    a plain proxy whose .connect is None. Same pattern as PythonAssetBuilder's
+    azlmbr.asset.builder.PythonBuilderNotificationBusHandler().
 
     Idempotent: safe to call multiple times.
     """
@@ -2485,21 +2494,20 @@ def connect_ebus_handler():
         return _ebus_handler
 
     try:
-        import azlmbr.object
         import azlmbr.editor
 
         impl = get_ebus_handler()
-        handler = azlmbr.object.create("CSharpEditorToolsBusHandler")
+        # Factory call - resolves through the EBus reflection, not the class registry.
+        handler = azlmbr.editor.CSharpEditorToolsBusHandler()
         if handler is None:
             raise RuntimeError(
-                "azlmbr.object.create('CSharpEditorToolsBusHandler') returned None - "
+                "azlmbr.editor.CSharpEditorToolsBusHandler() returned None - "
                 "is the O3DESharp Editor gem activated and reflection registered?"
             )
 
-        # Map every bus event to a Python callable. The "scripts_only" / "scriptsOnly"
-        # name discrepancy is intentional: C++ uses scriptsOnly per the EBus signature,
-        # the Python impl uses scripts_only per PEP-8. The bus forwards the raw value.
-        handler.connect()
+        # Register callbacks BEFORE connecting so the first dispatch sees the
+        # full callback map. Same ordering as the engine's PythonAssetBuilder
+        # tests.
         handler.add_callback("GetAvailableScriptClasses", impl.GetAvailableScriptClasses)
         handler.add_callback("GetScriptClassNames",       impl.GetScriptClassNames)
         handler.add_callback("ValidateScriptClass",       impl.ValidateScriptClass)
@@ -2508,6 +2516,7 @@ def connect_ebus_handler():
         handler.add_callback("OpenScriptInEditor",        impl.OpenScriptInEditor)
         handler.add_callback("InvalidateCache",           impl.InvalidateCache)
         handler.add_callback("AddToRecentClasses",        impl.AddToRecentClasses)
+        handler.connect()
 
         _ebus_handler = handler
         print("[O3DESharp] CSharpEditorToolsBus handler connected")

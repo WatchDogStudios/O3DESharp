@@ -55,18 +55,25 @@ namespace O3DESharp
         if (auto* behaviorContext = azrtti_cast<AZ::BehaviorContext*>(context))
         {
             // ->Handler<CSharpEditorToolsBusHandler>() on the bus reflection
-            // is the canonical and ONLY registration needed - it exposes the
-            // AZ_EBUS_BEHAVIOR_BINDER as a creatable type to Python through
-            // azlmbr.object.create("CSharpEditorToolsBusHandler"), with the
-            // connect / disconnect / add_callback methods Python expects.
+            // is the canonical and ONLY registration needed - the binder is
+            // exposed to Python via the EBus reflection, NOT the class registry.
+            // EditorPythonBindings reads m_createHandler from BehaviorEBus and
+            // surfaces it as
+            //     azlmbr.<module>.<ebusName>Handler()
+            // where <module> = "editor" (from Script::Attributes::Module below)
+            // and <ebusName> = "CSharpEditorToolsBus", giving Python
+            //     azlmbr.editor.CSharpEditorToolsBusHandler()
+            // Calling that factory returns a PythonProxyNotificationHandler with
+            // connect() / disconnect() / add_callback().
             //
-            // Earlier troubleshooting tried adding an explicit ->Class<>(...)
-            // registration for the binder when this lookup appeared to fail,
-            // but that shadowed the handler binding: object.create returned a
-            // plain class instance whose .connect was None. The "No class by
-            // name" warning that prompted the workaround was actually a
-            // stale-build artifact; pattern verified against
-            // Gems/PythonAssetBuilder/Code/Source/PythonBuilderNotificationHandler.cpp.
+            // Do NOT add ->Class<CSharpEditorToolsBusHandler>(...) here. That
+            // populates BehaviorContext::m_classes for the binder and lets
+            // azlmbr.object.create("CSharpEditorToolsBusHandler") return a
+            // PythonProxyObject - but a PythonProxyObject has NO connect /
+            // add_callback methods, so the Python side ends up with handler.connect
+            // is None and the bus never wires up. Pattern verified against
+            // Gems/PythonAssetBuilder/Code/Source/PythonBuilderNotificationHandler.cpp
+            // and its mock_asset_builder.py usage.
             behaviorContext->EBus<CSharpEditorToolsBus>("CSharpEditorToolsBus")
                 ->Attribute(AZ::Script::Attributes::Scope, AZ::Script::Attributes::ScopeFlags::Automation)
                 ->Attribute(AZ::Script::Attributes::Module, "editor")

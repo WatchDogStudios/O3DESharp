@@ -10,6 +10,7 @@
 #include "Tools/CSharpEditorToolsBus.h"
 
 #include <AzCore/Serialization/EditContext.h>
+#include <AzToolsFramework/UI/PropertyEditor/PropertyEditorAPI.h>
 #include <AzToolsFramework/UI/PropertyEditor/PropertyQTConstants.h>
 
 #include <QVBoxLayout>
@@ -151,35 +152,47 @@ namespace O3DESharp
         
         mainLayout->addLayout(buttonLayout);
         
-        // Connect button signals
-        QObject::connect(browseBtn, &QPushButton::clicked, [comboBox]()
+        // Connect button signals. Every edit path needs to call RequestWrite on
+        // the GUI handle (the container widget that CreateGUI returns) so the
+        // PropertyEditor invokes WriteGUIValuesIntoProperty and commits the
+        // change to the underlying model + undo stack. Without RequestWrite the
+        // combo box updates visually but the component never sees the new value.
+        QObject::connect(browseBtn, &QPushButton::clicked, [container, comboBox]()
         {
             AZStd::string currentClass = comboBox->currentText().toUtf8().constData();
             AZStd::string selectedClass;
-            
+
             CSharpEditorToolsBus::BroadcastResult(selectedClass, &CSharpEditorToolsBus::Events::OpenScriptPicker, currentClass);
-            
+
             if (!selectedClass.empty())
             {
                 comboBox->setCurrentText(selectedClass.c_str());
                 comboBox->lineEdit()->selectAll();
+                AzToolsFramework::PropertyEditorGUIMessages::Bus::Broadcast(
+                    &AzToolsFramework::PropertyEditorGUIMessages::RequestWrite, container);
+                AzToolsFramework::PropertyEditorGUIMessages::Bus::Broadcast(
+                    &AzToolsFramework::PropertyEditorGUIMessages::OnEditingFinished, container);
             }
         });
-        
-        QObject::connect(createBtn, &QPushButton::clicked, [this, comboBox]()
+
+        QObject::connect(createBtn, &QPushButton::clicked, [this, container, comboBox]()
         {
             AZStd::string createdClass;
-            CSharpEditorToolsBus::BroadcastResult(createdClass, &CSharpEditorToolsBus::Events::CreateNewScript, "", "");
-            
+            CSharpEditorToolsBus::BroadcastResult(createdClass, &CSharpEditorToolsBus::Events::CreateNewScript, AZStd::string{}, AZStd::string{});
+
             if (!createdClass.empty())
             {
                 // Refresh combo box to include new script
                 PopulateComboBox(comboBox);
                 comboBox->setCurrentText(createdClass.c_str());
                 comboBox->lineEdit()->selectAll();
+                AzToolsFramework::PropertyEditorGUIMessages::Bus::Broadcast(
+                    &AzToolsFramework::PropertyEditorGUIMessages::RequestWrite, container);
+                AzToolsFramework::PropertyEditorGUIMessages::Bus::Broadcast(
+                    &AzToolsFramework::PropertyEditorGUIMessages::OnEditingFinished, container);
             }
         });
-        
+
         QObject::connect(editBtn, &QToolButton::clicked, [comboBox]()
         {
             AZStd::string currentClass = comboBox->currentText().toUtf8().constData();
@@ -188,10 +201,33 @@ namespace O3DESharp
                 CSharpEditorToolsBus::Broadcast(&CSharpEditorToolsBus::Events::OpenScriptInEditor, currentClass);
             }
         });
-        
+
+        // Also wire the combo box's own edit signals so manual selection /
+        // typing commits to the property. currentIndexChanged covers dropdown
+        // picks; editTextChanged covers typing into the editable field. Both
+        // route through the same RequestWrite path used by Browse / Create.
+        QObject::connect(
+            comboBox, QOverload<int>::of(&QComboBox::currentIndexChanged), [container](int)
+            {
+                AzToolsFramework::PropertyEditorGUIMessages::Bus::Broadcast(
+                    &AzToolsFramework::PropertyEditorGUIMessages::RequestWrite, container);
+                AzToolsFramework::PropertyEditorGUIMessages::Bus::Broadcast(
+                    &AzToolsFramework::PropertyEditorGUIMessages::OnEditingFinished, container);
+            });
+        if (comboBox->lineEdit())
+        {
+            QObject::connect(comboBox->lineEdit(), &QLineEdit::editingFinished, [container]()
+            {
+                AzToolsFramework::PropertyEditorGUIMessages::Bus::Broadcast(
+                    &AzToolsFramework::PropertyEditorGUIMessages::RequestWrite, container);
+                AzToolsFramework::PropertyEditorGUIMessages::Bus::Broadcast(
+                    &AzToolsFramework::PropertyEditorGUIMessages::OnEditingFinished, container);
+            });
+        }
+
         // Store comboBox as the primary widget for property access
         container->setProperty("comboBox", QVariant::fromValue(static_cast<QWidget*>(comboBox)));
-        
+
         return container;
     }
 
