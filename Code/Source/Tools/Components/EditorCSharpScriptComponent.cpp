@@ -41,11 +41,19 @@ namespace O3DESharp
             }
 
             serializeContext->Class<EditorCSharpScriptConfig, AZ::ComponentConfig>()
-                ->Version(2) // bumped: added ExposedProperties
+                ->Version(3) // bumped: m_validationStatus now serialized for the inspector readout
                 ->Field("ScriptClassName", &EditorCSharpScriptConfig::m_scriptClassName)
                 ->Field("AssemblyPath", &EditorCSharpScriptConfig::m_assemblyPath)
                 ->Field("ExposedProperties", &EditorCSharpScriptConfig::m_exposedPropertyValues)
-                // Note: m_validationStatus and m_isValid are not serialized - they are runtime state
+                // m_validationStatus IS serialized: O3DE's EditContext requires every
+                // DataElement to point at a serialized field, otherwise it asserts
+                // "Class element for editor data element reflection 'Status' was NOT
+                // found in the serialize context!" at module load. The cost of
+                // serializing a short status string per entity is tiny and
+                // ValidateScript() overwrites it on every Activate so any staleness
+                // from a saved prefab is invisible in practice.
+                // m_isValid stays unserialized: it's not referenced from EditContext.
+                ->Field("ValidationStatus", &EditorCSharpScriptConfig::m_validationStatus)
                 ;
 
             if (AZ::EditContext* editContext = serializeContext->GetEditContext())
