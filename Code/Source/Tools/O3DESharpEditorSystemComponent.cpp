@@ -54,12 +54,22 @@ namespace O3DESharp
 
         if (auto* behaviorContext = azrtti_cast<AZ::BehaviorContext*>(context))
         {
+            // ->Handler<CSharpEditorToolsBusHandler>() on the bus reflection
+            // is the canonical and ONLY registration needed - it exposes the
+            // AZ_EBUS_BEHAVIOR_BINDER as a creatable type to Python through
+            // azlmbr.object.create("CSharpEditorToolsBusHandler"), with the
+            // connect / disconnect / add_callback methods Python expects.
+            //
+            // Earlier troubleshooting tried adding an explicit ->Class<>(...)
+            // registration for the binder when this lookup appeared to fail,
+            // but that shadowed the handler binding: object.create returned a
+            // plain class instance whose .connect was None. The "No class by
+            // name" warning that prompted the workaround was actually a
+            // stale-build artifact; pattern verified against
+            // Gems/PythonAssetBuilder/Code/Source/PythonBuilderNotificationHandler.cpp.
             behaviorContext->EBus<CSharpEditorToolsBus>("CSharpEditorToolsBus")
                 ->Attribute(AZ::Script::Attributes::Scope, AZ::Script::Attributes::ScopeFlags::Automation)
                 ->Attribute(AZ::Script::Attributes::Module, "editor")
-                // Handler<> exposes a Python-implementable handler class as
-                // azlmbr.editor.CSharpEditorToolsBusHandler. The Python side
-                // (csharp_editor_tools.py) derives from it and calls connect().
                 ->Handler<CSharpEditorToolsBusHandler>()
                 ->Event("GetAvailableScriptClasses", &CSharpEditorToolsBus::Events::GetAvailableScriptClasses)
                 ->Event("GetScriptClassNames", &CSharpEditorToolsBus::Events::GetScriptClassNames)
@@ -69,19 +79,6 @@ namespace O3DESharp
                 ->Event("OpenScriptInEditor", &CSharpEditorToolsBus::Events::OpenScriptInEditor)
                 ->Event("InvalidateCache", &CSharpEditorToolsBus::Events::InvalidateCache)
                 ->Event("AddToRecentClasses", &CSharpEditorToolsBus::Events::AddToRecentClasses)
-                ;
-
-            // Explicitly register the handler binder as a creatable Class so
-            // azlmbr.object.create("CSharpEditorToolsBusHandler") finds it
-            // from Python. ->Handler<>() on the bus reflection alone is not
-            // enough in this O3DE version - the BehaviorContext only sees
-            // the binder as a class when it's reflected as one. Without this
-            // the Python connect() path fails with:
-            //   No class by name of CSharpEditorToolsBusHandler in the
-            //   behavior context!
-            behaviorContext->Class<CSharpEditorToolsBusHandler>("CSharpEditorToolsBusHandler")
-                ->Attribute(AZ::Script::Attributes::Scope, AZ::Script::Attributes::ScopeFlags::Automation)
-                ->Attribute(AZ::Script::Attributes::Module, "editor")
                 ;
         }
     }
