@@ -2505,9 +2505,12 @@ def connect_ebus_handler():
                 "is the O3DESharp Editor gem activated and reflection registered?"
             )
 
-        # Register callbacks BEFORE connecting so the first dispatch sees the
-        # full callback map. Same ordering as the engine's PythonAssetBuilder
-        # tests.
+        # PythonProxyNotificationHandler::AddCallback requires a live EBus
+        # connection - it asserts m_handler != nullptr inside Connect() and
+        # rejects callback registration otherwise with "No EBus connection
+        # detected for event ...". So: connect FIRST, then add_callback. Same
+        # ordering as Gem/PythonTests/PythonAssetBuilder/mock_asset_builder.py.
+        handler.connect()
         handler.add_callback("GetAvailableScriptClasses", impl.GetAvailableScriptClasses)
         handler.add_callback("GetScriptClassNames",       impl.GetScriptClassNames)
         handler.add_callback("ValidateScriptClass",       impl.ValidateScriptClass)
@@ -2516,7 +2519,6 @@ def connect_ebus_handler():
         handler.add_callback("OpenScriptInEditor",        impl.OpenScriptInEditor)
         handler.add_callback("InvalidateCache",           impl.InvalidateCache)
         handler.add_callback("AddToRecentClasses",        impl.AddToRecentClasses)
-        handler.connect()
 
         _ebus_handler = handler
         print("[O3DESharp] CSharpEditorToolsBus handler connected")
