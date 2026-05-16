@@ -692,18 +692,33 @@ namespace O3DESharp
         // TODO(Mikael A.): Multiplatform path handling - currently assumes <ProjectPath>/Bin/Scripts/.
         if (auto settingsRegistry = AZ::SettingsRegistry::Get())
         {
-            // (1) Try the array form first. Iterate /O3DE/O3DESharp/UserAssemblies/*/AssemblyName.
-            auto visitorCallback =
-                [&](const AZ::SettingsRegistryInterface::VisitArgs& visitArgs, AZStd::string_view value)
+            // (1) Try the array form first. SettingsRegistry::Visit on a (lambda)
+            // overload that takes (VisitArgs, X) requires X = VisitAction for
+            // the control-flow form, NOT the value type. To read leaf values
+            // we have to derive from Visitor and override the typed
+            // Visit(VisitArgs, string_view value) hook.
+            struct UserAssemblyVisitor final : public AZ::SettingsRegistryInterface::Visitor
             {
-                if (visitArgs.m_fieldName == "AssemblyName" && !value.empty())
+                AZ::IO::FixedMaxPath m_projectPath;
+                AZStd::vector<AZStd::string>* m_out = nullptr;
+
+                using AZ::SettingsRegistryInterface::Visitor::Visit;
+                void Visit(
+                    const AZ::SettingsRegistryInterface::VisitArgs& visitArgs,
+                    AZStd::string_view value) override
                 {
-                    AZ::IO::FixedMaxPath fullPath = projectPath / "Bin" / "Scripts" / AZStd::string(value).c_str();
-                    config.userAssemblyPaths.emplace_back(fullPath.c_str());
+                    if (visitArgs.m_fieldName == "AssemblyName" && !value.empty() && m_out != nullptr)
+                    {
+                        AZ::IO::FixedMaxPath fullPath = m_projectPath / "Bin" / "Scripts" / AZStd::string(value).c_str();
+                        m_out->emplace_back(fullPath.c_str());
+                    }
                 }
-                return AZ::SettingsRegistryInterface::VisitResponse::Continue;
             };
-            settingsRegistry->Visit(visitorCallback, "/O3DE/O3DESharp/UserAssemblies");
+
+            UserAssemblyVisitor visitor;
+            visitor.m_projectPath = projectPath;
+            visitor.m_out = &config.userAssemblyPaths;
+            settingsRegistry->Visit(visitor, "/O3DE/O3DESharp/UserAssemblies");
 
             // (2) If the array didn't contribute anything, fall back to the legacy single path.
             if (config.userAssemblyPaths.empty())
