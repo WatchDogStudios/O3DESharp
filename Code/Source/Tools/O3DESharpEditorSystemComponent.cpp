@@ -35,6 +35,7 @@ namespace O3DESharp
     static constexpr const char* CSharpBuildProjectsActionId = "o3de.action.o3desharp.buildProjects";
     static constexpr const char* CSharpReloadScriptsActionId = "o3de.action.o3desharp.reloadScripts";
     static constexpr const char* CSharpAutoReloadToggleActionId = "o3de.action.o3desharp.autoReloadToggle";
+    static constexpr const char* CSharpMigrateProjectsActionId = "o3de.action.o3desharp.migrateProjects";
 
     // Menu identifier for our submenu
     static constexpr const char* CSharpScriptingMenuId = "o3de.menu.o3desharp.scripting";
@@ -357,6 +358,28 @@ except Exception as e:
                 [this]() -> bool { return IsAutoReloadEnabled(); }
             );
         }
+
+        // Phase 16b: "Migrate C# Project Files" - one-shot action that walks
+        // the project's .csproj files and injects the Phase 16b auto-deploy
+        // MSBuild target into any that don't already have it. Run once after
+        // upgrading the gem; subsequent invocations are no-ops thanks to the
+        // migration marker check in migrate_csproj_to_deploy_target.
+        {
+            AzToolsFramework::ActionProperties actionProperties;
+            actionProperties.m_name = "Migrate C# Project Files";
+            actionProperties.m_description =
+                "Add the auto-deploy MSBuild target to existing user .csproj files so IDE builds "
+                "(Rider, Visual Studio) drop their output into Bin/Scripts/ for the editor's file "
+                "watcher to pick up.";
+            actionProperties.m_category = "Scripting";
+
+            actionManagerInterface->RegisterAction(
+                EditorIdentifiers::MainWindowActionContextIdentifier,
+                CSharpMigrateProjectsActionId,
+                actionProperties,
+                [this]() { MigrateCSharpProjects(); }
+            );
+        }
     }
 
     void O3DESharpEditorSystemComponent::OnMenuBindingHook()
@@ -389,6 +412,8 @@ except Exception as e:
         menuManagerInterface->AddActionToMenu(CSharpScriptingMenuId, CSharpBuildProjectsActionId, 400);
         menuManagerInterface->AddActionToMenu(CSharpScriptingMenuId, CSharpReloadScriptsActionId, 500);
         menuManagerInterface->AddActionToMenu(CSharpScriptingMenuId, CSharpAutoReloadToggleActionId, 510);
+        menuManagerInterface->AddSeparatorToMenu(CSharpScriptingMenuId, 550);
+        menuManagerInterface->AddActionToMenu(CSharpScriptingMenuId, CSharpMigrateProjectsActionId, 600);
     }
 
     // Helper to get Python code that sets up the O3DESharp module path
@@ -550,6 +575,29 @@ except Exception as e:
         {
             m_assemblyWatcher->Stop();
         }
+    }
+
+    void O3DESharpEditorSystemComponent::MigrateCSharpProjects()
+    {
+        // Trampoline to csharp_editor_bootstrap.migrate_csharp_projects_to_deploy_target,
+        // which walks the project's csprojs and patches each one that doesn't
+        // already carry the Phase 16b deploy target marker. Output goes to
+        // general.log so the user sees one line per migrated/skipped file in
+        // the editor console.
+        AZStd::string pythonCode = AZStd::string::format(R"(
+%s
+try:
+    import csharp_editor_bootstrap
+    csharp_editor_bootstrap.migrate_csharp_projects_to_deploy_target()
+except Exception as e:
+    import azlmbr.legacy.general as general
+    general.log(f"Could not migrate C# projects: {e}")
+)", GetPythonPathSetup());
+
+        AzToolsFramework::EditorPythonRunnerRequestBus::Broadcast(
+            &AzToolsFramework::EditorPythonRunnerRequestBus::Events::ExecuteByString,
+            pythonCode.c_str(),
+            false /* is file path */);
     }
 
     void O3DESharpEditorSystemComponent::ToggleAutoReloadScripts()

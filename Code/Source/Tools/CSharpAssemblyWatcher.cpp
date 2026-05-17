@@ -10,8 +10,9 @@
 
 #include <O3DESharp/O3DESharpBus.h>
 
+#include <AzCore/IO/Path/Path.h>
 #include <AzCore/IO/SystemFile.h>
-#include <AzCore/Settings/SettingsRegistry.h>
+#include <AzCore/Utils/Utils.h>
 
 #include <QDir>
 #include <QFileInfo>
@@ -186,17 +187,18 @@ namespace O3DESharp
 
     void CSharpAssemblyWatcher::OnDebounceElapsed()
     {
-        // Re-check the build-in-progress flag from the settings registry on
-        // every fire so the user's C# project manager Build flow can set
-        // it just before invoking dotnet build, and we'll wait until they
-        // clear it.
-        bool buildInProgress = false;
-        if (auto* registry = AZ::SettingsRegistry::Get())
-        {
-            registry->Get(buildInProgress, "/O3DE/O3DESharp/BuildInProgress");
-        }
-
-        if (buildInProgress)
+        // Re-check the build-in-progress sentinel on every fire so the
+        // csharp_project_manager.build_project Python flow can set it just
+        // before invoking dotnet build (writes the sentinel) and clear it
+        // after (deletes the sentinel). While the sentinel exists we
+        // reschedule the reload so we don't try to load a half-written DLL.
+        //
+        // Cross-language flag-passing via a file is intentional: pybind11
+        // doesn't expose AZ::SettingsRegistry::Set, and a sentinel file
+        // makes the mechanism trivial to inspect from outside the editor too.
+        AZ::IO::FixedMaxPath projectPath = AZ::Utils::GetProjectPath();
+        AZ::IO::FixedMaxPath sentinelPath = projectPath / "user" / ".csharp_build_in_progress";
+        if (AZ::IO::SystemFile::Exists(sentinelPath.c_str()))
         {
             // Re-arm the timer; we'll re-check shortly. 200ms is short enough
             // that the user perceives the reload as immediate after build

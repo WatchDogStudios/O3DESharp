@@ -13,6 +13,7 @@ Provides tools to create and manage C# scripting projects within O3DE.
 
 import os
 import json
+import re
 import subprocess
 from pathlib import Path
 from typing import Optional, List, Dict, Any
@@ -21,13 +22,181 @@ import azlmbr.bus as bus
 import azlmbr.editor as editor
 import azlmbr.paths as paths
 
+
+# Phase 16b helpers.
+
+# Sentinel file used to communicate "a C# build is in progress" from Python
+# back to the C++ Phase 16a file watcher. Lives in <ProjectPath>/user/ so it
+# survives the editor process but stays out of source-control. AZ::IO::
+# SystemFile::Exists is cheap (single stat) so the watcher polling it on each
+# debounce expiry is fine.
+_BUILD_IN_PROGRESS_FILENAME = ".csharp_build_in_progress"
+
+
+def _build_in_progress_path() -> Optional[Path]:
+    """
+    Returns the sentinel-file path, or None if the project root can't be
+    resolved (non-editor contexts where azlmbr.paths isn't usable).
+    """
+    try:
+        root = Path(paths.projectroot)
+    except Exception:  # noqa: BLE001 - happens in CLI / asset-builder contexts
+        return None
+    return root / "user" / _BUILD_IN_PROGRESS_FILENAME
+
+
+def _set_build_in_progress(flag: bool) -> None:
+    """
+    Create or remove the sentinel file the Phase 16a file watcher polls.
+    While the sentinel exists, the watcher reschedules every reload until
+    the build finishes - so every transient DLL write during a dotnet build
+    coalesces into one reload at the end.
+
+    Best-effort: silently no-ops if the path can't be resolved or the
+    filesystem write fails. Worst case the watcher fires one extra reload
+    mid-build, which is harmless (debounce dedupes; reload is idempotent).
+    """
+    sentinel = _build_in_progress_path()
+    if sentinel is None:
+        return
+    try:
+        if flag:
+            sentinel.parent.mkdir(parents=True, exist_ok=True)
+            sentinel.write_text("", encoding="utf-8")
+        else:
+            if sentinel.exists():
+                sentinel.unlink()
+    except OSError:
+        pass
+
+
+# Marker the MSBuild deploy target carries so migrate_csproj_to_deploy_target
+# can detect already-migrated projects and skip them. Keep in sync with the
+# Target name in CSPROJ_TEMPLATE.
+_DEPLOY_TARGET_MARKER = 'Name="DeployToBinScripts"'
+
+# Block injected into existing csprojs by the migration helper. The form is
+# duplicated (not shared) with CSPROJ_TEMPLATE because new projects can use
+# a slightly different idiomatic layout (e.g. an explicit PropertyGroup for
+# O3DEDeployPath); the migration only needs to add the bare minimum.
+_DEPLOY_TARGET_BLOCK = r'''
+  <PropertyGroup>
+    <O3DEDeployPath Condition="'$(O3DEDeployPath)' == ''">$(MSBuildProjectDirectory)\..\..\..\..\Bin\Scripts</O3DEDeployPath>
+  </PropertyGroup>
+
+  <!-- Phase 16b auto-deploy: every Build copies the output to
+       <ProjectPath>/Bin/Scripts/, which is where the Coral runtime loads user
+       assemblies from and where the editor's file watcher (Phase 16a) auto-
+       reload trigger is attached. Override $(O3DEDeployPath) above if your
+       csproj is not at the canonical Gem/Source/CSharp/<Name>/ depth. -->
+  <Target Name="DeployToBinScripts" AfterTargets="Build">
+    <Message Text="O3DESharp: deploying $(AssemblyName).dll -&gt; $(O3DEDeployPath)" Importance="high"/>
+    <MakeDir Directories="$(O3DEDeployPath)"/>
+    <Copy SourceFiles="$(TargetPath)"
+          DestinationFolder="$(O3DEDeployPath)"
+          SkipUnchangedFiles="true"
+          ContinueOnError="true"/>
+    <Copy SourceFiles="$(TargetDir)$(AssemblyName).pdb"
+          DestinationFolder="$(O3DEDeployPath)"
+          SkipUnchangedFiles="true"
+          ContinueOnError="true"
+          Condition="Exists('$(TargetDir)$(AssemblyName).pdb')"/>
+  </Target>
+
+'''
+
+
+def migrate_csproj_to_deploy_target(csproj_path: Path) -> Dict[str, Any]:
+    """
+    Add the Phase 16b auto-deploy target to an existing .csproj if it isn't
+    already present. Returns a result dict with status / message / changed
+    flag.
+
+    The injection is a simple textual splice: find the closing </Project>
+    tag and insert the deploy block just before it. We don't parse XML
+    properly because user .csprojs often contain comments, custom MSBuild
+    extensions, conditional ItemGroups, etc., and a roundtrip through an
+    XML parser would reorder and reformat the file. A targeted regex insert
+    preserves the user's formatting.
+    """
+    csproj_path = Path(csproj_path)
+    if not csproj_path.exists():
+        return {
+            "success": False,
+            "changed": False,
+            "message": f"csproj not found: {csproj_path}",
+        }
+
+    try:
+        content = csproj_path.read_text(encoding='utf-8')
+    except OSError as e:
+        return {
+            "success": False,
+            "changed": False,
+            "message": f"Failed to read {csproj_path}: {e}",
+        }
+
+    if _DEPLOY_TARGET_MARKER in content:
+        return {
+            "success": True,
+            "changed": False,
+            "message": f"Already migrated: {csproj_path.name}",
+        }
+
+    # Splice the block in just before the closing </Project>. Use rsplit so
+    # we hit the LAST </Project> in case the user embeds the literal text in
+    # a comment.
+    if '</Project>' not in content:
+        return {
+            "success": False,
+            "changed": False,
+            "message": f"Could not find </Project> tag in {csproj_path}",
+        }
+
+    before, sep, after = content.rpartition('</Project>')
+    new_content = before + _DEPLOY_TARGET_BLOCK + sep + after
+
+    # Back up the original alongside it before overwriting. Lets users
+    # diff / revert if they want to keep their existing post-build hooks
+    # instead.
+    backup_path = csproj_path.with_suffix(csproj_path.suffix + '.pre-deploy-target.bak')
+    try:
+        if not backup_path.exists():
+            backup_path.write_text(content, encoding='utf-8')
+        csproj_path.write_text(new_content, encoding='utf-8')
+    except OSError as e:
+        return {
+            "success": False,
+            "changed": False,
+            "message": f"Failed to write migrated csproj: {e}",
+        }
+
+    return {
+        "success": True,
+        "changed": True,
+        "message": f"Migrated {csproj_path.name} (original kept as {backup_path.name})",
+    }
+
 # Templates for C# project files.
 #
 # TargetFramework MUST match O3DE.Core.csproj. Phase 1 bumped O3DE.Core to
 # net9.0; user projects that stayed on net8.0 hit error CS1705 at build time
 # because O3DE.Core.dll exports System.Runtime 9.0.0.0 but the user's project
 # references the 8.0.0.0 ref pack. Keep this in lockstep with O3DE.Core.csproj.
-CSPROJ_TEMPLATE = '''<Project Sdk="Microsoft.NET.Sdk">
+#
+# Phase 16b: the DeployToBinScripts target runs after every Build (regardless
+# of caller: dotnet CLI, IDE, or the C# Project Manager) and copies the
+# output into <ProjectPath>/Bin/Scripts/. That's the path the Coral runtime
+# (O3DESharpSystemComponent::InitializeCoralHost) reads user assemblies from,
+# AND the path the Phase 16a editor file watcher monitors for auto-reload.
+# So a successful build anywhere triggers an editor reload automatically.
+#
+# O3DEDeployPath defaults to four levels up from the csproj (matches the
+# canonical <ProjectPath>/Gem/Source/CSharp/<Name>/<Name>.csproj layout
+# generated by csharp_editor_bootstrap.create_csharp_project). Users with a
+# different layout can override the property:
+#   <O3DEDeployPath>$(MSBuildProjectDirectory)\\..\\..\\Bin\\Scripts</O3DEDeployPath>
+CSPROJ_TEMPLATE = r'''<Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
     <TargetFramework>net9.0</TargetFramework>
@@ -35,6 +204,9 @@ CSPROJ_TEMPLATE = '''<Project Sdk="Microsoft.NET.Sdk">
     <Nullable>enable</Nullable>
     <OutputPath>bin/$(Configuration)</OutputPath>
     <AppendTargetFrameworkToOutputPath>false</AppendTargetFrameworkToOutputPath>
+    <!-- Phase 16b deploy target uses this. Override per-project if your
+         csproj is not at the default <ProjectPath>/Gem/Source/CSharp/<Name>/ depth. -->
+    <O3DEDeployPath Condition="'$(O3DEDeployPath)' == ''">$(MSBuildProjectDirectory)\..\..\..\..\Bin\Scripts</O3DEDeployPath>
   </PropertyGroup>
 
   <ItemGroup>
@@ -42,6 +214,24 @@ CSPROJ_TEMPLATE = '''<Project Sdk="Microsoft.NET.Sdk">
       <HintPath>{o3de_core_path}</HintPath>
     </Reference>
   </ItemGroup>
+
+  <!-- Auto-deploy after every Build so IDE rebuilds (Rider/VS) and the C#
+       Project Manager build flow both land their DLL where the Coral runtime
+       picks it up. ContinueOnError prevents a locked Bin/Scripts/*.dll
+       (engine running) from failing the IDE build entirely - it'll just warn. -->
+  <Target Name="DeployToBinScripts" AfterTargets="Build">
+    <Message Text="O3DESharp: deploying $(AssemblyName).dll -> $(O3DEDeployPath)" Importance="high"/>
+    <MakeDir Directories="$(O3DEDeployPath)"/>
+    <Copy SourceFiles="$(TargetPath)"
+          DestinationFolder="$(O3DEDeployPath)"
+          SkipUnchangedFiles="true"
+          ContinueOnError="true"/>
+    <Copy SourceFiles="$(TargetDir)$(AssemblyName).pdb"
+          DestinationFolder="$(O3DEDeployPath)"
+          SkipUnchangedFiles="true"
+          ContinueOnError="true"
+          Condition="Exists('$(TargetDir)$(AssemblyName).pdb')"/>
+  </Target>
 
 </Project>
 '''
@@ -1135,15 +1325,24 @@ class CSharpProjectManager:
             }
         
         csproj_path = csproj_files[0]
-        
+
         try:
-            result = subprocess.run(
-                ["dotnet", "build", str(csproj_path), "-c", configuration],
-                capture_output=True,
-                text=True,
-                cwd=str(project_path)
-            )
-            
+            # Phase 16b: set the BuildInProgress flag so the editor's file watcher
+            # (Phase 16a) coalesces every intermediate write during this build into
+            # a single reload at the end. The watcher polls this flag on each
+            # debounce expiry and reschedules itself while it's set. Best-effort -
+            # the settings registry might not exist in non-editor contexts.
+            _set_build_in_progress(True)
+            try:
+                result = subprocess.run(
+                    ["dotnet", "build", str(csproj_path), "-c", configuration],
+                    capture_output=True,
+                    text=True,
+                    cwd=str(project_path)
+                )
+            finally:
+                _set_build_in_progress(False)
+
             if result.returncode == 0:
                 output_path = project_path / "bin" / configuration
                 dll_name = csproj_path.stem + ".dll"
@@ -1210,10 +1409,61 @@ class CSharpProjectManager:
                 "output_path": None
             }
     
+    def migrate_csprojs_to_deploy_target(self) -> Dict[str, Any]:
+        """
+        Walk the project tree, find every user .csproj, and inject the Phase
+        16b auto-deploy target into any that don't already have it. Used by
+        Tools > C# Scripting > Migrate C# Project Files.
+
+        Returns a dict summarising which files were migrated vs skipped vs
+        failed. Honored by the editor menu, which surfaces a single Qt
+        message box rather than spamming the log.
+        """
+        migrated: List[str] = []
+        skipped: List[str] = []
+        failed: List[Dict[str, str]] = []
+
+        # Search both standard locations - same set list_projects uses.
+        search_locations = [self.gem_path]
+        if self.scripts_path != self.gem_path and self.scripts_path.exists():
+            search_locations.append(self.scripts_path)
+
+        seen: set = set()
+        for search_root in search_locations:
+            if not search_root.exists():
+                continue
+            for csproj in search_root.rglob("*.csproj"):
+                # Skip build outputs and dedupe across the two roots.
+                if "bin" in csproj.parts or "obj" in csproj.parts:
+                    continue
+                if str(csproj) in seen:
+                    continue
+                seen.add(str(csproj))
+
+                result = migrate_csproj_to_deploy_target(csproj)
+                if not result["success"]:
+                    failed.append({"path": str(csproj), "message": result["message"]})
+                elif result["changed"]:
+                    migrated.append(str(csproj))
+                else:
+                    skipped.append(str(csproj))
+
+        return {
+            "success": len(failed) == 0,
+            "migrated": migrated,
+            "skipped": skipped,
+            "failed": failed,
+            "summary": (
+                f"Migrated {len(migrated)} csproj(s), "
+                f"skipped {len(skipped)} already-migrated, "
+                f"{len(failed)} failed"
+            ),
+        }
+
     def list_projects(self) -> List[Dict[str, Any]]:
         """
         List all C# projects by searching the Gem directory recursively.
-        
+
         Searches for .csproj files within the project's Gem directory structure.
         """
         projects = []

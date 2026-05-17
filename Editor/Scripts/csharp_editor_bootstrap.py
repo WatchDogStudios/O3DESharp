@@ -381,6 +381,35 @@ def build_csharp_projects():
         general.log(f"Failed to build C# projects: {e}")
 
 
+def migrate_csharp_projects_to_deploy_target():
+    """
+    Add the Phase 16b auto-deploy MSBuild target to every user .csproj in
+    the project that doesn't already have it. Called from
+    Tools > C# Scripting > Migrate C# Project Files. Idempotent - re-running
+    on an already-migrated project is a no-op.
+    """
+    try:
+        csharp_project_manager = _import_csharp_project_manager()
+        manager = csharp_project_manager.CSharpProjectManager()
+        result = manager.migrate_csprojs_to_deploy_target()
+
+        general.log(result.get("summary", "Migration finished"))
+        for path in result.get("migrated", []):
+            general.log(f"  migrated: {path}")
+        for path in result.get("skipped", []):
+            general.log(f"  already up-to-date: {path}")
+        for entry in result.get("failed", []):
+            general.log(f"  FAILED {entry.get('path')}: {entry.get('message')}")
+
+        return result
+    except ImportError as e:
+        general.log(f"Failed to import C# project manager: {e}")
+        return None
+    except Exception as e:
+        general.log(f"Failed to migrate C# projects: {e}")
+        return None
+
+
 def generate_bindings():
     """Generate C# bindings using the ClangSharp tool"""
     try:
