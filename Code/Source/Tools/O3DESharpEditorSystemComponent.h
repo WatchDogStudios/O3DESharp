@@ -82,6 +82,15 @@ namespace O3DESharp
         void MigrateCSharpProjects();
         void CopyDebuggerAttachInfo();
 
+        // Phase 17a: one-click managed debugger attach. Each helper
+        // trampolines through EditorPythonRunnerRequestBus to the same-
+        // named function in csharp_editor_bootstrap. The Python side owns
+        // the IDE detection + subprocess spawn so this file stays decoupled
+        // from any specific debugger binary.
+        void TriggerJitDebugger();
+        void AttachWithRider();
+        void AttachWithVSCode();
+
         // Phase 16: file watcher lifecycle helpers. StartAssemblyWatcher
         // reads the AutoReload settings, decides whether the watcher should
         // run, and (if so) starts it on <ProjectPath>/Bin/Scripts/.

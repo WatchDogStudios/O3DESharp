@@ -260,6 +260,31 @@ CSPROJ_TEMPLATE = r'''<Project Sdk="Microsoft.NET.Sdk">
 </Project>
 '''
 
+# Phase 17a: VS Code attach configuration. Dropped into <project>/.vscode/
+# by create_project so a user with VS Code installed can hit F5 to attach
+# the managed debugger to the editor without hand-editing any JSON.
+# `processName` does a substring match, so "Editor" picks up both the
+# regular Editor.exe and any launcher executable that contains the word.
+VSCODE_LAUNCH_JSON_TEMPLATE = '''\
+{
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "O3DESharp: Attach to Editor",
+            "type": "coreclr",
+            "request": "attach",
+            "processName": "Editor"
+        },
+        {
+            "name": "O3DESharp: Attach to GameLauncher",
+            "type": "coreclr",
+            "request": "attach",
+            "processName": "GameLauncher"
+        }
+    ]
+}
+'''
+
 SCRIPT_COMPONENT_TEMPLATE = '''using O3DE;
 
 namespace {namespace}
@@ -1227,7 +1252,21 @@ class CSharpProjectManager:
             }
             metadata_path = project_dir / "project.json"
             metadata_path.write_text(json.dumps(metadata, indent=2))
-            
+
+            # Phase 17a: drop a .vscode/launch.json that points the managed
+            # debugger at the editor process. F5 in VS Code = "Attach to
+            # Editor" by name. No-op for users on Rider / VS, doesn't hurt
+            # them to have the file sitting there.
+            try:
+                vscode_dir = project_dir / ".vscode"
+                vscode_dir.mkdir(parents=True, exist_ok=True)
+                launch_path = vscode_dir / "launch.json"
+                if not launch_path.exists():
+                    launch_path.write_text(VSCODE_LAUNCH_JSON_TEMPLATE)
+            except OSError as e:
+                # Best-effort - csproj creation already succeeded.
+                print(f"[O3DESharp] could not write {project_dir}/.vscode/launch.json: {e}")
+
             return {
                 "success": True,
                 "message": f"Created C# project '{project_name}' at {project_dir}",

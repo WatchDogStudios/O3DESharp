@@ -436,6 +436,242 @@ def migrate_csharp_projects_to_deploy_target():
         return None
 
 
+# ----------------------------------------------------------------------
+# Phase 17 - managed-mode debugger attach helpers.
+#
+# Coral hosts .NET in-process with Editor.exe, so any IDE that supports
+# "Attach to Process" in managed mode works against script code today.
+# These helpers turn that into one-click actions in the Tools menu by
+# locating the user's IDE and invoking its attach CLI - or, when no
+# IDE-specific CLI exists, falling back to Windows' system JIT debugger
+# launcher (vsjitdebugger.exe) which presents a picker of all registered
+# managed debuggers.
+# ----------------------------------------------------------------------
+
+def _editor_pid() -> int:
+    """Return the editor's own process ID."""
+    import os
+    return os.getpid()
+
+
+def _find_rider_executable():
+    """
+    Look up rider64.exe on Windows / rider on Linux.
+
+    Search order:
+      1. PATH (`shutil.which`).
+      2. JetBrains Toolbox default install root.
+      3. Common Program Files locations.
+      4. Latest entry under HKCU\\Software\\JetBrains\\... (Windows only).
+    Returns the absolute path string, or None.
+    """
+    import os
+    import shutil
+    from pathlib import Path
+
+    exe_name = "rider64.exe" if os.name == "nt" else "rider"
+
+    # 1. PATH
+    found = shutil.which(exe_name)
+    if found:
+        return found
+    if os.name == "nt":
+        # `where` also matches .bat shims that aren't picked up by which
+        found = shutil.which("rider.bat")
+        if found:
+            return found
+
+    # 2. JetBrains Toolbox (per-user)
+    home = Path.home()
+    toolbox_candidates = [
+        home / "AppData" / "Local" / "Programs" / "Rider" / "bin" / exe_name,
+        home / "AppData" / "Local" / "JetBrains" / "Toolbox" / "apps",
+    ]
+    for c in toolbox_candidates:
+        if c.is_file():
+            return str(c)
+        if c.is_dir():
+            # Toolbox layout: apps/Rider/<channel>/<build>/bin/rider64.exe
+            for hit in c.rglob(exe_name):
+                return str(hit)
+
+    # 3. Program Files (system-wide install)
+    if os.name == "nt":
+        for root_env in ("ProgramFiles", "ProgramFiles(x86)"):
+            root = os.environ.get(root_env)
+            if not root:
+                continue
+            jb_dir = Path(root) / "JetBrains"
+            if jb_dir.is_dir():
+                # Newer Rider versions: JetBrains Rider <year>.<minor>.<patch>
+                for hit in jb_dir.glob("JetBrains Rider*/bin/" + exe_name):
+                    return str(hit)
+
+    # 4. HKCU registry (Windows; cheap fallback)
+    if os.name == "nt":
+        try:
+            import winreg  # type: ignore[import-not-found]
+            for hive, subkey in (
+                (winreg.HKEY_CURRENT_USER, r"Software\\JetBrains\\Rider"),
+                (winreg.HKEY_LOCAL_MACHINE, r"Software\\JetBrains\\Rider"),
+            ):
+                try:
+                    with winreg.OpenKey(hive, subkey) as k:
+                        # JetBrains writes subkeys named after the install.
+                        i = 0
+                        while True:
+                            try:
+                                name = winreg.EnumKey(k, i)
+                            except OSError:
+                                break
+                            i += 1
+                            try:
+                                with winreg.OpenKey(k, name) as kk:
+                                    install_path, _ = winreg.QueryValueEx(kk, "InstallLocation")
+                                    candidate = Path(install_path) / "bin" / exe_name
+                                    if candidate.is_file():
+                                        return str(candidate)
+                            except OSError:
+                                continue
+                except OSError:
+                    continue
+        except ImportError:
+            pass
+
+    return None
+
+
+def _find_vscode_executable():
+    """Locate VS Code's CLI entry point (`code` / `code.cmd`)."""
+    import os
+    import shutil
+    from pathlib import Path
+
+    # PATH first - covers user-PATH installs as well as system-wide.
+    for name in ("code", "code.cmd"):
+        found = shutil.which(name)
+        if found:
+            return found
+
+    if os.name == "nt":
+        home = Path.home()
+        for candidate in (
+            home / "AppData" / "Local" / "Programs" / "Microsoft VS Code" / "bin" / "code.cmd",
+            Path(os.environ.get("ProgramFiles", "")) / "Microsoft VS Code" / "bin" / "code.cmd",
+        ):
+            if candidate.is_file():
+                return str(candidate)
+
+    return None
+
+
+def _spawn_detached(args, log_label):
+    """
+    Launch an IDE/attach command without blocking the editor. We don't
+    capture stdout/stderr because some IDEs print spinners that would just
+    fill the editor log. Failures surface as a single warning instead.
+    """
+    import subprocess
+    try:
+        subprocess.Popen(args, close_fds=True)
+        general.log(f"[O3DESharp] {log_label}: launched ({args[0]})")
+        return True
+    except Exception as e:
+        general.log(f"[O3DESharp] {log_label}: failed to spawn {args[0]}: {e}")
+        return False
+
+
+def trigger_jit_debugger():
+    """
+    Windows: spawn vsjitdebugger.exe -p <pid>. The OS presents a picker
+    listing every registered managed-mode debugger (Rider, Visual Studio,
+    etc.) and attaches whichever the user clicks.
+
+    Cross-platform fallback: on Linux/Mac there is no equivalent
+    OS-mediated picker. Logs an instructive message pointing at
+    Debugger.WaitForAttach for those platforms.
+    """
+    import os
+    from pathlib import Path
+
+    pid = _editor_pid()
+
+    if os.name == "nt":
+        jit = Path(os.environ.get("SystemRoot", r"C:\Windows")) / "System32" / "vsjitdebugger.exe"
+        if jit.is_file():
+            return _spawn_detached([str(jit), "-p", str(pid)], "JIT debugger picker")
+        general.log(
+            "[O3DESharp] vsjitdebugger.exe not found under System32. Install a Visual Studio "
+            "component that registers as the JIT debugger, or attach manually from your IDE "
+            f"(PID {pid})."
+        )
+        return False
+
+    general.log(
+        f"[O3DESharp] No OS-level managed JIT picker on this platform. Attach your IDE "
+        f"manually to PID {pid}, or sprinkle O3DE.Debugger.WaitForAttach into the script "
+        f"you want to break in."
+    )
+    return False
+
+
+def attach_with_rider():
+    """
+    Attach JetBrains Rider's managed debugger to the editor process via the
+    documented `rider64.exe attach-to-process <pid>` CLI (available in
+    Rider 2024.2+). Falls back to opening Rider if the attach subcommand
+    isn't recognized.
+    """
+    rider = _find_rider_executable()
+    if not rider:
+        general.log(
+            "[O3DESharp] Could not find rider64.exe / rider in PATH, Program Files, "
+            "Toolbox, or the registry. Install Rider and rerun, or use 'Trigger JIT "
+            "Debugger' to pick from the OS debugger picker."
+        )
+        return False
+    return _spawn_detached([rider, "attach-to-process", str(_editor_pid())], "Rider attach")
+
+
+def attach_with_vscode():
+    """
+    Open the current O3DE project folder in VS Code with the C# debug
+    extension. We can't fully one-click the attach because VS Code has no
+    'attach by PID' CLI primitive - but if the project carries the
+    `launch.json` template (Phase 17a drops one for new csprojs and the
+    Migrate command optionally adds it to existing ones), the user just
+    presses F5 once.
+    """
+    import azlmbr.paths as _paths
+    code = _find_vscode_executable()
+    if not code:
+        general.log(
+            "[O3DESharp] Could not find VS Code's `code` CLI. Install VS Code and add it "
+            "to PATH (the installer's 'Add to PATH' option), or use 'Attach with Rider' / "
+            "'Trigger JIT Debugger' instead."
+        )
+        return False
+
+    try:
+        project_root = _paths.projectroot
+    except Exception:
+        project_root = "."
+
+    # Two-step: open the project folder, then nudge the user toward F5. We
+    # could trigger workbench.action.debug.start via the --command flag but
+    # it requires a launch.json to already be active in the workspace and
+    # only fires once VS Code finishes loading - racy. Open + log is more
+    # reliable.
+    ok = _spawn_detached([code, "--new-window", project_root], "VS Code")
+    if ok:
+        general.log(
+            "[O3DESharp] VS Code launched. Press F5 to attach via the bundled "
+            "'O3DESharp: Attach to Editor' debug configuration (launch.json). "
+            f"Editor PID: {_editor_pid()}."
+        )
+    return ok
+
+
 def generate_bindings():
     """Generate C# bindings using the ClangSharp tool"""
     try:

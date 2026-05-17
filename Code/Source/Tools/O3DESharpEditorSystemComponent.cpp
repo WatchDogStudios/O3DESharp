@@ -39,6 +39,12 @@ namespace O3DESharp
     static constexpr const char* CSharpMigrateProjectsActionId = "o3de.action.o3desharp.migrateProjects";
     static constexpr const char* CSharpCopyAttachInfoActionId = "o3de.action.o3desharp.copyAttachInfo";
 
+    // Phase 17a: Attach Debugger submenu actions.
+    static constexpr const char* CSharpAttachJitActionId    = "o3de.action.o3desharp.attachJit";
+    static constexpr const char* CSharpAttachRiderActionId  = "o3de.action.o3desharp.attachRider";
+    static constexpr const char* CSharpAttachVSCodeActionId = "o3de.action.o3desharp.attachVSCode";
+    static constexpr const char* CSharpAttachDebuggerMenuId = "o3de.menu.o3desharp.attachDebugger";
+
     // Menu identifier for our submenu
     static constexpr const char* CSharpScriptingMenuId = "o3de.menu.o3desharp.scripting";
 
@@ -403,6 +409,51 @@ except Exception as e:
                 [this]() { CopyDebuggerAttachInfo(); }
             );
         }
+
+        // Phase 17a: one-click attach. Each option dispatches to its
+        // namesake Python helper which does the IDE detection + subprocess
+        // spawn. Failures are surfaced in the editor log via general.log
+        // rather than as silent no-ops.
+        {
+            AzToolsFramework::ActionProperties props;
+            props.m_name = "Trigger JIT Debugger";
+            props.m_description =
+                "Windows: pop the system JIT debugger picker (vsjitdebugger.exe -p <pid>) "
+                "listing every registered managed-mode debugger. One click on your IDE in "
+                "the picker attaches it to the editor. No effect on Linux / macOS.";
+            props.m_category = "Scripting";
+            actionManagerInterface->RegisterAction(
+                EditorIdentifiers::MainWindowActionContextIdentifier,
+                CSharpAttachJitActionId, props,
+                [this]() { TriggerJitDebugger(); });
+        }
+        {
+            AzToolsFramework::ActionProperties props;
+            props.m_name = "Attach with Rider";
+            props.m_description =
+                "Locate rider64.exe (PATH / Program Files / JetBrains Toolbox / registry) and "
+                "invoke 'rider64.exe attach-to-process <pid>'. Falls back to a log line if no "
+                "Rider install is detected.";
+            props.m_category = "Scripting";
+            actionManagerInterface->RegisterAction(
+                EditorIdentifiers::MainWindowActionContextIdentifier,
+                CSharpAttachRiderActionId, props,
+                [this]() { AttachWithRider(); });
+        }
+        {
+            AzToolsFramework::ActionProperties props;
+            props.m_name = "Attach with VS Code";
+            props.m_description =
+                "Open the current O3DE project in VS Code with the bundled "
+                "'O3DESharp: Attach to Editor' launch configuration. Press F5 in VS Code to "
+                "attach. The launch.json template lives at <project>/.vscode/launch.json and "
+                "is dropped by Create C# Project automatically.";
+            props.m_category = "Scripting";
+            actionManagerInterface->RegisterAction(
+                EditorIdentifiers::MainWindowActionContextIdentifier,
+                CSharpAttachVSCodeActionId, props,
+                [this]() { AttachWithVSCode(); });
+        }
     }
 
     void O3DESharpEditorSystemComponent::OnMenuBindingHook()
@@ -437,7 +488,22 @@ except Exception as e:
         menuManagerInterface->AddActionToMenu(CSharpScriptingMenuId, CSharpAutoReloadToggleActionId, 510);
         menuManagerInterface->AddSeparatorToMenu(CSharpScriptingMenuId, 550);
         menuManagerInterface->AddActionToMenu(CSharpScriptingMenuId, CSharpMigrateProjectsActionId, 600);
-        menuManagerInterface->AddActionToMenu(CSharpScriptingMenuId, CSharpCopyAttachInfoActionId, 700);
+
+        // Phase 17a: "Attach Debugger" submenu rolls up the four attach
+        // entry points (JIT picker, Rider, VS Code, Copy Info). Group them
+        // so the top-level submenu doesn't become a wall of debugger items.
+        {
+            AzToolsFramework::MenuProperties menuProperties;
+            menuProperties.m_name = "Attach Debugger";
+            menuManagerInterface->RegisterMenu(CSharpAttachDebuggerMenuId, menuProperties);
+        }
+        menuManagerInterface->AddSubMenuToMenu(CSharpScriptingMenuId, CSharpAttachDebuggerMenuId, 700);
+        menuManagerInterface->AddActionToMenu(CSharpAttachDebuggerMenuId, CSharpAttachJitActionId,        100);
+        menuManagerInterface->AddSeparatorToMenu(CSharpAttachDebuggerMenuId, 150);
+        menuManagerInterface->AddActionToMenu(CSharpAttachDebuggerMenuId, CSharpAttachRiderActionId,      200);
+        menuManagerInterface->AddActionToMenu(CSharpAttachDebuggerMenuId, CSharpAttachVSCodeActionId,     300);
+        menuManagerInterface->AddSeparatorToMenu(CSharpAttachDebuggerMenuId, 350);
+        menuManagerInterface->AddActionToMenu(CSharpAttachDebuggerMenuId, CSharpCopyAttachInfoActionId,   400);
     }
 
     // Helper to get Python code that sets up the O3DESharp module path
@@ -659,6 +725,45 @@ general.log('[O3DESharp] Debugger attach info copied to clipboard:\n' + '''%s'''
             &AzToolsFramework::EditorPythonRunnerRequestBus::Events::ExecuteByString,
             pythonCode.c_str(),
             false /* is file path */);
+    }
+
+    namespace
+    {
+        // Helper for the Phase 17 attach actions - all three share the same
+        // shape: call csharp_editor_bootstrap.<func>() through the Python
+        // runner bus and let the Python side report status to general.log.
+        void RunBootstrapFunctionAsync(const char* bootstrapFunctionName)
+        {
+            AZStd::string pythonCode = AZStd::string::format(R"(
+%s
+try:
+    import csharp_editor_bootstrap
+    csharp_editor_bootstrap.%s()
+except Exception as e:
+    import azlmbr.legacy.general as general
+    general.log(f"[O3DESharp] csharp_editor_bootstrap.%s() failed: {e}")
+)", GetPythonPathSetup(), bootstrapFunctionName, bootstrapFunctionName);
+
+            AzToolsFramework::EditorPythonRunnerRequestBus::Broadcast(
+                &AzToolsFramework::EditorPythonRunnerRequestBus::Events::ExecuteByString,
+                pythonCode.c_str(),
+                false /* is file path */);
+        }
+    } // namespace
+
+    void O3DESharpEditorSystemComponent::TriggerJitDebugger()
+    {
+        RunBootstrapFunctionAsync("trigger_jit_debugger");
+    }
+
+    void O3DESharpEditorSystemComponent::AttachWithRider()
+    {
+        RunBootstrapFunctionAsync("attach_with_rider");
+    }
+
+    void O3DESharpEditorSystemComponent::AttachWithVSCode()
+    {
+        RunBootstrapFunctionAsync("attach_with_vscode");
     }
 
     void O3DESharpEditorSystemComponent::ToggleAutoReloadScripts()
