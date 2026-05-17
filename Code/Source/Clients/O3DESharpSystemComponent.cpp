@@ -271,10 +271,21 @@ namespace O3DESharp
         try
         {
             Coral::String managed = instance.InvokeMethod<Coral::String>("GetExposedPropertySchemaJson");
-            const char* chars = managed.Data();
-            if (chars != nullptr)
+            // Coral::String stores UCChar* (wchar_t* on Windows -> UTF-16,
+            // char* on Linux/Mac -> UTF-8). The previous implementation cast
+            // managed.Data() to (const char*) and assigned it as if it were a
+            // C string, which on Windows reads UTF-16 bytes as ASCII and
+            // stops at the first 0x00 byte. For a JSON like "[{\"name\":..."
+            // that's exactly one byte ('['), producing the confusing
+            // "JSON: [" warning the inspector reported.
+            //
+            // The Coral::String::operator std::string() conversion calls
+            // StringHelper::ConvertWideToUtf8 internally, handling both
+            // platforms correctly. Use it instead.
+            if (managed.Data() != nullptr)
             {
-                result = chars;
+                std::string utf8 = static_cast<std::string>(managed);
+                result = AZStd::string(utf8.c_str(), utf8.size());
             }
             // Intentionally not calling Coral::String::Free: the returned
             // string is owned by the managed heap and reclaimed by the .NET

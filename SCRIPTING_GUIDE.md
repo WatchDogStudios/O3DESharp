@@ -18,6 +18,7 @@ your first project to accessing components, physics, the reflection API, and mor
 9. [Calling EBus Events from C#](#9-calling-ebus-events-from-c)
 10. [Input (Current State)](#10-input-current-state)
 11. [Hot Reload](#11-hot-reload)
+11b. [Debugging C# Scripts](#11b-debugging-c-scripts)
 12. [Binding Generator](#12-binding-generator)
 13. [Building & Deploying](#13-building--deploying)
 14. [Project Export](#14-project-export)
@@ -709,6 +710,121 @@ int gen = mgr.ReloadGeneration;
 - Use `OnCreate()` or `OnEnable()` to reinitialize transient resources (file
   handles, network connections, caches) after a reload.
 - Hot reload is **not available** in Release builds.
+
+---
+
+## 11b. Debugging C# Scripts
+
+Coral hosts the .NET runtime in-process with the O3DE editor (or game
+launcher), so any standard managed-mode debugger — Rider, Visual Studio,
+VS Code with the C# extension — can attach to `Editor.exe` and hit
+breakpoints in your script code. No special debug build of the engine is
+required.
+
+### Prerequisites
+
+- Your C# project must produce **portable PDBs**. New csprojs from the
+  Tools → C# Scripting → Create C# Project template already include:
+  ```xml
+  <DebugType>portable</DebugType>
+  <DebugSymbols>true</DebugSymbols>
+  ```
+  Existing csprojs: add those two lines inside `<PropertyGroup>`. The
+  Phase 16b deploy target (`DeployToBinScripts`) already copies the
+  `.pdb` alongside the `.dll`, so the runtime loader picks up symbols
+  automatically.
+- Build in **Debug** config (`dotnet build -c Debug`). Release optimizes,
+  which strips locals and merges step boundaries — breakpoints still
+  bind, but stepping is jumpy.
+
+### One-time setup per debug session
+
+1. **Tools → C# Scripting → Copy Debugger Attach Info**. This puts the
+   editor's process ID and a step-by-step hint on the clipboard:
+   ```
+   O3DE Editor (PID 12345)
+   Attach with: Rider Run > Attach to Process > pick PID 12345 > select .NET runtime.
+                Visual Studio Debug > Attach to Process > Connection target: localhost,
+                pick PID 12345, set Attach to: 'Managed (.NET Core, .NET 5+)'.
+   ```
+2. In your IDE: **Attach to Process…** and paste the PID into the filter
+   field. Pick the editor entry, and on Windows make sure the IDE is
+   attaching the .NET CoreCLR / managed-mode debugger (not the native
+   debugger — that one breaks on every Coral P/Invoke).
+3. Set breakpoints in your `.cs` files. Enter game mode (Ctrl+G) or
+   trigger your script some other way. Breakpoints fire.
+
+### Editing while attached
+
+The full hot-reload chain (Phase 16) keeps working with the debugger
+attached:
+
+1. Edit C# in your IDE.
+2. Build (Rider's hammer / VS's Ctrl+Shift+B / `dotnet build`). The
+   MSBuild `DeployToBinScripts` target copies to `Bin/Scripts/`. The
+   editor's file watcher reloads the assembly.
+3. The debugger reattaches automatically to the new
+   `AssemblyLoadContext` on most IDEs; if your IDE drops the breakpoints
+   on reload (it might say "module unloaded"), reattach by Ctrl+Shift+F5
+   or your IDE's equivalent.
+
+### Pausing before a breakpoint with `O3DE.Debugger.WaitForAttach`
+
+The hardest thing to debug is `OnCreate` — by the time the IDE is
+attached, the call has already returned. `O3DE.Debugger.WaitForAttach`
+blocks the script thread until you attach (or until a timeout):
+
+```csharp
+using O3DE;
+
+public class MyScript : ScriptComponent
+{
+    public override void OnCreate()
+    {
+        // Block here up to 30s waiting for the IDE to attach. Once
+        // IsAttached flips true (you've hit Attach), execution resumes
+        // and breakpoints later in OnCreate will fire normally.
+        Debugger.WaitForAttach(TimeSpan.FromSeconds(30));
+
+        // ... your normal OnCreate code, breakpointable from here on.
+    }
+}
+```
+
+Returns `true` if a debugger attached, `false` if the timeout elapsed.
+On a player's Release machine where IsAttached can never become true,
+the timeout prevents a forgotten call from freezing the game forever.
+Other helpers in the same class:
+
+| Helper | What it does |
+|---|---|
+| `Debugger.IsAttached` | Pass-through to `System.Diagnostics.Debugger.IsAttached`. |
+| `Debugger.Launch()`   | Triggers the OS's JIT debugger picker if one is registered. Silent no-op when already attached or when launch isn't supported. |
+| `Debugger.Break()`    | Issues a managed breakpoint, but only when a debugger is attached — safe to leave in shipped code. |
+
+### Mixed-mode (C# + C++) debugging on Windows
+
+Visual Studio's "Mixed (CLR and Native)" attach mode lets you step from
+your C# script through Coral's P/Invoke into the C++ runtime. Useful
+when chasing through an internal-call:
+
+1. Attach to Process… → check **both** Managed (.NET Core, .NET 5+)
+   AND Native under "Attach to".
+2. Set the breakpoint in your `.cs` file as usual. When it hits, F11
+   into the engine call and the debugger switches to native.
+
+Rider and VS Code don't currently support mixed-mode managed/native
+attach; use VS for this.
+
+### Troubleshooting
+
+| Symptom | Likely cause |
+|---|---|
+| "The breakpoint will not currently be hit. No symbols have been loaded for this document." | The `.pdb` isn't next to the `.dll` in `Bin/Scripts/`. Rebuild — `DeployToBinScripts` copies the PDB too. If you bypass MSBuild, copy it by hand. |
+| Breakpoints bind but never hit | You attached the *native* debugger, not the managed one. Detach and reattach with the managed/.NET runtime selected. |
+| Stepping skips lines | The DLL was built in Release. Switch to Debug or drop `<Optimize>` from your Release config. |
+| Editor freezes after `WaitForAttach` and never resumes | Either the timeout was set to `TimeSpan.Zero` (= wait forever) and no debugger attached, or `IsAttached` never flipped. Restart the editor. Use a finite timeout in production. |
+| IDE loses breakpoints on hot-reload | Some IDEs reset breakpoints when the assembly load context recycles. Click Attach again or use Ctrl+Shift+F5. |
 
 ---
 

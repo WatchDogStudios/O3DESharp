@@ -80,6 +80,7 @@ namespace O3DESharp
         void ReloadCSharpScripts();
         void ToggleAutoReloadScripts();
         void MigrateCSharpProjects();
+        void CopyDebuggerAttachInfo();
 
         // Phase 16: file watcher lifecycle helpers. StartAssemblyWatcher
         // reads the AutoReload settings, decides whether the watcher should

@@ -207,6 +207,30 @@ CSPROJ_TEMPLATE = r'''<Project Sdk="Microsoft.NET.Sdk">
     <!-- Phase 16b deploy target uses this. Override per-project if your
          csproj is not at the default <ProjectPath>/Gem/Source/CSharp/<Name>/ depth. -->
     <O3DEDeployPath Condition="'$(O3DEDeployPath)' == ''">$(MSBuildProjectDirectory)\..\..\..\..\Bin\Scripts</O3DEDeployPath>
+
+    <!-- Explicit configuration list so MSBuild rejects bogus IDE configs
+         (Rider sometimes invents "Any CPU - Debug"); also lets the slnx
+         pick up Profile alongside Debug/Release. -->
+    <Configurations>Debug;Release</Configurations>
+    <Platforms>AnyCPU</Platforms>
+
+    <!-- Debugger-friendly defaults. Portable PDBs are required for both
+         Visual Studio and Rider "Attach to Process" managed-mode debugging
+         to bind line numbers, and they're cheap enough to ship in Release
+         too. -->
+    <DebugType>portable</DebugType>
+    <DebugSymbols>true</DebugSymbols>
+  </PropertyGroup>
+
+  <!-- Per-config optimization. Debug stays unoptimized so the JIT keeps
+       locals + step boundaries intact for the debugger. Release optimizes. -->
+  <PropertyGroup Condition="'$(Configuration)' == 'Debug'">
+    <Optimize>false</Optimize>
+    <DefineConstants>DEBUG;TRACE</DefineConstants>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)' == 'Release'">
+    <Optimize>true</Optimize>
+    <DefineConstants>TRACE</DefineConstants>
   </PropertyGroup>
 
   <ItemGroup>

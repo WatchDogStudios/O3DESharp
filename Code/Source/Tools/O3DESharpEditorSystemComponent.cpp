@@ -16,6 +16,7 @@
 #include <O3DESharp/O3DESharpBus.h>
 #include <O3DESharp/O3DESharpTypeIds.h>
 
+#include <AzCore/Platform.h>
 #include <AzCore/Settings/SettingsRegistry.h>
 #include <AzCore/Utils/Utils.h>
 #include <AzCore/IO/Path/Path.h>
@@ -36,6 +37,7 @@ namespace O3DESharp
     static constexpr const char* CSharpReloadScriptsActionId = "o3de.action.o3desharp.reloadScripts";
     static constexpr const char* CSharpAutoReloadToggleActionId = "o3de.action.o3desharp.autoReloadToggle";
     static constexpr const char* CSharpMigrateProjectsActionId = "o3de.action.o3desharp.migrateProjects";
+    static constexpr const char* CSharpCopyAttachInfoActionId = "o3de.action.o3desharp.copyAttachInfo";
 
     // Menu identifier for our submenu
     static constexpr const char* CSharpScriptingMenuId = "o3de.menu.o3desharp.scripting";
@@ -380,6 +382,27 @@ except Exception as e:
                 [this]() { MigrateCSharpProjects(); }
             );
         }
+
+        // "Copy Debugger Attach Info" - drops the current process ID and a
+        // ready-made "Attach to Process" hint string onto the clipboard.
+        // Saves the user from hunting through Task Manager for Editor.exe
+        // each debug session.
+        {
+            AzToolsFramework::ActionProperties actionProperties;
+            actionProperties.m_name = "Copy Debugger Attach Info";
+            actionProperties.m_description =
+                "Copy the editor's process ID and a managed-mode attach hint to the clipboard. "
+                "Paste into Rider / VS / VS Code's 'Attach to Process' filter to attach the "
+                "managed-mode debugger and set breakpoints in your C# scripts.";
+            actionProperties.m_category = "Scripting";
+
+            actionManagerInterface->RegisterAction(
+                EditorIdentifiers::MainWindowActionContextIdentifier,
+                CSharpCopyAttachInfoActionId,
+                actionProperties,
+                [this]() { CopyDebuggerAttachInfo(); }
+            );
+        }
     }
 
     void O3DESharpEditorSystemComponent::OnMenuBindingHook()
@@ -414,6 +437,7 @@ except Exception as e:
         menuManagerInterface->AddActionToMenu(CSharpScriptingMenuId, CSharpAutoReloadToggleActionId, 510);
         menuManagerInterface->AddSeparatorToMenu(CSharpScriptingMenuId, 550);
         menuManagerInterface->AddActionToMenu(CSharpScriptingMenuId, CSharpMigrateProjectsActionId, 600);
+        menuManagerInterface->AddActionToMenu(CSharpScriptingMenuId, CSharpCopyAttachInfoActionId, 700);
     }
 
     // Helper to get Python code that sets up the O3DESharp module path
@@ -593,6 +617,43 @@ except Exception as e:
     import azlmbr.legacy.general as general
     general.log(f"Could not migrate C# projects: {e}")
 )", GetPythonPathSetup());
+
+        AzToolsFramework::EditorPythonRunnerRequestBus::Broadcast(
+            &AzToolsFramework::EditorPythonRunnerRequestBus::Events::ExecuteByString,
+            pythonCode.c_str(),
+            false /* is file path */);
+    }
+
+    void O3DESharpEditorSystemComponent::CopyDebuggerAttachInfo()
+    {
+        // Compose a short, paste-friendly blob with the PID and a hint
+        // string. We log to the console too so users in a remote shell
+        // (no clipboard) can still read the values.
+        const AZ::u32 pid = AZ::Platform::GetCurrentProcessId();
+
+        // The "Attach to Process" filter in Rider / Visual Studio matches
+        // both the PID and the process name, so giving them either works.
+        AZStd::string blob = AZStd::string::format(
+            "O3DE Editor (PID %u)\n"
+            "Attach with: Rider Run > Attach to Process > pick PID %u > select .NET runtime.\n"
+            "             Visual Studio Debug > Attach to Process > Connection target: localhost,"
+            " pick PID %u, set Attach to: 'Managed (.NET Core, .NET 5+)'.",
+            pid, pid, pid);
+
+        // Use Qt's clipboard - already linked through AzQtComponents. We
+        // execute the clipboard set via a Python runner trampoline rather
+        // than a direct QApplication::clipboard() call to avoid pulling
+        // <QApplication> into this TU and to keep the action thread-safe
+        // (Python runner marshals to the main thread).
+        AZStd::string pythonCode = AZStd::string::format(R"(
+import azlmbr.legacy.general as general
+try:
+    from PySide2.QtWidgets import QApplication
+except ImportError:
+    from PySide6.QtWidgets import QApplication
+QApplication.clipboard().setText('''%s''')
+general.log('[O3DESharp] Debugger attach info copied to clipboard:\n' + '''%s''')
+)", blob.c_str(), blob.c_str());
 
         AzToolsFramework::EditorPythonRunnerRequestBus::Broadcast(
             &AzToolsFramework::EditorPythonRunnerRequestBus::Events::ExecuteByString,
