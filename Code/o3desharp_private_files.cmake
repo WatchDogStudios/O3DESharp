@@ -31,6 +31,14 @@ set(FILES
     Source/Scripting/Reflection/BehaviorContextReflector.cpp
     Source/Scripting/Reflection/GenericDispatcher.h
     Source/Scripting/Reflection/GenericDispatcher.cpp
+
+    # Phase 18-A: BehaviorContext <-> JSON marshaling. Shared utility
+    # used by GenericDispatcher's EBus dispatch path and the upcoming
+    # 18-B managed-handler bridge. Kept independent of EditorPythonBindings
+    # so the runtime gem doesn't pull in the EPB Static dependency just
+    # to reuse a converter.
+    Source/Scripting/Marshaling/BehaviorContextMarshaling.h
+    Source/Scripting/Marshaling/BehaviorContextMarshaling.cpp
     # Exports reflection data to JSON for the Python binding generator
     Source/Scripting/Reflection/ReflectionDataExporter.h
     Source/Scripting/Reflection/ReflectionDataExporter.cpp

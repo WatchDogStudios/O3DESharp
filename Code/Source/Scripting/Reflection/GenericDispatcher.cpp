@@ -8,6 +8,7 @@
 
 #include "GenericDispatcher.h"
 
+#include <AzCore/Component/ComponentApplicationBus.h>
 #include <AzCore/Console/ILogger.h>
 #include <AzCore/Math/Vector3.h>
 #include <AzCore/Math/Quaternion.h>
@@ -19,6 +20,8 @@
 #include <AzCore/JSON/writer.h>
 
 #include <Coral/Assembly.hpp>
+
+#include <Scripting/Marshaling/BehaviorContextMarshaling.h>
 
 namespace O3DESharp
 {
@@ -1300,21 +1303,200 @@ namespace O3DESharp
             return false;
         }
 
+        namespace
+        {
+            // Phase 18-A: shared helper used by BroadcastEBusEvent and
+            // SendEBusEvent. Both flows look up the bus + event, marshal
+            // args, dispatch through the BehaviorMethod, marshal the
+            // result back to JSON. The only difference between them is
+            // whether they use the addressed (m_event) or unaddressed
+            // (m_broadcast) variant of the event sender, and whether the
+            // caller-supplied bus id is consumed as a leading argument.
+            Coral::String DispatchEBusEvent(
+                Coral::String busName,
+                Coral::String eventName,
+                Coral::String argsJson,
+                bool addressed,
+                AZ::u64 busIdAsU64)
+            {
+                std::string busNameStr(busName);
+                std::string eventNameStr(eventName);
+                std::string argsJsonStr(argsJson);
+
+                auto makeError = [&](const char* fmt, ...) -> Coral::String
+                {
+                    va_list args;
+                    va_start(args, fmt);
+                    char buf[1024] = {};
+                    azvsnprintf(buf, sizeof(buf), fmt, args);
+                    va_end(args);
+                    AZ_Warning(
+                        "O3DESharp",
+                        false,
+                        "BroadcastEBusEvent('%s', '%s'): %s",
+                        busNameStr.c_str(), eventNameStr.c_str(), buf);
+                    AZStd::string msg = AZStd::string::format("{\"error\":\"%s\"}", buf);
+                    return Coral::String::New(msg.c_str());
+                };
+
+                // 1. Find the BehaviorContext.
+                AZ::BehaviorContext* behaviorContext = nullptr;
+                AZ::ComponentApplicationBus::BroadcastResult(
+                    behaviorContext,
+                    &AZ::ComponentApplicationRequests::GetBehaviorContext);
+                if (behaviorContext == nullptr)
+                {
+                    return makeError("no BehaviorContext available");
+                }
+
+                // 2. Look up the bus by name.
+                auto busIt = behaviorContext->m_ebuses.find(busNameStr.c_str());
+                if (busIt == behaviorContext->m_ebuses.end())
+                {
+                    return makeError("bus '%s' not reflected in BehaviorContext",
+                                     busNameStr.c_str());
+                }
+                AZ::BehaviorEBus* bus = busIt->second;
+
+                // 3. Look up the event on the bus.
+                auto evtIt = bus->m_events.find(eventNameStr.c_str());
+                if (evtIt == bus->m_events.end())
+                {
+                    return makeError("event '%s' not found on bus '%s'",
+                                     eventNameStr.c_str(), busNameStr.c_str());
+                }
+                AZ::BehaviorEBusEventSender& sender = evtIt->second;
+
+                // Pick broadcast vs addressed dispatch.
+                AZ::BehaviorMethod* method = addressed
+                    ? (sender.m_event != nullptr ? sender.m_event : sender.m_broadcast)
+                    : (sender.m_broadcast != nullptr ? sender.m_broadcast : sender.m_event);
+                if (method == nullptr)
+                {
+                    return makeError(
+                        "bus '%s' event '%s' has no %s dispatcher reflected",
+                        busNameStr.c_str(), eventNameStr.c_str(),
+                        addressed ? "Event" : "Broadcast");
+                }
+
+                // 4. Parse args JSON and marshal into BehaviorArguments.
+                rapidjson::Document argsDoc;
+                if (argsJsonStr.empty())
+                {
+                    argsDoc.SetArray(); // no-arg event
+                }
+                else
+                {
+                    argsDoc.Parse(argsJsonStr.c_str());
+                    if (argsDoc.HasParseError())
+                    {
+                        return makeError("args JSON parse error at offset %zu",
+                                         argsDoc.GetErrorOffset());
+                    }
+                }
+
+                // Addressed dispatch has the bus id as the leading
+                // argument in BehaviorMethod's signature; we synthesize
+                // it from the busIdAsU64 the caller supplied.
+                Marshaling::StackAllocator marshalAlloc;
+                AZStd::vector<AZ::BehaviorArgument> dispatchArgs;
+                AZStd::string marshalError;
+                const size_t skipFront = addressed ? 1 : 0;
+                if (!Marshaling::MarshalJsonArrayToArguments(
+                        argsDoc, *method, dispatchArgs,
+                        marshalAlloc, marshalError, skipFront))
+                {
+                    return makeError("arg marshal: %s", marshalError.c_str());
+                }
+                AZ::BehaviorArgument busIdArg;
+                if (addressed)
+                {
+                    // Bus id types vary - EntityId, integers, strings.
+                    // In v1 we accept any integer-compatible id by
+                    // populating a u64 cast; the BehaviorMethod's expected
+                    // parameter type does the final coercion via the
+                    // BehaviorContext type system.
+                    const AZ::BehaviorParameter* idParam = method->GetArgument(0);
+                    if (idParam == nullptr)
+                    {
+                        return makeError("addressed event has no bus-id parameter");
+                    }
+                    rapidjson::Document idDoc;
+                    idDoc.SetUint64(busIdAsU64);
+                    AZStd::string idError;
+                    if (!Marshaling::JsonValueToBehaviorParameter(
+                            idDoc, *idParam, busIdArg, marshalAlloc, idError))
+                    {
+                        return makeError("bus id marshal: %s", idError.c_str());
+                    }
+                }
+
+                // Build the final argument array. Addressed: [busId, args...].
+                AZStd::vector<AZ::BehaviorArgument*> argPtrs;
+                argPtrs.reserve(dispatchArgs.size() + (addressed ? 1u : 0u));
+                if (addressed)
+                {
+                    argPtrs.push_back(&busIdArg);
+                }
+                for (auto& a : dispatchArgs)
+                {
+                    argPtrs.push_back(&a);
+                }
+
+                // 5. Call. BehaviorMethod::Call signature is (args[],
+                // numArgs, result*). The args parameter is a flat
+                // BehaviorArgument array, not a pointer array - rebuild.
+                AZStd::vector<AZ::BehaviorArgument> flatArgs;
+                flatArgs.reserve(argPtrs.size());
+                for (auto* p : argPtrs)
+                {
+                    flatArgs.push_back(*p);
+                }
+
+                AZ::BehaviorArgument result;
+                const bool hasReturn = method->HasResult();
+                const bool ok = method->Call(
+                    flatArgs.data(),
+                    static_cast<unsigned int>(flatArgs.size()),
+                    hasReturn ? &result : nullptr);
+                if (!ok)
+                {
+                    return makeError("BehaviorMethod::Call returned false");
+                }
+
+                // 6. Marshal the result back to JSON.
+                if (!hasReturn)
+                {
+                    return Coral::String::New("{\"ok\":true}");
+                }
+                rapidjson::Document resultDoc;
+                resultDoc.SetObject();
+                rapidjson::Value resultValue;
+                AZStd::string resultError;
+                if (!Marshaling::BehaviorArgumentToJsonValue(
+                        result, resultValue, resultDoc.GetAllocator(), resultError))
+                {
+                    return makeError("result marshal: %s", resultError.c_str());
+                }
+                resultDoc.AddMember("result", resultValue, resultDoc.GetAllocator());
+                rapidjson::StringBuffer buffer;
+                rapidjson::Writer<rapidjson::StringBuffer> writer(buffer);
+                resultDoc.Accept(writer);
+                return Coral::String::New(buffer.GetString());
+            }
+        } // namespace
+
         Coral::String BroadcastEBusEvent(Coral::String busName, Coral::String eventName, Coral::String argsJson)
         {
-            AZ_UNUSED(argsJson);
-            std::string busNameStr(busName);
-            std::string eventNameStr(eventName);
-            return Coral::String::New(AZStd::string::format("{\"error\":\"Not fully implemented: %s.%s\"}", busNameStr.c_str(), eventNameStr.c_str()).c_str());
+            return DispatchEBusEvent(busName, eventName, argsJson, /*addressed*/ false, /*busId*/ 0u);
         }
 
         Coral::String SendEBusEvent(Coral::String busName, Coral::String eventName, int64_t address, Coral::String argsJson)
         {
-            AZ_UNUSED(address);
-            AZ_UNUSED(argsJson);
-            std::string busNameStr(busName);
-            std::string eventNameStr(eventName);
-            return Coral::String::New(AZStd::string::format("{\"error\":\"Not fully implemented: %s.%s\"}", busNameStr.c_str(), eventNameStr.c_str()).c_str());
+            return DispatchEBusEvent(
+                busName, eventName, argsJson,
+                /*addressed*/ true,
+                static_cast<AZ::u64>(address));
         }
 
         int64_t CreateInstance(Coral::String className, Coral::String argsJson)
