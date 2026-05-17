@@ -30,12 +30,18 @@ namespace O3DESharp::Marshaling
         // BehaviorArgument doesn't own its memory - we point its m_value
         // at storage we manage via the StackAllocator. The marshal helpers
         // below all follow this pattern.
+        //
+        // Takes by value + moves into StoreInTempData because that
+        // method's signature is `template<T> void StoreInTempData(T&&)`
+        // - a forwarding reference. Passing a const T& would fail to
+        // bind to T&&, and an explicit `<T>` template arg combined with
+        // an lvalue would fail to deduce. Pass-by-value + move sidesteps
+        // both: T deduces here, value is local, AZStd::move makes it an
+        // rvalue ready for StoreInTempData to take ownership of.
         template <typename T>
-        void SetArgumentValueInline(AZ::BehaviorArgument& outArg, const T& value)
+        void SetArgumentValueInline(AZ::BehaviorArgument& outArg, T value)
         {
-            // BehaviorArgument has a small inline buffer for blittable
-            // value types. StoreInTempData is the public API for that.
-            outArg.StoreInTempData<T>(value);
+            outArg.StoreInTempData(AZStd::move(value));
         }
 
         bool MarshalIntegerJson(

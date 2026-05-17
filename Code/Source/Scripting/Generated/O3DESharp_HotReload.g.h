@@ -12,7 +12,7 @@
 #pragma once
 
 #include <AzCore/std/string/string.h>
-#include <AzCore/std/function/function.h>
+#include <AzCore/std/functional.h>
 
 namespace O3DESharp::Generated
 {

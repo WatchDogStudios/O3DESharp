@@ -234,7 +234,7 @@ namespace O3DESharp
                 requests->EnumerateEntities(
                     [&searchName, &foundId](AZ::Entity* entity) -> bool
                     {
-                        if (entity && entity->GetName() == searchName)
+                        if (entity && entity->GetName() == searchName.c_str())
                         {
                             foundId = entity->GetId();
                             return false; // stop enumeration
@@ -744,7 +744,7 @@ namespace O3DESharp
     {
         if (auto* timeSystem = AZ::Interface<AZ::ITime>::Get())
         {
-            return static_cast<AZ::u64>(timeSystem->GetElapsedConsoleMainThreadFrameCount());
+            return static_cast<AZ::u64>(timeSystem->GetElapsedTimeMs());
         }
         return 0;
     }
