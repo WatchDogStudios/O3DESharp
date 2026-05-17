@@ -1409,6 +1409,38 @@ class CSharpProjectManager:
                 "output_path": None
             }
     
+    def find_unmigrated_csprojs(self) -> List[Path]:
+        """
+        Walk the project for .csproj files that don't yet have the Phase 16b
+        deploy target. Returns a list of Paths to surface in the editor log
+        on startup so users discover the Migrate command without having to
+        notice that auto-reload isn't kicking in for their IDE builds.
+
+        Search root and skip rules mirror migrate_csprojs_to_deploy_target.
+        """
+        unmigrated: List[Path] = []
+        search_locations = [self.gem_path]
+        if self.scripts_path != self.gem_path and self.scripts_path.exists():
+            search_locations.append(self.scripts_path)
+
+        seen: set = set()
+        for search_root in search_locations:
+            if not search_root.exists():
+                continue
+            for csproj in search_root.rglob("*.csproj"):
+                if "bin" in csproj.parts or "obj" in csproj.parts:
+                    continue
+                if str(csproj) in seen:
+                    continue
+                seen.add(str(csproj))
+                try:
+                    content = csproj.read_text(encoding='utf-8')
+                except OSError:
+                    continue
+                if _DEPLOY_TARGET_MARKER not in content:
+                    unmigrated.append(csproj)
+        return unmigrated
+
     def migrate_csprojs_to_deploy_target(self) -> Dict[str, Any]:
         """
         Walk the project tree, find every user .csproj, and inject the Phase

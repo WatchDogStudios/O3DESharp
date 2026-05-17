@@ -381,6 +381,32 @@ def build_csharp_projects():
         general.log(f"Failed to build C# projects: {e}")
 
 
+def warn_unmigrated_csharp_projects():
+    """
+    Surface a one-time warning per editor session for each .csproj missing
+    the Phase 16b auto-deploy target. Called from initialize_ebus_handler
+    so the user gets the heads-up at startup instead of finding out their
+    IDE builds aren't auto-reloading through trial and error.
+
+    Idempotent and silent when everything is already migrated.
+    """
+    try:
+        csharp_project_manager = _import_csharp_project_manager()
+        manager = csharp_project_manager.CSharpProjectManager()
+        unmigrated = manager.find_unmigrated_csprojs()
+        if not unmigrated:
+            return
+        general.log(
+            f"[O3DESharp] {len(unmigrated)} C# project file(s) lack the auto-deploy "
+            f"MSBuild target. IDE builds (Rider / VS) won't auto-reload until you run "
+            f"Tools > C# Scripting > Migrate C# Project Files."
+        )
+        for csproj in unmigrated:
+            general.log(f"  unmigrated: {csproj}")
+    except Exception as e:  # noqa: BLE001 - non-fatal background check
+        general.log(f"[O3DESharp] Unmigrated-csproj check failed (non-fatal): {e}")
+
+
 def migrate_csharp_projects_to_deploy_target():
     """
     Add the Phase 16b auto-deploy MSBuild target to every user .csproj in
@@ -619,9 +645,18 @@ def initialize_ebus_handler():
         # The handler is created and will respond to EBus broadcasts from C++
         # The connection happens automatically via the behavior context
         general.log("O3DESharp: CSharpEditorToolsBus handler initialized")
-        
+
+        # Phase 16b-2: opportunistic check for csprojs that still need the
+        # auto-deploy MSBuild target. Doesn't change behavior - just nudges
+        # the user toward the Migrate menu so they don't silently lose
+        # IDE-build auto-reload.
+        try:
+            warn_unmigrated_csharp_projects()
+        except Exception:  # noqa: BLE001 - non-fatal background check
+            pass
+
         return handler
-        
+
     except Exception as e:
         general.log(f"O3DESharp: EBus handler initialization: {e}")
         return None
