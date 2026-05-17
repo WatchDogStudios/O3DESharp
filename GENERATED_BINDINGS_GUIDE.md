@@ -48,7 +48,7 @@ produces:
 ### Prerequisites
 
 ```
-.NET 8.0+ SDK            (dotnet --version)
+.NET 9.0 SDK             (dotnet --list-sdks should show a 9.x)
 ClangSharp 17.0.1        (pulled automatically by NuGet on first build)
 ```
 
@@ -79,49 +79,48 @@ dotnet run -- generate --project F:\o3de --gems MyGem,PhysicsGem
 dotnet run -- generate --project F:\o3de --verbose --force
 ```
 
-You can also generate via the **Python orchestrator** inside the O3DE Editor:
+You can also drive the generator from the editor or from Python directly:
+
+**From the editor menu** (recommended for interactive use):
+
+> Tools → C# Bindings → **Generate Bindings**
+
+That action calls into `csharp_editor_bootstrap.generate_bindings`, which
+discovers active gems, builds a `BindingGeneratorConfig`, and invokes the
+ClangSharp tool with the same arguments as the CLI flow above.
+
+**From Python** (e.g. an Editor Python Console snippet or a batch
+script):
 
 ```python
-# Editor Console / Python script
-from Editor.Scripts.csharp_binding_generator import ClangSharpInvoker
-invoker = ClangSharpInvoker()
-result = invoker.generate(project_path="F:/o3de", verbose=True)
-print(f"Generated {result.total_files} files for {result.total_classes} classes")
+# Editor Python Console
+from Editor.Scripts.csharp_binding_generator import ClangSharpInvoker, BindingGeneratorConfig
+
+invoker = ClangSharpInvoker()           # auto-locates the tool csproj
+config = BindingGeneratorConfig(
+    incremental_build=True,
+    require_export_attribute=False,
+    verbose=True,
+)
+result = invoker.generate_bindings(
+    project_path="C:/path/to/your/O3DE/project",
+    config=config,
+)
+print(f"success={result.success}, classes={result.total_classes}, "
+      f"files={len(result.generated_files)}")
 ```
 
-### Generate *and* Build DLLs in One Step (Python Orchestrator)
-
-The Python orchestrator can also generate per-gem `.csproj` files and compile
-them into DLLs automatically:
-
-```powershell
-# Generate bindings + build DLLs in one command
-python Editor/Scripts/generate_bindings.py --project F:\o3de --build-dlls
-
-# Combine with other flags
-python Editor/Scripts/generate_bindings.py --project F:\o3de --gems PhysX Atom --build-dlls --verbose
-
-# Practical Example 
-python F:\o3de\Gems\O3DESharp\Editor\Scripts\generate_bindings.py --project C:\Users\nanaa\O3DE\Projects\NewProject --build-dlls --verbose
-```
-
-Or programmatically:
-
-```python
-from generate_bindings import BindingGenerationOrchestrator
-
-orch = BindingGenerationOrchestrator()
-orch.configure(output_directory="Generated/CSharp")
-orch.load_reflection_data("reflection_data.json")
-orch.generate()
-orch.write_files()
-
-# Generate per-gem .csproj files and compile them
-csproj_paths = orch.generate_per_gem_projects()
-results = orch.build_binding_dlls(csproj_paths)
-for gem, ok in results.items():
-    print(f"{gem}: {'OK' if ok else 'FAILED'}")
-```
+> **Note (Phase 9):** earlier versions of this gem shipped a separate
+> Python generator that consumed a `reflection_data.json` dump from
+> `O3DESharpReflectionDataExportRequestBus`, plus a
+> `BindingGenerationOrchestrator` class for chaining steps. That whole
+> path is **deprecated and removed**. The classes
+> `BindingGenerationOrchestrator`, `load_reflection_data_from_json`,
+> `TypeMapper`, and the standalone `Editor/Scripts/generate_bindings.py
+> --build-dlls` CLI no longer exist. The only generator is now the C#
+> ClangSharp tool above — `ClangSharpInvoker` is just a thin Python
+> wrapper around `dotnet run --project
+> .../O3DESharp.BindingGenerator.csproj`.
 
 ### What the Tool Prints
 
@@ -274,7 +273,7 @@ namespace O3DE.PhysicsGem
 ```xml
 <Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup>
-    <TargetFramework>net8.0</TargetFramework>
+    <TargetFramework>net9.0</TargetFramework>
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
     <AssemblyName>PhysicsGem</AssemblyName>
     <RootNamespace>O3DE.PhysicsGem</RootNamespace>
@@ -305,7 +304,7 @@ Each generated `.csproj` looks like:
 ```xml
 <Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup>
-    <TargetFramework>net8.0</TargetFramework>
+    <TargetFramework>net9.0</TargetFramework>
     <AssemblyName>O3DE.Bindings.PhysicsGem</AssemblyName>
     <RootNamespace>O3DE.PhysicsGem</RootNamespace>
     <Nullable>enable</Nullable>
@@ -340,7 +339,7 @@ Output:
 Assets/Scripts/PhysicsGem/
 ├── bin/
 │   └── Release/
-│       └── net8.0/
+│       └── net9.0/
 │           ├── PhysicsGem.dll          ← this is your bindings DLL
 │           └── PhysicsGem.xml          ← XML docs for IntelliSense
 ├── InternalCalls.g.cs
@@ -356,7 +355,7 @@ Assets/Scripts/PhysicsGem/
 Copy the built DLL into your project's scripting directory so the engine loads it:
 
 ```powershell
-copy bin\Release\net8.0\PhysicsGem.dll  ..\..\Bin\Scripts\PhysicsGem.dll
+copy bin\Release\net9.0\PhysicsGem.dll  ..\..\Bin\Scripts\PhysicsGem.dll
 ```
 
 Or set the output path directly in the `.csproj`:
@@ -397,7 +396,7 @@ to the bindings DLL:
 <!-- MyGame.csproj -->
 <Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup>
-    <TargetFramework>net8.0</TargetFramework>
+    <TargetFramework>net9.0</TargetFramework>
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
   </PropertyGroup>
 
@@ -690,13 +689,13 @@ Output:
 cd F:\o3de\Assets\Scripts\AudioGem
 dotnet build -c Release
 
-# DLL is now at: bin/Release/net8.0/AudioGem.dll
+# DLL is now at: bin/Release/net9.0/AudioGem.dll
 ```
 
 ### Step 4 — Deploy
 
 ```powershell
-copy bin\Release\net8.0\AudioGem.dll  F:\MyProject\Bin\Scripts\AudioGem.dll
+copy bin\Release\net9.0\AudioGem.dll  F:\MyProject\Bin\Scripts\AudioGem.dll
 ```
 
 ### Step 5 — Reference from Your Game Project
@@ -705,7 +704,7 @@ copy bin\Release\net8.0\AudioGem.dll  F:\MyProject\Bin\Scripts\AudioGem.dll
 ```xml
 <Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup>
-    <TargetFramework>net8.0</TargetFramework>
+    <TargetFramework>net9.0</TargetFramework>
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
     <OutputPath>..\..\Bin\Scripts\</OutputPath>
     <AppendTargetFrameworkToOutputPath>false</AppendTargetFrameworkToOutputPath>
@@ -993,7 +992,7 @@ MyProject/
 │       │   ├── InternalCalls.g.cs        ← function pointers
 │       │   ├── RigidBodyComponent.g.cs   ← wrapper classes
 │       │   ├── FluentExtensions.g.cs     ← With*() methods
-│       │   └── bin/Release/net8.0/
+│       │   └── bin/Release/net9.0/
 │       │       └── PhysicsGem.dll        ← compiled bindings DLL
 │       │
 │       └── MyGame/                       ← YOUR game scripts

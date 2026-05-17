@@ -29,56 +29,92 @@ your first project to accessing components, physics, the reflection API, and mor
 
 ### Prerequisites
 
-- .NET 8.0 or 9.0 SDK installed (`dotnet --version`)
-- O3DE Editor built with the **O3DESharp** Gem enabled
+- **.NET 9.0 SDK** installed (`dotnet --list-sdks` should show a 9.x).
+- **.NET 9.0 Runtime** installed (`dotnet --list-runtimes` should show
+  `Microsoft.NETCore.App 9.0.x`). Coral.Managed's runtimeconfig pins to
+  net9.0 with `rollForward: LatestMinor`, so a machine with only
+  .NET 10 installed will fail to host.
+- O3DE Editor built with the **O3DESharp** Gem enabled.
 
 ### Create a C# Project
 
-The easiest way is through the O3DE Editor's **Tools → C# Project Manager** (if
-the editor Python tools are registered), or manually:
+**Recommended:** Tools → C# Scripting → **Create C# Project…**. The
+editor's project manager generates the csproj from a template that
+already declares `net9.0`, references `O3DE.Core` correctly, and
+includes the Phase 16b `DeployToBinScripts` MSBuild target that
+auto-deploys to `<ProjectPath>/Bin/Scripts/` on every build.
 
-```
-<YourProject>/
-└── Assets/
-    └── Scripts/
-        └── MyGame/
-            ├── MyGame.csproj
-            └── GameScript.cs
-```
-
-**MyGame.csproj:**
+**Manual (if you must):** lay out the project under
+`<YourProject>/Gem/Source/CSharp/<MyGame>/` (canonical, matches the
+template) and use this csproj:
 
 ```xml
 <Project Sdk="Microsoft.NET.Sdk">
+
   <PropertyGroup>
     <TargetFramework>net9.0</TargetFramework>
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
     <OutputPath>bin/$(Configuration)</OutputPath>
     <AppendTargetFrameworkToOutputPath>false</AppendTargetFrameworkToOutputPath>
+    <!-- Phase 16b deploy target -->
+    <O3DEDeployPath Condition="'$(O3DEDeployPath)' == ''">$(MSBuildProjectDirectory)\..\..\..\..\Bin\Scripts</O3DEDeployPath>
   </PropertyGroup>
+
   <ItemGroup>
     <Reference Include="O3DE.Core">
-      <HintPath>../../../Bin/Scripts/O3DE.Core.dll</HintPath>
+      <HintPath>$(O3DEDeployPath)\O3DE.Core.dll</HintPath>
     </Reference>
     <Reference Include="Coral.Managed">
-      <HintPath>../../../Bin/Scripts/Coral/Coral.Managed.dll</HintPath>
+      <HintPath>$(O3DEDeployPath)\Coral\Coral.Managed.dll</HintPath>
       <Private>false</Private>
     </Reference>
   </ItemGroup>
+
+  <Target Name="DeployToBinScripts" AfterTargets="Build">
+    <MakeDir Directories="$(O3DEDeployPath)"/>
+    <Copy SourceFiles="$(TargetPath)"
+          DestinationFolder="$(O3DEDeployPath)"
+          SkipUnchangedFiles="true"
+          ContinueOnError="true"/>
+    <Copy SourceFiles="$(TargetDir)$(AssemblyName).pdb"
+          DestinationFolder="$(O3DEDeployPath)"
+          SkipUnchangedFiles="true"
+          ContinueOnError="true"
+          Condition="Exists('$(TargetDir)$(AssemblyName).pdb')"/>
+  </Target>
+
 </Project>
 ```
+
+> If you created the csproj before Phase 16b shipped, just run
+> Tools → C# Scripting → **Migrate C# Project Files** to add the deploy
+> target. The migration writes a `*.pre-deploy-target.bak` backup first.
 
 ### Build
 
 ```bash
-cd <YourProject>/Assets/Scripts/MyGame
+cd <YourProject>/Gem/Source/CSharp/MyGame
 dotnet build -c Debug
 ```
 
-Copy the resulting `MyGame.dll` (or configure the output path) to
-`<YourProject>/Bin/Scripts/GameScripts.dll` — this is the assembly the engine
-loads by default. You can change the name via the Settings Registry key
-`/O3DE/O3DESharp/UserAssemblyPath`.
+The `DeployToBinScripts` target copies `MyGame.dll` + `MyGame.pdb` to
+`<YourProject>/Bin/Scripts/` automatically — no manual copy step. The
+editor's file watcher (Phase 16a) then picks up the change and dispatches
+a reload.
+
+Register the assembly with the runtime via a setreg under
+`<ProjectPath>/Registry/`:
+
+```json
+{ "O3DE": { "O3DESharp": { "UserAssemblies": [
+    { "AssemblyName": "MyGame.dll" }
+]}}}
+```
+
+The runtime resolves each entry against `<ProjectPath>/Bin/Scripts/`, so
+the `AssemblyName` field is just the filename. Multiple assemblies can
+be listed — they all share one assembly load context and can reference
+each other.
 
 ### Add a Script to an Entity
 
@@ -767,36 +803,51 @@ The engine expects this structure in your project directory:
         │   └── Coral.Managed.deps.json
         ├── O3DE.Core.dll                      ← Core scripting API
         ├── O3DE.Core.deps.json
-        └── GameScripts.dll                    ← Your compiled C# project
+        ├── MyGame.dll                         ← Your compiled C# project (was "GameScripts.dll" pre-Phase 16)
+        └── MyGame.pdb                         ← Symbols for debugger attach
 ```
 
 ### Automatic Deployment
 
-O3DESharp **automatically finds and deploys** the latest `Coral.Managed.dll` and
-`O3DE.Core.dll` on startup. It searches:
+Three pieces of automatic deployment cooperate, listed in the order they run:
 
-- Gem staging directories (`Gems/O3DESharp/bin/Coral/`, `Gems/O3DESharp/bin/O3DE.Core/`)
-- `dotnet build` output (`Assets/Scripts/O3DE.Core/bin/{Debug|Release}/{net8.0|net9.0}/`)
-- CMake build workspace (`Build/`, `_deps/`)
-- Install tree (`install/Gems/O3DESharp/...`)
-
-It compares timestamps and always picks the **newest** version, copying it only if
-the deployed copy is missing or stale.
+1. **CMake staging** (`O3DESharp.StageCoral`, `O3DESharp.StageO3DECore`). When
+   the engine builds, custom targets stage `Coral.Managed.dll`,
+   `O3DE.Core.dll`, and their runtimeconfig/deps under
+   `Gems/O3DESharp/bin/Coral/` and `Gems/O3DESharp/bin/O3DE.Core/`.
+2. **Runtime auto-deploy** (`O3DESharpSystemComponent::Activate` calling
+   `DeployLatestManagedAssemblies` in Debug / Profile). On editor start
+   the runtime walks the gem's staging directories and the dotnet build
+   output (`Assets/Scripts/O3DE.Core/bin/{Debug|Release}/net9.0/`) and
+   copies the newest `Coral.Managed.dll` / `O3DE.Core.dll` into the
+   project's `Bin/Scripts/Coral/` and `Bin/Scripts/` respectively.
+   Skipped in Release.
+3. **User-csproj MSBuild deploy** (Phase 16b's `DeployToBinScripts`
+   target). On every successful build of a user C# project, MSBuild
+   copies the output DLL + PDB into `<ProjectPath>/Bin/Scripts/`. The
+   editor's file watcher (Phase 16a) then dispatches a hot reload.
 
 ### Manual Build & Deploy
 
+If you bypass MSBuild's deploy target — e.g. running `dotnet build`
+against an unmigrated csproj — copy the output yourself:
+
 ```bash
-# 1. Build O3DE.Core (if modified)
+# 1. Build O3DE.Core (if you modified it)
 cd <engine>/Gems/O3DESharp/Assets/Scripts/O3DE.Core
 dotnet build -c Debug
 
 # 2. Build your game scripts
-cd <project>/Assets/Scripts/MyGame
+cd <project>/Gem/Source/CSharp/MyGame
 dotnet build -c Debug
 
-# 3. Copy to deploy location (if not using auto-deploy)
-cp bin/Debug/MyGame.dll <project>/Bin/Scripts/GameScripts.dll
+# 3. Copy the output to where the runtime loads from
+cp bin/Debug/MyGame.dll <project>/Bin/Scripts/MyGame.dll
+cp bin/Debug/MyGame.pdb <project>/Bin/Scripts/MyGame.pdb
 ```
+
+…and run Tools → C# Scripting → **Migrate C# Project Files** so future
+builds deploy automatically.
 
 ### Settings Registry
 
@@ -806,13 +857,21 @@ Custom paths can be configured in `<Project>/Registry/o3desharp.setreg`:
 {
     "O3DE": {
         "O3DESharp": {
-            "UserAssemblyPath": "C:/custom/path/to/GameScripts.dll",
-            "CoralDirectory": "C:/custom/path/to/Coral/",
+            "UserAssemblies": [
+                { "AssemblyName": "MyGame.dll" },
+                { "AssemblyName": "MyGame.AI.dll" }
+            ],
+            "CoralDirectory":      "C:/custom/path/to/Coral/",
             "CoreApiAssemblyPath": "C:/custom/path/to/O3DE.Core.dll"
         }
     }
 }
 ```
+
+`UserAssemblies` (array, post-Phase 1) is the canonical form; each entry
+is resolved against `<ProjectPath>/Bin/Scripts/`. The legacy
+`UserAssemblyPath` (single string) is still honored as a fallback for
+existing projects but new projects should use the array.
 
 ---
 

@@ -1,6 +1,6 @@
 # O3DESharp - C# Scripting for O3DE
 
-O3DESharp is a Gem that adds C# scripting support to the Open 3D Engine (O3DE) using the [Coral](https://github.com/StudioCherno/Coral) .NET host library.
+O3DESharp is a Gem that adds C# scripting support to the Open 3D Engine (O3DE) using the [Coral](https://github.com/WatchDogStudios/Coral) .NET host library (a fork of [StudioCherno/Coral](https://github.com/StudioCherno/Coral) with WD-Studios-specific fixes).
 
 ## Overview
 
@@ -12,9 +12,48 @@ O3DESharp enables game developers to write gameplay logic in C# instead of (or a
 - **Familiar API**: Entity/Component model similar to other popular engines
 - **Automated Reflection**: Automatic access to any type reflected to O3DE's BehaviorContext
 
+## What's New (Phase 16 + recent fixes)
+
+Recent iterations added the editor + workflow polish that was always
+the missing half of "hot reload":
+
+- **Auto-reload on file change** (Phase 16a). The editor watches
+  `<ProjectPath>/Bin/Scripts/` and reloads user assemblies automatically
+  when a DLL is rebuilt. Toggle via Tools → C# Scripting → "Reload
+  Scripts on File Change".
+- **MSBuild post-build deploy** (Phase 16b). New `.csproj`s from the
+  template carry a `DeployToBinScripts` target that copies the build
+  output to the engine's load path — so IDE builds (Rider / Visual
+  Studio / `dotnet build`) all auto-reload without going through the
+  editor's Build menu. Existing csprojs: run Tools → C# Scripting →
+  "Migrate C# Project Files" once.
+- **`[ExposedProperty]` typed widgets** for `bool` / `int` / `float` /
+  `string`. Phase 14 flipped the `EditContext` to the
+  `CSharpExposedProperties` handler.
+- **Script picker UX**: dropdown + Browse / Create / Edit buttons on the
+  Script Class field, with recently-used classes pinned to the top.
+- Build for users other than the maintainer was fixed: the binding
+  generator's `Metadata.g.cs` no longer embeds the maintainer's drive
+  letter; user-project csproj template now declares net9.0 to match
+  `O3DE.Core`; the Coral Python EBus handler creation pattern was
+  corrected to use `azlmbr.editor.CSharpEditorToolsBusHandler()` instead
+  of `azlmbr.object.create`.
+
+For installed-engine projects: `cmake --install` doesn't currently copy
+`Code/Tools/BindingGenerator/` into the install tree, so the
+ClangSharpInvoker falls back to the engine source path via
+`azlmbr.paths.engroot`. Either keep the source clone reachable or copy
+the tool dir into the install location.
+
 ## Requirements
 
 - **.NET 9.0 SDK**: Download from [https://dotnet.microsoft.com/download](https://dotnet.microsoft.com/download)
+- **.NET 9.0 Runtime** (required for any machine running the editor,
+  whether or not it builds C#). On Windows, install both packages from
+  the link above — the SDK includes a runtime, but if you only install
+  the runtime on a player's machine, Coral.Managed's
+  `runtimeconfig.json` (`tfm: net9.0`, `rollForward: LatestMinor`)
+  will require a 9.x runtime specifically.
 - **Supported Platforms**: Windows x64, Linux x64 (JIT only today).
 
 > **Roadmap, not yet implemented:** macOS, iOS, Android, and console platforms
@@ -31,15 +70,17 @@ O3DESharp enables game developers to write gameplay logic in C# instead of (or a
    o3de enable-gem --gem-name O3DESharp --project-path /path/to/your/project
    ```
 
-2. Rebuild your project
+2. Rebuild your project. CMake's `O3DESharp.StageCoral` and
+   `O3DESharp.StageO3DECore` custom targets stage `Coral.Managed.dll`,
+   `O3DE.Core.dll`, and their runtimeconfig/deps next to the engine
+   binaries automatically — no manual copy step.
 
-3. Build the C# Core API:
+3. (Optional) Build the C# Core API standalone, e.g. for IDE intellisense
+   when working on the API itself:
    ```bash
    cd Gems/O3DESharp/Assets/Scripts/O3DE.Core
    dotnet build -c Release
    ```
-
-4. Copy the built assemblies to your project's script directory
 
 ## Quick Start
 
@@ -411,29 +452,79 @@ using (NativeObject obj = NativeReflection.CreateInstance("SomeClass"))
 
 ## Configuration
 
-The O3DESharp system can be configured via the Settings Registry:
+The O3DESharp system can be configured via the Settings Registry. Drop a
+`.setreg` file under `<ProjectPath>/Registry/`:
 
 ```json
 {
     "O3DE": {
         "O3DESharp": {
-            "CoralDirectory": "path/to/Coral",
-            "CoreApiAssemblyPath": "path/to/O3DE.Core.dll",
-            "UserAssemblyPath": "path/to/GameScripts.dll"
+            "CoralDirectory":       "path/to/Coral",
+            "CoreApiAssemblyPath":  "path/to/O3DE.Core.dll",
+
+            "UserAssemblies": [
+                { "AssemblyName": "MyGameScripts.dll" },
+                { "AssemblyName": "MyPhysicsHelpers.dll" }
+            ],
+
+            "AutoReload":              true,
+            "AutoReloadDebounceMs":    500
         }
     }
 }
 ```
 
+Field reference:
+
+- `UserAssemblies` — preferred form. Array of `{ "AssemblyName": "..." }`.
+  Each entry is resolved relative to `<ProjectPath>/Bin/Scripts/`, so the
+  `AssemblyName` field is just the filename. The runtime loads every entry
+  into a single shared assembly load context (so they can reference each
+  other freely).
+- `UserAssemblyPath` (single string) — legacy fallback for projects that
+  only ship one user assembly. Still honored, but new projects should
+  use the array form.
+- `AutoReload` (Phase 16) — when true, the editor watches
+  `<ProjectPath>/Bin/Scripts/` for DLL changes and triggers
+  `ReloadUserAssemblies` automatically. Defaults to true in Debug / Profile
+  builds, false in Release. Toggle via the menu (see below) instead of
+  editing the setreg for one-off testing.
+- `AutoReloadDebounceMs` — milliseconds of inactivity to wait before
+  firing the reload. Default 500 (sized so a typical `dotnet build`'s
+  multi-chunk write coalesces into one reload).
+
 ## Hot Reload
 
 O3DESharp supports hot-reloading of C# assemblies during development:
 
-1. Make changes to your C# code
-2. Rebuild the assembly
-3. In the Editor, trigger a reload (exact mechanism TBD)
+1. Edit your C# script in your IDE (Rider / VS / VS Code).
+2. Build the project (MSBuild's `DeployToBinScripts` target — baked into
+   the user csproj template — copies the output to
+   `<ProjectPath>/Bin/Scripts/`).
+3. Either:
+   - **Auto:** the editor's file watcher (Phase 16a) notices the DLL
+     change, waits out the debounce window, and dispatches
+     `O3DESharpRequestBus::ReloadUserAssemblies`. Live components on
+     active entities drop their refs through
+     `O3DESharpHotReloadNotificationBus`, the assembly load context is
+     torn down and recreated, and components rebind to the new types.
+     Inspector `[ExposedProperty]` fields re-reflect from the new
+     assembly too. No editor action required.
+   - **Manual:** Tools → C# Scripting → **Reload Scripts** triggers the
+     same code path immediately. Useful when auto-reload is off or you
+     want to be explicit.
 
-**Note**: Hot reload is only available in Debug and Profile builds.
+To disable auto-reload for a session: Tools → C# Scripting → uncheck
+**Reload Scripts on File Change**.
+
+**Limitations**:
+- Hot reload is only available in Debug and Profile builds. Release sets
+  `CoralHostConfig::enableHotReload = false` and `ReloadUserAssemblies`
+  becomes a no-op.
+- Existing `.csproj` files written before Phase 16b don't have the
+  `DeployToBinScripts` target. Run Tools → C# Scripting → **Migrate C#
+  Project Files** once per project to add it; the existing csproj is
+  backed up to `*.csproj.pre-deploy-target.bak`.
 
 ## Architecture
 
@@ -507,10 +598,10 @@ This approach means that:
 
 - **Template Instantiations**: C++ template types (e.g., `AZStd::vector<AZ::Vector3>`, `AZ::RHI::Handle<uint>`) are automatically skipped during binding generation since they cannot be meaningfully represented as standalone C# classes. Use a `typedef` alias and reflect that instead.
 - **Input System**: Direct input access is not yet fully implemented. Use O3DE's Input component with BehaviorContext for now.
-- **EBus Handlers**: Creating C# EBus handlers (receiving events) is not yet supported. Only sending/broadcasting is available.
+- **EBus Handlers (managed-side)**: Creating EBus handlers from user C# code (where a `class : SomeBus::Handler` lives in your script) is not yet supported. The editor-tooling bus pattern (Python → `azlmbr.<module>.<bus>Handler()`) works fine for editor scripts. Sending and broadcasting EBus events from C# is fully supported in both directions.
 - **Generics**: Generic types in BehaviorContext are not fully supported.
-- **Editor Integration**: Script class selection is currently a text field. A dropdown picker is planned.
 - **Performance**: The reflection API is slower than direct bindings. Use direct APIs for performance-critical code.
+- **Asset references in `[ExposedProperty]`**: typed widgets exist for `bool`, integer types, `float`, `double`, and `string`. `Vector3` / `Quaternion` / `Color` / `EntityId` / `AssetReference<T>` are planned. The inspector falls back to a generic key/value editor for those.
 
 ## Troubleshooting
 
