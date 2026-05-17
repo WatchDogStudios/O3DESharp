@@ -487,6 +487,12 @@ if(PAL_TRAIT_BUILD_HOST_TOOLS)
                 Gem::Atom_Utils.Static
                 Gem::Atom_Feature_Common.Public
                 Gem::CommonFeaturesAtom.Static
+                # Needed for EditorPythonBindings::EditorPythonBindingsNotificationBus,
+                # which O3DESharpEditorSystemComponent connects to so its
+                # OnPostInitialize() hook can import csharp_editor_bootstrap as soon
+                # as the Python VM is ready (instead of waiting for the first menu
+                # click).
+                Gem::EditorPythonBindings.Static
     )
 
     ly_add_target(

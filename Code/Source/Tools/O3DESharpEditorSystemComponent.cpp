@@ -34,6 +34,11 @@ namespace O3DESharp
     // Menu identifier for our submenu
     static constexpr const char* CSharpScriptingMenuId = "o3de.menu.o3desharp.scripting";
 
+    // Forward declaration so OnPostInitialize (defined high in the file) can
+    // call GetPythonPathSetup() (defined lower for proximity to its other
+    // users).
+    static constexpr const char* GetPythonPathSetup();
+
     AZ_COMPONENT_IMPL(O3DESharpEditorSystemComponent, "O3DESharpEditorSystemComponent",
         O3DESharpEditorSystemComponentTypeId, BaseSystemComponent);
 
@@ -121,6 +126,7 @@ namespace O3DESharp
         O3DESharpSystemComponent::Activate();
         AzToolsFramework::EditorEvents::Bus::Handler::BusConnect();
         AzToolsFramework::ActionManagerRegistrationNotificationBus::Handler::BusConnect();
+        EditorPythonBindings::EditorPythonBindingsNotificationBus::Handler::BusConnect();
 
         // Register the C# script class property handler so EditorCSharpScriptComponent's
         // m_scriptClassName field gets the rich combo box + completer instead of a plain
@@ -171,9 +177,43 @@ namespace O3DESharp
             m_scriptClassPropertyHandler = nullptr;
         }
 
+        EditorPythonBindings::EditorPythonBindingsNotificationBus::Handler::BusDisconnect();
         AzToolsFramework::ActionManagerRegistrationNotificationBus::Handler::BusDisconnect();
         AzToolsFramework::EditorEvents::Bus::Handler::BusDisconnect();
         O3DESharpSystemComponent::Deactivate();
+    }
+
+    void O3DESharpEditorSystemComponent::OnPostInitialize()
+    {
+        // Python VM is now up and EBus reflection has completed. Import
+        // csharp_editor_bootstrap proactively so the CSharpEditorToolsBus
+        // Python handler is connected for the Component Inspector's Browse
+        // Scripts button - WITHOUT requiring the user to first open one of
+        // the Tools > C# Scripting menu items as a side effect to load it.
+        //
+        // The bootstrap's __init__.py chain imports csharp_editor_tools, and
+        // the bottom of that module calls connect_ebus_handler() which:
+        //   1. creates the handler via azlmbr.editor.CSharpEditorToolsBusHandler()
+        //   2. handler.connect() to attach to the bus
+        //   3. handler.add_callback(...) for each of the 8 EBus events
+        // After this hook fires, OnBrowseScript / OnCreateScript work end to end.
+        AZ_TracePrintf("O3DESharp", "OnPostInitialize: importing csharp_editor_bootstrap to wire the editor tools bus");
+
+        AZStd::string pythonCode = AZStd::string::format(R"(
+%s
+try:
+    import csharp_editor_bootstrap  # noqa: F401  - side-effect import: connects CSharpEditorToolsBus handler
+except Exception as e:
+    import azlmbr.legacy.general as general
+    import traceback
+    general.log(f"[O3DESharp] Failed to import csharp_editor_bootstrap on startup: {e}")
+    traceback.print_exc()
+)", GetPythonPathSetup());
+
+        AzToolsFramework::EditorPythonRunnerRequestBus::Broadcast(
+            &AzToolsFramework::EditorPythonRunnerRequestBus::Events::ExecuteByString,
+            pythonCode.c_str(),
+            false /* is file path */);
     }
 
     void O3DESharpEditorSystemComponent::OnActionRegistrationHook()

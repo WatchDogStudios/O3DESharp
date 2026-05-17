@@ -10,6 +10,7 @@
 
 #include <AzToolsFramework/API/ToolsApplicationAPI.h>
 #include <AzToolsFramework/ActionManager/ActionManagerRegistrationNotificationBus.h>
+#include <EditorPythonBindings/EditorPythonBindingsBus.h>
 
 #include <Clients/O3DESharpSystemComponent.h>
 
@@ -30,6 +31,7 @@ namespace O3DESharp
         : public O3DESharpSystemComponent
         , protected AzToolsFramework::EditorEvents::Bus::Handler
         , protected AzToolsFramework::ActionManagerRegistrationNotificationBus::Handler
+        , protected EditorPythonBindings::EditorPythonBindingsNotificationBus::Handler
     {
         using BaseSystemComponent = O3DESharpSystemComponent;
     public:
@@ -53,6 +55,14 @@ namespace O3DESharp
         // ActionManagerRegistrationNotificationBus
         void OnActionRegistrationHook() override;
         void OnMenuBindingHook() override;
+
+        // EditorPythonBindingsNotificationBus - fires when the Python VM is
+        // ready. We use it to import csharp_editor_bootstrap (which in turn
+        // imports csharp_editor_tools, which connects the CSharpEditorToolsBus
+        // Python handler). Without this hook the handler is only created when
+        // the user clicks one of the Tools > C# Scripting menu items, so the
+        // Component Inspector's Browse Scripts button doesn't work until then.
+        void OnPostInitialize() override;
 
         // Helper methods for C# scripting actions
         void OpenCSharpProjectManager();
