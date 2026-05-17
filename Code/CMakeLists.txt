@@ -468,9 +468,16 @@ if(PAL_TRAIT_BUILD_HOST_TOOLS)
     # The ${gem_name}.Editor.Private.Object target is an internal target
     # which is only to be used by this gems CMakeLists.txt and any subdirectories
     # Other gems should not use this target
+    #
+    # AUTOMOC is enabled here because Phase 16's CSharpAssemblyWatcher uses
+    # Q_OBJECT (it owns a QFileSystemWatcher and connects to its signals via
+    # QObject::connect). The existing CSharpExposedPropertiesHandler only uses
+    # QWidget without Q_OBJECT, so AUTOMOC wasn't needed previously - but the
+    # new watcher trips MOC's "Q_OBJECT without moc'd output" error without it.
     ly_add_target(
         NAME ${gem_name}.Editor.Private.Object STATIC
         NAMESPACE Gem
+        AUTOMOC
         FILES_CMAKE
             o3desharp_editor_private_files.cmake
         TARGET_PROPERTIES
@@ -493,6 +500,11 @@ if(PAL_TRAIT_BUILD_HOST_TOOLS)
                 # as the Python VM is ready (instead of waiting for the first menu
                 # click).
                 Gem::EditorPythonBindings.Static
+                # Phase 16: CSharpAssemblyWatcher uses QFileSystemWatcher / QTimer
+                # to debounce and react to Bin/Scripts/ changes. AzQtComponents
+                # already brings Qt6Widgets transitively, but listing Qt6::Core
+                # explicitly makes the dependency intent obvious.
+                3rdParty::Qt::Core
     )
 
     ly_add_target(

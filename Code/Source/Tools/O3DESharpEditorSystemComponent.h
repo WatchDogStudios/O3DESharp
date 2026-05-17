@@ -8,6 +8,7 @@
 
 #pragma once
 
+#include <AzCore/std/smart_ptr/unique_ptr.h>
 #include <AzToolsFramework/API/ToolsApplicationAPI.h>
 #include <AzToolsFramework/ActionManager/ActionManagerRegistrationNotificationBus.h>
 #include <EditorPythonBindings/EditorPythonBindingsBus.h>
@@ -18,7 +19,14 @@ namespace O3DESharp
 {
     class CSharpScriptClassPropertyHandler;
     class CSharpExposedPropertiesHandler;
+    class CSharpAssemblyWatcher;
 }
+
+// AZStd::unique_ptr<QObject-derived> needs the full destructor visible at
+// the point where the unique_ptr is destroyed, but we only forward-declare
+// CSharpAssemblyWatcher here. Out-of-line destructor on the system
+// component does the actual delete in the .cpp where the watcher header is
+// included.
 
 namespace O3DESharp
 {
@@ -70,6 +78,15 @@ namespace O3DESharp
         void CreateCSharpScript();
         void BuildCSharpProjects();
         void ReloadCSharpScripts();
+        void ToggleAutoReloadScripts();
+
+        // Phase 16: file watcher lifecycle helpers. StartAssemblyWatcher
+        // reads the AutoReload settings, decides whether the watcher should
+        // run, and (if so) starts it on <ProjectPath>/Bin/Scripts/.
+        // StopAssemblyWatcher tears it down on Deactivate.
+        void StartAssemblyWatcher();
+        void StopAssemblyWatcher();
+        bool IsAutoReloadEnabled() const;
 
         // Owned by this component; raw pointer because the property-handler bus
         // takes ownership semantics through Register/UnregisterPropertyType.
@@ -82,5 +99,13 @@ namespace O3DESharp
         // the default UIHandler, so this handler is dormant until a
         // follow-up flips that switch.
         CSharpExposedPropertiesHandler* m_exposedPropertiesHandler = nullptr;
+
+        // Phase 16: file watcher that auto-reloads user assemblies when DLLs
+        // change in Bin/Scripts/. Editor-only - never linked into the runtime
+        // module. Owned by AZStd::unique_ptr so the watcher's QObject parent
+        // is the system component lifetime, not a transient stack frame.
+        // Out-of-line destructor in the .cpp so the unique_ptr can see the
+        // full CSharpAssemblyWatcher class.
+        AZStd::unique_ptr<CSharpAssemblyWatcher> m_assemblyWatcher;
     };
 } // namespace O3DESharp

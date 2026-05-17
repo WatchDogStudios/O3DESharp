@@ -9,12 +9,16 @@
 #include <AzCore/Serialization/SerializeContext.h>
 #include "O3DESharpEditorSystemComponent.h"
 #include "CSharpEditorToolsBus.h"
+#include "CSharpAssemblyWatcher.h"
 #include "Components/CSharpScriptClassPropertyHandler.h"
 #include "Components/CSharpExposedPropertiesHandler.h"
 
 #include <O3DESharp/O3DESharpBus.h>
 #include <O3DESharp/O3DESharpTypeIds.h>
 
+#include <AzCore/Settings/SettingsRegistry.h>
+#include <AzCore/Utils/Utils.h>
+#include <AzCore/IO/Path/Path.h>
 #include <AzToolsFramework/ActionManager/Action/ActionManagerInterface.h>
 #include <AzToolsFramework/ActionManager/Menu/MenuManagerInterface.h>
 #include <AzToolsFramework/API/EditorPythonRunnerRequestsBus.h>
@@ -30,9 +34,25 @@ namespace O3DESharp
     static constexpr const char* CSharpCreateScriptActionId = "o3de.action.o3desharp.createScript";
     static constexpr const char* CSharpBuildProjectsActionId = "o3de.action.o3desharp.buildProjects";
     static constexpr const char* CSharpReloadScriptsActionId = "o3de.action.o3desharp.reloadScripts";
+    static constexpr const char* CSharpAutoReloadToggleActionId = "o3de.action.o3desharp.autoReloadToggle";
 
     // Menu identifier for our submenu
     static constexpr const char* CSharpScriptingMenuId = "o3de.menu.o3desharp.scripting";
+
+    // Phase 16 settings keys.
+    //   /O3DE/O3DESharp/AutoReload          - bool. When true, the editor
+    //                                         watches Bin/Scripts/ and auto-
+    //                                         reloads on DLL change. Default
+    //                                         honors the same Debug/Profile
+    //                                         gate as CoralHostConfig
+    //                                         ::enableHotReload.
+    //   /O3DE/O3DESharp/AutoReloadDebounceMs - int. ms to wait after last file
+    //                                          event before firing the reload.
+    //                                          Default 500.
+    static constexpr const char* AutoReloadSettingKey =
+        "/O3DE/O3DESharp/AutoReload";
+    static constexpr const char* AutoReloadDebounceSettingKey =
+        "/O3DE/O3DESharp/AutoReloadDebounceMs";
 
     // Forward declaration so OnPostInitialize (defined high in the file) can
     // call GetPythonPathSetup() (defined lower for proximity to its other
@@ -153,10 +173,24 @@ namespace O3DESharp
                 &PropertyTypeRegistrationMessages::Bus::Events::RegisterPropertyType,
                 m_exposedPropertiesHandler);
         }
+
+        // Phase 16: auto-reload watcher on <ProjectPath>/Bin/Scripts/. Starts
+        // only when the AutoReload setting allows it; defaults follow the
+        // existing CoralHostConfig::enableHotReload gate (Debug/Profile yes,
+        // Release no). The watcher itself broadcasts on O3DESharpRequestBus
+        // and the runtime gem owns the bus, so we need O3DESharpSystemComponent
+        // already activated above - which BaseSystemComponent::Activate
+        // guarantees.
+        StartAssemblyWatcher();
     }
 
     void O3DESharpEditorSystemComponent::Deactivate()
     {
+        // Stop the auto-reload watcher first - it broadcasts on
+        // O3DESharpRequestBus which is about to drop its handler when
+        // BaseSystemComponent::Deactivate runs.
+        StopAssemblyWatcher();
+
         // Unregister + delete the property handlers before tearing down anything
         // else that they might depend on.
         using AzToolsFramework::PropertyTypeRegistrationMessages;
@@ -302,6 +336,27 @@ except Exception as e:
                 [this]() { ReloadCSharpScripts(); }
             );
         }
+
+        // Phase 16: "Reload Scripts on file change" toggle. Flips the
+        // /O3DE/O3DESharp/AutoReload setting and Starts / Stops the watcher.
+        // Registered as a checkable action so the menu shows a checkmark when
+        // auto-reload is on.
+        {
+            AzToolsFramework::ActionProperties actionProperties;
+            actionProperties.m_name = "Reload Scripts on File Change";
+            actionProperties.m_description =
+                "Watch Bin/Scripts/ and automatically reload user assemblies when DLLs change.";
+            actionProperties.m_category = "Scripting";
+            actionProperties.m_iconPath = ""; // checkable, no icon
+
+            actionManagerInterface->RegisterCheckableAction(
+                EditorIdentifiers::MainWindowActionContextIdentifier,
+                CSharpAutoReloadToggleActionId,
+                actionProperties,
+                [this]() { ToggleAutoReloadScripts(); },
+                [this]() -> bool { return IsAutoReloadEnabled(); }
+            );
+        }
     }
 
     void O3DESharpEditorSystemComponent::OnMenuBindingHook()
@@ -333,6 +388,7 @@ except Exception as e:
         menuManagerInterface->AddSeparatorToMenu(CSharpScriptingMenuId, 350);
         menuManagerInterface->AddActionToMenu(CSharpScriptingMenuId, CSharpBuildProjectsActionId, 400);
         menuManagerInterface->AddActionToMenu(CSharpScriptingMenuId, CSharpReloadScriptsActionId, 500);
+        menuManagerInterface->AddActionToMenu(CSharpScriptingMenuId, CSharpAutoReloadToggleActionId, 510);
     }
 
     // Helper to get Python code that sets up the O3DESharp module path
@@ -427,6 +483,97 @@ except Exception as e:
                 "Reload Scripts: ReloadUserAssemblies returned false. Hot reload is only "
                 "available in Debug/Profile builds and requires the O3DESharp system "
                 "component to be active. Check the log for details.");
+        }
+    }
+
+    bool O3DESharpEditorSystemComponent::IsAutoReloadEnabled() const
+    {
+        // Settings registry wins. If the user has explicitly toggled it
+        // (via the menu, or via a setreg file in the project), that value is
+        // authoritative. Otherwise default to the same gate that
+        // CoralHostConfig::enableHotReload uses: on in Debug/Profile, off in
+        // Release. The runtime hot-reload mechanism is itself gated by the
+        // same flag, so this avoids the watcher running in Release where its
+        // dispatched ReloadUserAssemblies would no-op anyway.
+        bool value = false;
+        if (auto* registry = AZ::SettingsRegistry::Get())
+        {
+            if (registry->Get(value, AutoReloadSettingKey))
+            {
+                return value;
+            }
+        }
+
+#if defined(AZ_DEBUG_BUILD) || defined(AZ_PROFILE_BUILD)
+        return true;
+#else
+        return false;
+#endif
+    }
+
+    void O3DESharpEditorSystemComponent::StartAssemblyWatcher()
+    {
+        if (!IsAutoReloadEnabled())
+        {
+            AZ_TracePrintf(
+                "O3DESharp",
+                "Auto-reload disabled (/O3DE/O3DESharp/AutoReload). Use Tools > C# Scripting > "
+                "Reload Scripts on File Change to enable it, or Reload Scripts to trigger a manual "
+                "reload after every build.\n");
+            return;
+        }
+
+        // Resolve the watch directory from the live project path. Same path
+        // the runtime uses for assembly resolution in InitializeCoralHost.
+        AZ::IO::FixedMaxPath projectPath = AZ::Utils::GetProjectPath();
+        AZ::IO::FixedMaxPath binScriptsPath = projectPath / "Bin" / "Scripts";
+
+        // Honor the debounce setting, defaulting to 500ms. The default is
+        // chosen so that dotnet build's multi-chunk DLL write (typically
+        // tens to low-hundreds of ms) coalesces into one reload.
+        AZ::s64 debounceMs = 500;
+        if (auto* registry = AZ::SettingsRegistry::Get())
+        {
+            registry->Get(debounceMs, AutoReloadDebounceSettingKey);
+        }
+
+        if (m_assemblyWatcher == nullptr)
+        {
+            m_assemblyWatcher = AZStd::make_unique<CSharpAssemblyWatcher>();
+        }
+        m_assemblyWatcher->Start(binScriptsPath.String(), static_cast<int>(debounceMs));
+    }
+
+    void O3DESharpEditorSystemComponent::StopAssemblyWatcher()
+    {
+        if (m_assemblyWatcher != nullptr)
+        {
+            m_assemblyWatcher->Stop();
+        }
+    }
+
+    void O3DESharpEditorSystemComponent::ToggleAutoReloadScripts()
+    {
+        // Flip the registry setting then start or stop the watcher
+        // accordingly. The checkable menu item's "checked" callback re-reads
+        // the same registry key, so the UI updates without an explicit poke.
+        const bool wasEnabled = IsAutoReloadEnabled();
+        const bool nowEnabled = !wasEnabled;
+
+        if (auto* registry = AZ::SettingsRegistry::Get())
+        {
+            registry->Set(AutoReloadSettingKey, nowEnabled);
+        }
+
+        if (nowEnabled)
+        {
+            StartAssemblyWatcher();
+            AZ_Printf("O3DESharp", "Auto-reload C# scripts: enabled\n");
+        }
+        else
+        {
+            StopAssemblyWatcher();
+            AZ_Printf("O3DESharp", "Auto-reload C# scripts: disabled\n");
         }
     }
 
