@@ -617,7 +617,16 @@ class _RecentClassesCache:
                 with open(path, 'r', encoding='utf-8') as f:
                     data = json.load(f)
                 if isinstance(data, list):
-                    self._recent = data[:self._MAX_RECENT]
+                    # Earlier versions accidentally added args tuples instead of
+                    # strings to this list (EBus marshaling passes all params as
+                    # a tuple - see comment in connect_ebus_handler about
+                    # callback wrapping). Drop anything that isn't a non-empty
+                    # string so we can recover without forcing the user to
+                    # delete the JSON by hand.
+                    self._recent = [
+                        entry for entry in data[:self._MAX_RECENT]
+                        if isinstance(entry, str) and entry
+                    ]
         except Exception:
             self._recent = []
     
@@ -2539,15 +2548,28 @@ def connect_ebus_handler(force_reconnect: bool = False):
         # ordering as Gem/PythonTests/PythonAssetBuilder/mock_asset_builder.py.
         connected = handler.connect()
         print(f"[O3DESharp] connect_ebus_handler: handler.connect() -> {connected}")
+
+        # PythonProxyBus::OnEventGenericHook packs ALL EBus parameters into a
+        # single pybind11 tuple and calls the registered callback with that
+        # one tuple. So our impl methods - which use natural Python signatures
+        # like (self, current_class) - need a thin adapter that unpacks the
+        # tuple with *args. Same shape as mock_asset_builder.py's
+        # `def on_create_jobs(args): request = args[0]` pattern, just expressed
+        # via splat so the impl methods can keep their named parameters.
+        def _unpack(fn):
+            def wrapper(args):
+                return fn(*args)
+            return wrapper
+
         callback_map = {
-            "GetAvailableScriptClasses": impl.GetAvailableScriptClasses,
-            "GetScriptClassNames":       impl.GetScriptClassNames,
-            "ValidateScriptClass":       impl.ValidateScriptClass,
-            "OpenScriptPicker":          impl.OpenScriptPicker,
-            "CreateNewScript":           impl.CreateNewScript,
-            "OpenScriptInEditor":        impl.OpenScriptInEditor,
-            "InvalidateCache":           impl.InvalidateCache,
-            "AddToRecentClasses":        impl.AddToRecentClasses,
+            "GetAvailableScriptClasses": _unpack(impl.GetAvailableScriptClasses),
+            "GetScriptClassNames":       _unpack(impl.GetScriptClassNames),
+            "ValidateScriptClass":       _unpack(impl.ValidateScriptClass),
+            "OpenScriptPicker":          _unpack(impl.OpenScriptPicker),
+            "CreateNewScript":           _unpack(impl.CreateNewScript),
+            "OpenScriptInEditor":        _unpack(impl.OpenScriptInEditor),
+            "InvalidateCache":           _unpack(impl.InvalidateCache),
+            "AddToRecentClasses":        _unpack(impl.AddToRecentClasses),
         }
         for event_name, callback in callback_map.items():
             ok = handler.add_callback(event_name, callback)

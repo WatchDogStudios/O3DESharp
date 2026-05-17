@@ -1148,11 +1148,45 @@ class CSharpProjectManager:
                 output_path = project_path / "bin" / configuration
                 dll_name = csproj_path.stem + ".dll"
                 dll_path = output_path / dll_name
-                
+
+                # Deploy the built assembly to <ProjectPath>/Bin/Scripts/ so
+                # the Coral runtime's UserAssemblyVisitor can find it (the
+                # visitor prepends <ProjectPath>/Bin/Scripts/ to each
+                # configured AssemblyName, with that fixed path coming from
+                # O3DESharpSystemComponent::InitializeCoralHost). Without this
+                # copy, the .csproj's bin/Release output never reaches the
+                # runtime and CSharpScriptComponent::CreateScriptInstance logs
+                # "Script class not found".
+                deployed_path = None
+                if dll_path.exists():
+                    deploy_dir = self.project_path / "Bin" / "Scripts"
+                    deploy_dir.mkdir(parents=True, exist_ok=True)
+                    deployed_path = deploy_dir / dll_name
+                    try:
+                        import shutil
+                        shutil.copy2(str(dll_path), str(deployed_path))
+                        # Also bring along the .pdb if present so the Coral
+                        # log surfaces line numbers in stack traces.
+                        pdb_path = dll_path.with_suffix(".pdb")
+                        if pdb_path.exists():
+                            shutil.copy2(str(pdb_path), str(deploy_dir / pdb_path.name))
+                    except OSError as deploy_err:
+                        return {
+                            "success": True,
+                            "message": (
+                                f"Build succeeded but deploy to {deploy_dir} failed: {deploy_err}. "
+                                f"Copy {dll_path} there manually so Coral can load it."
+                            ),
+                            "output_path": str(dll_path),
+                            "build_output": result.stdout,
+                        }
+
                 return {
                     "success": True,
-                    "message": f"Build succeeded",
-                    "output_path": str(dll_path) if dll_path.exists() else str(output_path),
+                    "message": "Build succeeded",
+                    "output_path": str(deployed_path) if deployed_path else (
+                        str(dll_path) if dll_path.exists() else str(output_path)
+                    ),
                     "build_output": result.stdout
                 }
             else:
