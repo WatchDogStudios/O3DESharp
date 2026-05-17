@@ -155,21 +155,22 @@ namespace O3DE
         /// C++ side mirrors the setting into the
         /// <c>O3DESHARP_WAIT_FOR_DEBUGGER</c> environment variable so we can
         /// read it here without a managed-side settings-registry round-trip.
+        /// Additionally, the optional
+        /// <c>O3DESHARP_WAIT_FOR_DEBUGGER_TIMEOUT_MS</c> env var overrides
+        /// the default 120s timeout for users who need more time to
+        /// confirm an IDE attach prompt (or zero to wait forever).
         ///
         /// Static (not instance) so the C++ side can invoke it via
         /// <c>Coral::Type::InvokeStaticMethod</c> on <c>O3DE.Debugger</c>
         /// directly, without having to look up the right type-with-method
-        /// for an arbitrary user script. The previous approach put this on
-        /// <see cref="ScriptComponent"/> as an instance method, but Coral's
-        /// <c>ManagedObject::InvokeMethod</c> only sees methods declared on
-        /// the most-derived type - so a user's <c>GameScript</c> instance
-        /// would fail to resolve the inherited method, surfacing as
-        /// <c>"Failed to find method '_O3DESharpWaitForAttachIfRequested'"</c>
-        /// in the editor log.
+        /// for an arbitrary user script.
         ///
         /// No-op when a debugger is already attached or when the env var
-        /// isn't set to "1". Bounded by a 60 second timeout so a forgotten
-        /// toggle on a CI runner without a debugger can never deadlock.
+        /// isn't set to "1". Bounded by a 120 second timeout by default so
+        /// a forgotten toggle on a CI runner without a debugger can never
+        /// deadlock - but generous enough for users who need to click an
+        /// "Attach?" confirmation prompt in Rider / VS / VS Code after
+        /// the auto-attach URL fires.
         /// </summary>
         public static void WaitForAttachIfRequested()
         {
@@ -182,7 +183,34 @@ namespace O3DE
             {
                 return;
             }
-            WaitForAttach(TimeSpan.FromSeconds(60));
+
+            // Default 120s. Raised from the original 60s because Rider's
+            // jetbrains:// URL attach often pops a confirmation dialog,
+            // and users sometimes have to alt-tab to find it. Configurable
+            // via env var for CI / headless cases.
+            TimeSpan timeout = TimeSpan.FromSeconds(120);
+            string? overrideMs = System.Environment.GetEnvironmentVariable("O3DESHARP_WAIT_FOR_DEBUGGER_TIMEOUT_MS");
+            if (!string.IsNullOrEmpty(overrideMs) && int.TryParse(overrideMs, out int ms))
+            {
+                timeout = ms > 0 ? TimeSpan.FromMilliseconds(ms) : Timeout.InfiniteTimeSpan;
+            }
+
+            bool attached = WaitForAttach(timeout);
+            if (!attached)
+            {
+                // The default WaitForAttach already logged a generic
+                // timeout message. Add a Phase 17d-specific hint: if the
+                // IDE attach prompt is sitting open behind another window,
+                // confirming it now and using Tools > C# Scripting >
+                // Reload Scripts re-runs OnCreate with the debugger
+                // attached - so OnCreate-only breakpoints still bind on
+                // the second pass.
+                Debug.Log(
+                    "[O3DESharp] If your IDE shows an 'Attach to process' prompt now, " +
+                    "confirm it - any breakpoints you set after this point will still " +
+                    "bind. To re-run OnCreate under the debugger, hit " +
+                    "Tools > C# Scripting > Reload Scripts after the attach completes.");
+            }
         }
     }
 }
