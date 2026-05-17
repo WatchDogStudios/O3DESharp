@@ -756,23 +756,33 @@ def attach_with_rider():
     """
     Attach JetBrains Rider's managed debugger to the editor process.
 
-    Implementation note: we use the documented JetBrains URL protocol
-    (jetbrains://rider/attach-to-process?pid=<pid>) instead of a CLI
-    subcommand. The URL handler is registered by Rider's installer and
-    works regardless of whether Rider is currently running:
+    Implementation note: Rider has no documented "attach to PID from
+    outside" automation surface in a standalone (non-Toolbox) install.
 
-      - If Rider isn't running, the URL launches it then attaches.
-      - If Rider IS running, the URL is forwarded to the existing
-        instance via its single-instance lock socket. The CLI alternative
-        ('rider64.exe attach-to-process <pid>') refuses to launch a
-        second process, surfacing as
-            "Process ... is still running and does not respond"
-        from rider64.exe and breaking the one-click attach.
+      - The CLI subcommand `rider64.exe attach-to-process <pid>` works
+        only when Rider isn't running - the single-instance lock
+        rejects the second invocation with "Process is still running
+        and does not respond".
+      - The URL protocol `jetbrains://rider/attach-to-process?pid=N`
+        was a Phase 17c guess. After testing it produces no dialog and
+        no attach - Rider's URL handler appears to silently drop
+        unknown commands, and `attach-to-process` is not in the
+        documented set.
+      - JetBrains Toolbox ships a `jb` CLI that can drive attach, but
+        not all users have Toolbox installed.
 
-    This also avoids depending on the specific CLI subcommand name
-    (which has varied across Rider versions: 'attach-to-process',
-    'attach', etc.). The URL protocol has been stable since the
-    "Debug any process from anywhere" feature shipped.
+    So this function does the most reliable thing on Windows: spawn
+    the system JIT picker (vsjitdebugger.exe -p <pid>), which presents
+    a dialog listing every registered managed-mode debugger (Rider,
+    Visual Studio, etc.). Rider's installer registers it as a managed
+    JIT debugger, so the user picks it from the list with one click
+    and Rider attaches.
+
+    That's one extra click vs the zero-click goal, but it's the only
+    mechanism we've verified actually works against a running Rider.
+    The Toolbox-CLI path could short-circuit this to zero clicks for
+    users who have Toolbox installed - if we detect that later we can
+    add it as a primary code path.
     """
     pid = _editor_pid()
     rider = _find_rider_executable()
@@ -785,15 +795,19 @@ def attach_with_rider():
         return False
 
     import os
-    url = f"jetbrains://rider/attach-to-process?pid={pid}"
-    if os.name == "nt":
-        # Use cmd /c start "" <url> rather than os.startfile - the latter
-        # is sync on some Windows builds and would block until Rider
-        # finished launching. start /b detaches and returns immediately.
-        return _spawn_detached(["cmd", "/c", "start", "", url], "Rider attach (URL)")
-    # Linux: xdg-open routes to the registered handler. JetBrains Toolbox
-    # registers the same scheme.
-    return _spawn_detached(["xdg-open", url], "Rider attach (URL)")
+    if os.name != "nt":
+        general.log(
+            f"[O3DESharp] Rider auto-attach on non-Windows requires JetBrains Toolbox "
+            f"CLI (`jb attach --pid {pid}`). Install Toolbox or attach manually via "
+            f"Run > Attach to Process in Rider (PID {pid})."
+        )
+        return False
+
+    general.log(
+        f"[O3DESharp] Opening JIT picker for PID {pid}. Click 'JetBrains Rider' "
+        f"in the dialog that appears to attach the managed debugger."
+    )
+    return _trigger_jit_debugger_for_pid(pid)
 
 
 def attach_with_vscode():
