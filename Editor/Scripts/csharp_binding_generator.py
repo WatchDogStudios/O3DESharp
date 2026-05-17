@@ -150,16 +150,49 @@ class ClangSharpInvoker:
         self.engine_path = engine_path
 
     def _find_tool(self) -> Optional[str]:
-        """Find the ClangSharp binding generator tool."""
-        # Search in common locations relative to this script
+        """Find the ClangSharp binding generator tool.
+
+        The tool ships as a .csproj that is invoked through `dotnet run`. We
+        search several roots because an installed engine (cmake --install)
+        often does NOT copy Code/Tools/BindingGenerator/ into the install
+        tree, so the loaded gem_root (which points at the install location)
+        won't have the csproj even though the developer has it under the
+        source tree.
+
+        Search order:
+          1. <loaded_gem_root>/Code/Tools/BindingGenerator/...
+             - normal case when running from a fully-populated source clone.
+          2. <engine_source>/Gems/O3DESharp/Code/Tools/BindingGenerator/...
+             - hop back from the install tree to the source clone via the
+               azlmbr engroot setting. Lets the editor find the tool even
+               when it's been deleted from the install location.
+          3. build/bin/BindingGenerator under either gem_root or cwd.
+        """
+        candidates: List[Path] = []
+
         script_dir = Path(__file__).parent
         gem_root = script_dir.parent.parent
 
-        # Known .csproj locations (most specific first)
-        csproj_candidates = [
-            gem_root / "Code" / "Tools" / "BindingGenerator" / "O3DESharp.BindingGenerator" / "O3DESharp.BindingGenerator.csproj",
-        ]
-        for csproj in csproj_candidates:
+        candidates.append(
+            gem_root / "Code" / "Tools" / "BindingGenerator" /
+            "O3DESharp.BindingGenerator" / "O3DESharp.BindingGenerator.csproj"
+        )
+
+        # Try the engine source clone via azlmbr.paths if available. This is
+        # only resolvable inside an Editor Python context, so guard the
+        # import.
+        try:
+            import azlmbr.paths as _paths
+            engroot = Path(_paths.engroot)
+            candidates.append(
+                engroot / "Gems" / "O3DESharp" / "Code" / "Tools" /
+                "BindingGenerator" / "O3DESharp.BindingGenerator" /
+                "O3DESharp.BindingGenerator.csproj"
+            )
+        except Exception:
+            pass  # Not running inside the editor; skip the azlmbr lookup.
+
+        for csproj in candidates:
             if csproj.exists():
                 self.logger.info(f"Using ClangSharp tool source project: {csproj}")
                 return str(csproj)
@@ -181,7 +214,10 @@ class ClangSharpInvoker:
                     self.logger.info(f"Found ClangSharp tool at: {path}")
                     return str(path)
 
-        self.logger.warning("ClangSharp binding generator tool not found in common locations")
+        self.logger.warning(
+            "ClangSharp binding generator tool not found in common locations. "
+            f"Searched: {[str(c) for c in candidates]}"
+        )
         return None
 
     def generate_bindings(
