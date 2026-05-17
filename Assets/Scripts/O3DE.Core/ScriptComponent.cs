@@ -56,6 +56,31 @@ namespace O3DE
         protected ulong m_entityId;
 
         /// <summary>
+        /// Phase 17b: bridge invoked by the C++ CSharpScriptComponent::Activate
+        /// before <see cref="OnCreate"/> when
+        /// <c>/O3DE/O3DESharp/WaitForDebuggerOnActivate</c> is enabled in the
+        /// settings registry. The C++ side mirrors the setting into an
+        /// environment variable so we don't need a settings-registry round
+        /// trip from managed code; reading <c>O3DESHARP_WAIT_FOR_DEBUGGER</c>
+        /// here also lets external tooling (CI, test runners) force the
+        /// pause without touching the registry.
+        ///
+        /// Method intentionally has an underscore prefix and an internal-y
+        /// shape so user scripts don't accidentally override it. Don't
+        /// rename without updating CSharpScriptComponent::Activate.
+        /// </summary>
+        public void _O3DESharpWaitForAttachIfRequested()
+        {
+            string? want = System.Environment.GetEnvironmentVariable("O3DESHARP_WAIT_FOR_DEBUGGER");
+            if (want == "1" && !Debugger.IsAttached)
+            {
+                // 60-second timeout balances "give me time to click Attach"
+                // with "don't deadlock CI runners that have no debugger".
+                Debugger.WaitForAttach(System.TimeSpan.FromSeconds(60));
+            }
+        }
+
+        /// <summary>
         /// Cached Entity wrapper (lazily initialized)
         /// </summary>
         private Entity? m_entity;

@@ -11,6 +11,7 @@
 #include <AzCore/std/smart_ptr/unique_ptr.h>
 #include <AzToolsFramework/API/ToolsApplicationAPI.h>
 #include <AzToolsFramework/ActionManager/ActionManagerRegistrationNotificationBus.h>
+#include <AzToolsFramework/Entity/EditorEntityContextBus.h>
 #include <EditorPythonBindings/EditorPythonBindingsBus.h>
 
 #include <Clients/O3DESharpSystemComponent.h>
@@ -39,6 +40,7 @@ namespace O3DESharp
         : public O3DESharpSystemComponent
         , protected AzToolsFramework::EditorEvents::Bus::Handler
         , protected AzToolsFramework::ActionManagerRegistrationNotificationBus::Handler
+        , protected AzToolsFramework::EditorEntityContextNotificationBus::Handler
         , protected EditorPythonBindings::EditorPythonBindingsNotificationBus::Handler
     {
         using BaseSystemComponent = O3DESharpSystemComponent;
@@ -90,6 +92,25 @@ namespace O3DESharp
         void TriggerJitDebugger();
         void AttachWithRider();
         void AttachWithVSCode();
+
+        // Phase 17b: settings-driven auto-attach. Reads
+        // /O3DE/O3DESharp/AutoAttachOnPlay each time the user enters game
+        // mode and triggers the configured attach method (jit/rider/vscode)
+        // before play actually starts. Off by default.
+        void CycleAutoAttachOnPlay();
+        AZStd::string GetAutoAttachOnPlay() const;
+
+        // Phase 17b: WaitForDebuggerOnActivate toggle. When on,
+        // CSharpScriptComponent::Activate blocks before OnCreate until a
+        // managed debugger attaches (managed-side polling lives on
+        // O3DE.ScriptComponent._O3DESharpWaitForAttachIfRequested).
+        void ToggleWaitForDebuggerOnActivate();
+        bool IsWaitForDebuggerOnActivateEnabled() const;
+
+        // EditorEntityContextNotificationBus - we only use OnStartPlayInEditorBegin
+        // to trigger the configured auto-attach. Hooked in Activate, dropped
+        // in Deactivate alongside the other bus handlers.
+        void OnStartPlayInEditorBegin() override;
 
         // Phase 16: file watcher lifecycle helpers. StartAssemblyWatcher
         // reads the AutoReload settings, decides whether the watcher should

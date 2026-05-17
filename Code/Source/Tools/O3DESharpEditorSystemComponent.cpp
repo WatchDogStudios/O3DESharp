@@ -45,6 +45,25 @@ namespace O3DESharp
     static constexpr const char* CSharpAttachVSCodeActionId = "o3de.action.o3desharp.attachVSCode";
     static constexpr const char* CSharpAttachDebuggerMenuId = "o3de.menu.o3desharp.attachDebugger";
 
+    // Phase 17b: settings-driven auto-attach hooks.
+    static constexpr const char* CSharpAutoAttachOnPlayActionId      = "o3de.action.o3desharp.autoAttachOnPlay";
+    static constexpr const char* CSharpWaitForDebuggerActionId       = "o3de.action.o3desharp.waitForDebuggerOnActivate";
+
+    // Settings key for /O3DE/O3DESharp/AutoAttachOnPlay. Valid values:
+    //   ""        - disabled (default)
+    //   "jit"     - trigger_jit_debugger
+    //   "rider"   - attach_with_rider
+    //   "vscode"  - attach_with_vscode
+    // The menu cycles between these values; cycle order matches the menu
+    // tooltip so the user can see what they just enabled.
+    static constexpr const char* AutoAttachOnPlaySettingKey = "/O3DE/O3DESharp/AutoAttachOnPlay";
+
+    // When true, CSharpScriptComponent::Activate blocks before OnCreate
+    // until a managed debugger attaches. Mirrored into the
+    // O3DESHARP_WAIT_FOR_DEBUGGER env var so the managed ScriptComponent
+    // base class can read it without a Coral round-trip.
+    static constexpr const char* WaitForDebuggerSettingKey = "/O3DE/O3DESharp/WaitForDebuggerOnActivate";
+
     // Menu identifier for our submenu
     static constexpr const char* CSharpScriptingMenuId = "o3de.menu.o3desharp.scripting";
 
@@ -155,6 +174,7 @@ namespace O3DESharp
         O3DESharpSystemComponent::Activate();
         AzToolsFramework::EditorEvents::Bus::Handler::BusConnect();
         AzToolsFramework::ActionManagerRegistrationNotificationBus::Handler::BusConnect();
+        AzToolsFramework::EditorEntityContextNotificationBus::Handler::BusConnect();
         EditorPythonBindings::EditorPythonBindingsNotificationBus::Handler::BusConnect();
 
         // Register the C# script class property handler so EditorCSharpScriptComponent's
@@ -221,6 +241,7 @@ namespace O3DESharp
         }
 
         EditorPythonBindings::EditorPythonBindingsNotificationBus::Handler::BusDisconnect();
+        AzToolsFramework::EditorEntityContextNotificationBus::Handler::BusDisconnect();
         AzToolsFramework::ActionManagerRegistrationNotificationBus::Handler::BusDisconnect();
         AzToolsFramework::EditorEvents::Bus::Handler::BusDisconnect();
         O3DESharpSystemComponent::Deactivate();
@@ -454,6 +475,53 @@ except Exception as e:
                 CSharpAttachVSCodeActionId, props,
                 [this]() { AttachWithVSCode(); });
         }
+
+        // Phase 17b: cycle action for auto-attach on play. The menu label
+        // self-updates by feeding a name callback that reads the current
+        // setting. RegisterAction does the basic registration; we then
+        // refresh the action's display name from the setting on every
+        // toggle. Using a plain (non-checkable) action because the option
+        // has four states (off / jit / rider / vscode), not two.
+        {
+            AzToolsFramework::ActionProperties props;
+            const AZStd::string current = GetAutoAttachOnPlay();
+            props.m_name = current.empty()
+                ? AZStd::string("Auto-attach on Game Mode: Off")
+                : AZStd::string::format("Auto-attach on Game Mode: %s", current.c_str());
+            props.m_description =
+                "Cycle through Off / JIT / Rider / VS Code. When set, the editor invokes the "
+                "chosen attach method right before Ctrl+G enters game mode, so scripts that "
+                "block in OnCreate (e.g. via O3DE.Debugger.WaitForAttach) have a debugger "
+                "ready before they're activated. Persisted in /O3DE/O3DESharp/AutoAttachOnPlay.";
+            props.m_category = "Scripting";
+
+            actionManagerInterface->RegisterAction(
+                EditorIdentifiers::MainWindowActionContextIdentifier,
+                CSharpAutoAttachOnPlayActionId, props,
+                [this]() { CycleAutoAttachOnPlay(); });
+        }
+
+        // Phase 17b: Wait For Debugger On Script Activate. Checkable so the
+        // menu shows the current state. Mirror of /O3DE/O3DESharp/
+        // WaitForDebuggerOnActivate; CSharpScriptComponent::Activate reads
+        // the same key and sets the O3DESHARP_WAIT_FOR_DEBUGGER env var the
+        // managed ScriptComponent base reads to decide whether to block.
+        {
+            AzToolsFramework::ActionProperties props;
+            props.m_name = "Wait For Debugger On Script Activate";
+            props.m_description =
+                "Block every CSharpScriptComponent::Activate before user OnCreate runs until a "
+                "managed debugger is attached (or 60s timeout). Useful for catching init-time "
+                "bugs without sprinkling O3DE.Debugger.WaitForAttach into every script. Pairs "
+                "well with Auto-attach on Game Mode.";
+            props.m_category = "Scripting";
+
+            actionManagerInterface->RegisterCheckableAction(
+                EditorIdentifiers::MainWindowActionContextIdentifier,
+                CSharpWaitForDebuggerActionId, props,
+                [this]() { ToggleWaitForDebuggerOnActivate(); },
+                [this]() -> bool { return IsWaitForDebuggerOnActivateEnabled(); });
+        }
     }
 
     void O3DESharpEditorSystemComponent::OnMenuBindingHook()
@@ -504,6 +572,9 @@ except Exception as e:
         menuManagerInterface->AddActionToMenu(CSharpAttachDebuggerMenuId, CSharpAttachVSCodeActionId,     300);
         menuManagerInterface->AddSeparatorToMenu(CSharpAttachDebuggerMenuId, 350);
         menuManagerInterface->AddActionToMenu(CSharpAttachDebuggerMenuId, CSharpCopyAttachInfoActionId,   400);
+        menuManagerInterface->AddSeparatorToMenu(CSharpAttachDebuggerMenuId, 450);
+        menuManagerInterface->AddActionToMenu(CSharpAttachDebuggerMenuId, CSharpAutoAttachOnPlayActionId, 500);
+        menuManagerInterface->AddActionToMenu(CSharpAttachDebuggerMenuId, CSharpWaitForDebuggerActionId, 600);
     }
 
     // Helper to get Python code that sets up the O3DESharp module path
@@ -764,6 +835,96 @@ except Exception as e:
     void O3DESharpEditorSystemComponent::AttachWithVSCode()
     {
         RunBootstrapFunctionAsync("attach_with_vscode");
+    }
+
+    AZStd::string O3DESharpEditorSystemComponent::GetAutoAttachOnPlay() const
+    {
+        AZStd::string value;
+        if (auto* registry = AZ::SettingsRegistry::Get())
+        {
+            registry->Get(value, AutoAttachOnPlaySettingKey);
+        }
+        return value;
+    }
+
+    void O3DESharpEditorSystemComponent::CycleAutoAttachOnPlay()
+    {
+        // off -> jit -> rider -> vscode -> off
+        const AZStd::string current = GetAutoAttachOnPlay();
+        AZStd::string next;
+        if (current.empty())          { next = "jit"; }
+        else if (current == "jit")    { next = "rider"; }
+        else if (current == "rider")  { next = "vscode"; }
+        else                          { next = ""; } // includes "vscode" and any garbage value
+
+        if (auto* registry = AZ::SettingsRegistry::Get())
+        {
+            registry->Set(AutoAttachOnPlaySettingKey, next);
+        }
+
+        AZ_Printf("O3DESharp", "Auto-attach on Game Mode: %s\n",
+            next.empty() ? "Off" : next.c_str());
+
+        // The action's display name was captured at register time. Refresh
+        // it so the menu reflects the new state without an editor restart.
+        if (auto* actionManagerInterface = AZ::Interface<AzToolsFramework::ActionManagerInterface>::Get())
+        {
+            AZStd::string label = next.empty()
+                ? AZStd::string("Auto-attach on Game Mode: Off")
+                : AZStd::string::format("Auto-attach on Game Mode: %s", next.c_str());
+            actionManagerInterface->SetActionName(CSharpAutoAttachOnPlayActionId, label);
+        }
+    }
+
+    bool O3DESharpEditorSystemComponent::IsWaitForDebuggerOnActivateEnabled() const
+    {
+        bool value = false;
+        if (auto* registry = AZ::SettingsRegistry::Get())
+        {
+            registry->Get(value, WaitForDebuggerSettingKey);
+        }
+        return value;
+    }
+
+    void O3DESharpEditorSystemComponent::ToggleWaitForDebuggerOnActivate()
+    {
+        const bool current = IsWaitForDebuggerOnActivateEnabled();
+        if (auto* registry = AZ::SettingsRegistry::Get())
+        {
+            registry->Set(WaitForDebuggerSettingKey, !current);
+        }
+        AZ_Printf("O3DESharp", "Wait For Debugger On Script Activate: %s\n",
+            !current ? "ON" : "off");
+    }
+
+    void O3DESharpEditorSystemComponent::OnStartPlayInEditorBegin()
+    {
+        // Fires from EditorEntityContextNotificationBus right before play
+        // mode actually starts ticking entities. Perfect spot to kick off
+        // an attach: the user has just hit Ctrl+G, and we've still got a
+        // few editor frames before any script runs. By the time OnCreate
+        // fires the debugger has usually finished attaching - and if not,
+        // a script can pair this with Debugger.WaitForAttach to be sure.
+        const AZStd::string method = GetAutoAttachOnPlay();
+        if (method.empty())
+        {
+            return;
+        }
+
+        const char* bootstrapFn = nullptr;
+        if (method == "jit")         { bootstrapFn = "trigger_jit_debugger"; }
+        else if (method == "rider")  { bootstrapFn = "attach_with_rider"; }
+        else if (method == "vscode") { bootstrapFn = "attach_with_vscode"; }
+        else
+        {
+            AZ_Warning("O3DESharp", false,
+                "Unknown AutoAttachOnPlay value '%s'; valid values are 'jit', 'rider', 'vscode', or empty.",
+                method.c_str());
+            return;
+        }
+
+        AZ_Printf("O3DESharp", "OnStartPlayInEditorBegin: auto-attaching via '%s'\n", method.c_str());
+        RunBootstrapFunctionAsync(bootstrapFn);
     }
 
     void O3DESharpEditorSystemComponent::ToggleAutoReloadScripts()

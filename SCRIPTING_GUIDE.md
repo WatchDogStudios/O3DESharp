@@ -737,16 +737,44 @@ required.
   which strips locals and merges step boundaries — breakpoints still
   bind, but stepping is jumpy.
 
-### One-time setup per debug session
+### One-click attach (Phase 17a / 17b)
 
-1. **Tools → C# Scripting → Copy Debugger Attach Info**. This puts the
-   editor's process ID and a step-by-step hint on the clipboard:
-   ```
-   O3DE Editor (PID 12345)
-   Attach with: Rider Run > Attach to Process > pick PID 12345 > select .NET runtime.
-                Visual Studio Debug > Attach to Process > Connection target: localhost,
-                pick PID 12345, set Attach to: 'Managed (.NET Core, .NET 5+)'.
-   ```
+Tools → C# Scripting → **Attach Debugger** is a submenu with five
+entries, listed in order of automation:
+
+| Menu item | What it does | Clicks per session |
+|---|---|---|
+| **Trigger JIT Debugger** | Spawns `vsjitdebugger.exe -p <pid>` on Windows. OS picker lists every registered managed debugger (Rider, Visual Studio, etc.); one click attaches. Cross-IDE, no detection needed. | ~3 |
+| **Attach with Rider** | Locates `rider64.exe` and runs `rider64.exe attach-to-process <pid>`. Rider pops to front already attached. | 1 |
+| **Attach with VS Code** | Opens the project folder in VS Code; press F5 to launch the bundled `O3DESharp: Attach to Editor` configuration. | 2 |
+| **Copy Debugger Attach Info** | Drops the PID + a step-by-step hint string onto the clipboard. The original fallback for IDEs without one-click support. | ~6 |
+| **Auto-attach on Game Mode** | Cycles `Off → JIT → Rider → VS Code → Off`. When set, the editor invokes the selected attach method *before* Ctrl+G actually starts play, so by the time `OnCreate` runs the debugger is bound. | 0 (after toggling once) |
+
+Plus a separate gate that pauses script activation until a debugger
+attaches:
+
+> ☑ **Wait For Debugger On Script Activate** — every
+> `CSharpScriptComponent::Activate` blocks before user `OnCreate` runs
+> until a managed debugger attaches, with a 60-second timeout. Implemented
+> in `O3DE.ScriptComponent._O3DESharpWaitForAttachIfRequested`, gated on
+> the `/O3DE/O3DESharp/WaitForDebuggerOnActivate` registry key and the
+> mirrored `O3DESHARP_WAIT_FOR_DEBUGGER` environment variable so external
+> tooling can force it.
+
+**Recommended "zero-effort" combination** (for a debugger-heavy session):
+1. Attach Debugger → Auto-attach on Game Mode → click until it says
+   **Rider** (or **VS Code**, or **JIT**).
+2. Attach Debugger → ☑ Wait For Debugger On Script Activate.
+3. Hit Ctrl+G. The editor triggers your IDE's attach automatically;
+   scripts pause at `Activate` until the debugger binds; your breakpoints
+   fire as soon as play actually starts.
+
+### Manual fallback (PID + Attach to Process)
+
+If none of the one-click options fit your workflow:
+
+1. **Tools → C# Scripting → Attach Debugger → Copy Debugger Attach
+   Info**. PID lands on the clipboard.
 2. In your IDE: **Attach to Process…** and paste the PID into the filter
    field. Pick the editor entry, and on Windows make sure the IDE is
    attaching the .NET CoreCLR / managed-mode debugger (not the native

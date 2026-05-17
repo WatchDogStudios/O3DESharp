@@ -14,6 +14,9 @@
 #include <AzCore/Serialization/EditContext.h>
 #include <AzCore/RTTI/BehaviorContext.h>
 #include <AzCore/Component/Entity.h>
+#include <AzCore/Settings/SettingsRegistry.h>
+
+#include <cstdlib> // _putenv_s / setenv for the Phase 17b debugger-wait gate
 
 namespace O3DESharp
 {
@@ -203,6 +206,39 @@ namespace O3DESharp
         {
             // Pass entity ID to the script
             SetEntityIdOnScript();
+
+            // Phase 17b: optional wait-for-debugger gate. We mirror the
+            // /O3DE/O3DESharp/WaitForDebuggerOnActivate setting into the
+            // O3DESHARP_WAIT_FOR_DEBUGGER environment variable so the
+            // managed ScriptComponent base class can read it via
+            // System.Environment.GetEnvironmentVariable without a separate
+            // C++<->managed RPC. The managed _O3DESharpWaitForAttachIfRequested
+            // method then blocks with Debugger.WaitForAttach until either a
+            // managed debugger attaches or its 60s timeout elapses.
+            //
+            // We always set the variable (to "0" when disabled) so a stale
+            // value from a previous session can't accidentally trigger the
+            // wait. _putenv_s / setenv writes to the process env table the
+            // .NET runtime has already initialized; the CoreCLR's
+            // Environment.GetEnvironmentVariable consults the live process
+            // env on every call, so no refresh is needed.
+            {
+                bool waitForDebugger = false;
+                if (auto* registry = AZ::SettingsRegistry::Get())
+                {
+                    registry->Get(waitForDebugger, "/O3DE/O3DESharp/WaitForDebuggerOnActivate");
+                }
+                const char* value = waitForDebugger ? "1" : "0";
+#if defined(AZ_PLATFORM_WINDOWS)
+                _putenv_s("O3DESHARP_WAIT_FOR_DEBUGGER", value);
+#else
+                setenv("O3DESHARP_WAIT_FOR_DEBUGGER", value, /*overwrite*/ 1);
+#endif
+                if (waitForDebugger)
+                {
+                    SafeInvokeMethod("_O3DESharpWaitForAttachIfRequested");
+                }
+            }
 
             // Push editor-configured [ExposedProperty] values into the managed
             // instance BEFORE OnCreate runs so user OnCreate code sees them.
