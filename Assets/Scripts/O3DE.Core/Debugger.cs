@@ -147,5 +147,42 @@ namespace O3DE
                 System.Diagnostics.Debugger.Break();
             }
         }
+
+        /// <summary>
+        /// Phase 17b gate called by C++ <c>CSharpScriptComponent::Activate</c>
+        /// before user <c>OnCreate</c> when
+        /// <c>/O3DE/O3DESharp/WaitForDebuggerOnActivate</c> is enabled. The
+        /// C++ side mirrors the setting into the
+        /// <c>O3DESHARP_WAIT_FOR_DEBUGGER</c> environment variable so we can
+        /// read it here without a managed-side settings-registry round-trip.
+        ///
+        /// Static (not instance) so the C++ side can invoke it via
+        /// <c>Coral::Type::InvokeStaticMethod</c> on <c>O3DE.Debugger</c>
+        /// directly, without having to look up the right type-with-method
+        /// for an arbitrary user script. The previous approach put this on
+        /// <see cref="ScriptComponent"/> as an instance method, but Coral's
+        /// <c>ManagedObject::InvokeMethod</c> only sees methods declared on
+        /// the most-derived type - so a user's <c>GameScript</c> instance
+        /// would fail to resolve the inherited method, surfacing as
+        /// <c>"Failed to find method '_O3DESharpWaitForAttachIfRequested'"</c>
+        /// in the editor log.
+        ///
+        /// No-op when a debugger is already attached or when the env var
+        /// isn't set to "1". Bounded by a 60 second timeout so a forgotten
+        /// toggle on a CI runner without a debugger can never deadlock.
+        /// </summary>
+        public static void WaitForAttachIfRequested()
+        {
+            if (IsAttached)
+            {
+                return;
+            }
+            string? want = System.Environment.GetEnvironmentVariable("O3DESHARP_WAIT_FOR_DEBUGGER");
+            if (want != "1")
+            {
+                return;
+            }
+            WaitForAttach(TimeSpan.FromSeconds(60));
+        }
     }
 }

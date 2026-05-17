@@ -581,11 +581,40 @@ def _spawn_detached(args, log_label):
         return False
 
 
+def _native_debugger_attached() -> bool:
+    """
+    Windows-only: ask the OS whether a native debugger (or VS in mixed
+    mode) is already attached to this process. Returns False on other
+    platforms and on any failure.
+
+    Note: this does NOT detect managed-only debugger attaches (e.g.
+    Rider attached to CoreCLR). For those, vsjitdebugger.exe will still
+    fail with 'A debugger is already attached', but Windows doesn't
+    expose the managed-attach state cheaply from native code - so we
+    catch the native case (cheap) and accept a noisy dialog for the
+    managed-already-attached case (rare, only happens if the user
+    chains attach attempts).
+    """
+    import os
+    if os.name != "nt":
+        return False
+    try:
+        import ctypes
+        return bool(ctypes.windll.kernel32.IsDebuggerPresent())
+    except Exception:  # noqa: BLE001 - ctypes not available, treat as unknown
+        return False
+
+
 def trigger_jit_debugger():
     """
     Windows: spawn vsjitdebugger.exe -p <pid>. The OS presents a picker
     listing every registered managed-mode debugger (Rider, Visual Studio,
     etc.) and attaches whichever the user clicks.
+
+    Skipped (with a one-line warning) when a debugger is already attached
+    - VS surfaces "Unable to attach to the crashing process. A debugger
+    is already attached." in that case, which is confusing for users who
+    triggered the action a second time.
 
     Cross-platform fallback: on Linux/Mac there is no equivalent
     OS-mediated picker. Logs an instructive message pointing at
@@ -595,6 +624,14 @@ def trigger_jit_debugger():
     from pathlib import Path
 
     pid = _editor_pid()
+
+    if _native_debugger_attached():
+        general.log(
+            f"[O3DESharp] A debugger is already attached to PID {pid}; skipping JIT picker "
+            f"to avoid the 'debugger is already attached' dialog. Detach first, or use "
+            f"Copy Debugger Attach Info if you intentionally want to attach a second debugger."
+        )
+        return False
 
     if os.name == "nt":
         jit = Path(os.environ.get("SystemRoot", r"C:\Windows")) / "System32" / "vsjitdebugger.exe"

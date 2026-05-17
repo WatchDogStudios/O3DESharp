@@ -210,18 +210,25 @@ namespace O3DESharp
             // Phase 17b: optional wait-for-debugger gate. We mirror the
             // /O3DE/O3DESharp/WaitForDebuggerOnActivate setting into the
             // O3DESHARP_WAIT_FOR_DEBUGGER environment variable so the
-            // managed ScriptComponent base class can read it via
-            // System.Environment.GetEnvironmentVariable without a separate
-            // C++<->managed RPC. The managed _O3DESharpWaitForAttachIfRequested
-            // method then blocks with Debugger.WaitForAttach until either a
-            // managed debugger attaches or its 60s timeout elapses.
+            // managed O3DE.Debugger.WaitForAttachIfRequested() can read it
+            // without a separate C++<->managed RPC.
             //
             // We always set the variable (to "0" when disabled) so a stale
             // value from a previous session can't accidentally trigger the
             // wait. _putenv_s / setenv writes to the process env table the
-            // .NET runtime has already initialized; the CoreCLR's
-            // Environment.GetEnvironmentVariable consults the live process
-            // env on every call, so no refresh is needed.
+            // .NET runtime already initialized; CoreCLR's
+            // Environment.GetEnvironmentVariable consults live process env
+            // on every call, so no refresh is needed.
+            //
+            // The wait helper is invoked as a STATIC method on O3DE.Debugger
+            // rather than as an instance method on the user's script type.
+            // Coral::ManagedObject::InvokeMethod only resolves methods
+            // declared on the most-derived type (no inheritance walk), so
+            // a method on ScriptComponent wouldn't be visible on a
+            // MyGame.GameScript instance and Coral would log
+            //   "[Coral] Failed to find method '_O3DESharpWaitForAttachIfRequested'"
+            // Coral::Type::InvokeStaticMethod looks up by type name directly,
+            // sidestepping the inheritance issue.
             {
                 bool waitForDebugger = false;
                 if (auto* registry = AZ::SettingsRegistry::Get())
@@ -236,7 +243,26 @@ namespace O3DESharp
 #endif
                 if (waitForDebugger)
                 {
-                    SafeInvokeMethod("_O3DESharpWaitForAttachIfRequested");
+                    ICoralHostManager* hostManager = CoralHostManagerInterface::Get();
+                    Coral::Type* debuggerType = (hostManager != nullptr)
+                        ? hostManager->GetCoreType("O3DE.Debugger")
+                        : nullptr;
+                    if (debuggerType != nullptr)
+                    {
+                        // Fire-and-forget static call. Blocks the current
+                        // thread (which IS the editor main thread during
+                        // Activate) until the debugger attaches or the 60s
+                        // timeout elapses - same as the previous design,
+                        // just dispatched at the type level.
+                        debuggerType->InvokeStaticMethod("WaitForAttachIfRequested");
+                    }
+                    else
+                    {
+                        AZLOG_WARN(
+                            "CSharpScriptComponent: WaitForDebuggerOnActivate is enabled but "
+                            "O3DE.Debugger type was not found in the core context. Either "
+                            "O3DE.Core was not rebuilt against Phase 17 or it failed to load.");
+                    }
                 }
             }
 
