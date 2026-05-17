@@ -2470,7 +2470,19 @@ def get_ebus_handler():
     return _handler_impl
 
 
-def connect_ebus_handler():
+_EBUS_EVENTS = [
+    "GetAvailableScriptClasses",
+    "GetScriptClassNames",
+    "ValidateScriptClass",
+    "OpenScriptPicker",
+    "CreateNewScript",
+    "OpenScriptInEditor",
+    "InvalidateCache",
+    "AddToRecentClasses",
+]
+
+
+def connect_ebus_handler(force_reconnect: bool = False):
     """
     Connect the Python handler to the CSharpEditorToolsBus.
 
@@ -2490,9 +2502,19 @@ def connect_ebus_handler():
     a plain proxy whose .connect is None. Same pattern as PythonAssetBuilder's
     azlmbr.asset.builder.PythonBuilderNotificationBusHandler().
 
-    Idempotent: safe to call multiple times.
+    Idempotent: safe to call multiple times. If `force_reconnect` is True,
+    disconnect any existing handler and start over - useful after a hot
+    reload that left the handler in a half-registered state.
     """
     global _ebus_handler
+
+    if force_reconnect and _ebus_handler is not None:
+        print("[O3DESharp] connect_ebus_handler: force_reconnect=True, disconnecting current handler")
+        try:
+            _ebus_handler.disconnect()
+        except Exception as e:
+            print(f"[O3DESharp] connect_ebus_handler: disconnect failed (ignored): {e}")
+        _ebus_handler = None
 
     if _ebus_handler is not None:
         return _ebus_handler
@@ -2508,24 +2530,32 @@ def connect_ebus_handler():
                 "azlmbr.editor.CSharpEditorToolsBusHandler() returned None - "
                 "is the O3DESharp Editor gem activated and reflection registered?"
             )
+        print(f"[O3DESharp] connect_ebus_handler: factory returned handler={handler!r}")
 
         # PythonProxyNotificationHandler::AddCallback requires a live EBus
         # connection - it asserts m_handler != nullptr inside Connect() and
         # rejects callback registration otherwise with "No EBus connection
         # detected for event ...". So: connect FIRST, then add_callback. Same
         # ordering as Gem/PythonTests/PythonAssetBuilder/mock_asset_builder.py.
-        handler.connect()
-        handler.add_callback("GetAvailableScriptClasses", impl.GetAvailableScriptClasses)
-        handler.add_callback("GetScriptClassNames",       impl.GetScriptClassNames)
-        handler.add_callback("ValidateScriptClass",       impl.ValidateScriptClass)
-        handler.add_callback("OpenScriptPicker",          impl.OpenScriptPicker)
-        handler.add_callback("CreateNewScript",           impl.CreateNewScript)
-        handler.add_callback("OpenScriptInEditor",        impl.OpenScriptInEditor)
-        handler.add_callback("InvalidateCache",           impl.InvalidateCache)
-        handler.add_callback("AddToRecentClasses",        impl.AddToRecentClasses)
+        connected = handler.connect()
+        print(f"[O3DESharp] connect_ebus_handler: handler.connect() -> {connected}")
+        callback_map = {
+            "GetAvailableScriptClasses": impl.GetAvailableScriptClasses,
+            "GetScriptClassNames":       impl.GetScriptClassNames,
+            "ValidateScriptClass":       impl.ValidateScriptClass,
+            "OpenScriptPicker":          impl.OpenScriptPicker,
+            "CreateNewScript":           impl.CreateNewScript,
+            "OpenScriptInEditor":        impl.OpenScriptInEditor,
+            "InvalidateCache":           impl.InvalidateCache,
+            "AddToRecentClasses":        impl.AddToRecentClasses,
+        }
+        for event_name, callback in callback_map.items():
+            ok = handler.add_callback(event_name, callback)
+            if not ok:
+                print(f"[O3DESharp] connect_ebus_handler: add_callback({event_name!r}) returned False")
 
         _ebus_handler = handler
-        print("[O3DESharp] CSharpEditorToolsBus handler connected")
+        print(f"[O3DESharp] CSharpEditorToolsBus handler connected ({len(callback_map)} callbacks)")
         return handler
 
     except Exception as e:
@@ -2533,6 +2563,32 @@ def connect_ebus_handler():
         import traceback
         traceback.print_exc()
         return None
+
+
+def diagnose_handler():
+    """
+    Print a status report on the CSharpEditorToolsBus Python handler.
+
+    Call from the Editor's Python console:
+        import csharp_editor_tools; csharp_editor_tools.diagnose_handler()
+
+    Use after the editor logs imply the handler is in a bad state (e.g.
+    "BroadcastResult returned ''" with no matching "OpenScriptPicker
+    opening dialog" log).
+    """
+    print("=== CSharpEditorToolsBus handler diagnosis ===")
+    print(f"module file:      {__file__}")
+    print(f"_handler_impl:    {_handler_impl!r}")
+    print(f"_ebus_handler:    {_ebus_handler!r}")
+    if _ebus_handler is not None:
+        try:
+            print(f"is_connected:     {_ebus_handler.is_connected()}")
+        except Exception as e:
+            print(f"is_connected:     <error: {e}>")
+    print("If is_connected is True but BroadcastResult returns '' from C++,")
+    print("the callbacks weren't registered. Run:")
+    print("    csharp_editor_tools.connect_ebus_handler(force_reconnect=True)")
+    print("===============================================")
 
 
 def disconnect_ebus_handler():
@@ -2549,8 +2605,11 @@ def disconnect_ebus_handler():
 # Initialize on import. The connect() call requires the BehaviorContext to be up
 # AND CSharpEditorToolsBusHandler reflection to have run - both are true by the
 # time this module is imported from csharp_editor_bootstrap inside the editor.
+print(f"[O3DESharp] csharp_editor_tools loading from {__file__}")
 try:
     _handler_impl = CSharpEditorToolsHandler()
     connect_ebus_handler()
 except Exception as e:
     print(f"[O3DESharp] Handler initialization deferred: {e}")
+    import traceback
+    traceback.print_exc()
