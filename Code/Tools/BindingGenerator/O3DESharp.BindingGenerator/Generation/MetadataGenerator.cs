@@ -28,6 +28,54 @@ namespace O3DESharp.BindingGenerator.Generation
         }
 
         /// <summary>
+        /// Convert an absolute header path into a portable form that can be
+        /// embedded in the committed Metadata.g.cs without leaking the
+        /// generator-machine's directory layout.
+        ///
+        /// Strategy: find the canonical anchor segment ("Gems/<gem>" or
+        /// "Code/") in the path and strip everything before it, then
+        /// normalize separators to forward slashes. Result is something like
+        /// "Gems/O3DESharp/Code/Include/O3DESharp/O3DESharpBus.h" - portable
+        /// across machines and idiomatic in cross-platform tooling.
+        ///
+        /// Falls back to Path.GetFileName(absolutePath) if no anchor is
+        /// found, so the metadata still has a useful identifier even for
+        /// out-of-tree headers.
+        /// </summary>
+        public static string NormalizeSourceFile(string absolutePath)
+        {
+            if (string.IsNullOrEmpty(absolutePath))
+            {
+                return string.Empty;
+            }
+
+            // Forward slashes everywhere so the result is identical on
+            // Windows and Linux. Replace also collapses double-backslashes
+            // that show up in escaped JSON / C# string literals.
+            string normalized = absolutePath.Replace('\\', '/');
+
+            // Anchors we try in order. "Gems/<X>/" lands the typical engine
+            // gem layout. "Code/" catches the framework path
+            // (Code/Framework/...). "Source/" / "Include/" are the gem-
+            // internal fallbacks for paths that already start at the gem root.
+            string[] anchors = new[] { "/Gems/", "/Code/", "/Source/", "/Include/" };
+            foreach (string anchor in anchors)
+            {
+                int idx = normalized.IndexOf(anchor, System.StringComparison.OrdinalIgnoreCase);
+                if (idx >= 0)
+                {
+                    // Drop the leading '/' so the trimmed path is relative,
+                    // not absolute Unix-style.
+                    return normalized.Substring(idx + 1);
+                }
+            }
+
+            // No anchor matched; bail out to just the filename. Better than
+            // leaking a maintainer-specific absolute path.
+            return System.IO.Path.GetFileName(normalized);
+        }
+
+        /// <summary>
         /// Generate C# metadata file from parsed bindings
         /// </summary>
         /// <param name="bindings">Parsed binding declarations</param>
@@ -86,7 +134,12 @@ namespace O3DESharp.BindingGenerator.Generation
                 sb.AppendLine($"                QualifiedName = \"{cls.QualifiedName}\",");
                 sb.AppendLine($"                Namespace = \"{cls.Namespace}\",");
                 sb.AppendLine($"                BaseClass = {(cls.BaseClass != null ? $"\"{cls.BaseClass}\"" : "null")},");
-                sb.AppendLine($"                SourceFile = \"{EscapeString(cls.SourceFile)}\",");
+                // SourceFile is normalized so the committed Metadata.g.cs
+                // never embeds the maintainer-specific absolute path (e.g.
+                // "F:\\o3de\\Gems\\..."). Defect #1 from the 2026-05-15
+                // audit - "Repo won't build for anyone else" when generated
+                // metadata leaks paths into source control.
+                sb.AppendLine($"                SourceFile = \"{EscapeString(NormalizeSourceFile(cls.SourceFile))}\",");
                 sb.AppendLine($"                Methods = new MethodMetadata[]");
                 sb.AppendLine($"                {{");
                 
