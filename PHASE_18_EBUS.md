@@ -636,28 +636,26 @@ namespace MyGame
 
 ---
 
-## 12. Open questions for the maintainer
+## 12. Decisions (resolved)
 
-Before implementation starts, three decisions still need a yes/no:
+The three open questions have been answered:
 
-1. **`O3DESharp.SourceGenerators` as a NuGet package or as a local
-   ProjectReference?** NuGet is the canonical Roslyn distribution
-   path but means a publish step. Local ProjectReference is simpler
-   for in-gem development. The csproj template can add either; the
-   choice affects how user projects pick up generator updates.
+1. **Source-generator distribution: NuGet via a local feed in the
+   gem.** Build `O3DESharp.SourceGenerators` as a `.nupkg`, drop into
+   `Code/Tools/BindingGenerator/nuget/`, point user csprojs at the
+   local feed in the csproj template. Standard Roslyn distribution
+   path; updates land via project rebuild. Implementation in §3.C.1.
 
-2. **Managed bus IDs other than primitives** (e.g. a struct `BusId`).
-   Allowed in O3DE for native code. Phase 18 ships with primitives +
-   `EntityId` only. Custom struct bus IDs would need additional
-   marshaling work; we can accept them in v1 with a runtime error or
-   silently restrict.
+2. **Bus ID types: primitives + `EntityId` only in v1.** Marshaling
+   table §4 stands as-is. Struct bus IDs hit a clear runtime error
+   on `Connect` pointing at the workaround
+   (`[Reflected]` POD struct via the existing reflection path).
+   Custom struct bus IDs deferred to Phase 18.1 if needed.
 
-3. **`EBusHandler<TBus>` as `class` or `struct`?** Class is the
-   natural choice for the inheritance pattern. A struct version with
-   `ref` returns could be lower-allocation for hot-path subscribers,
-   but the pattern is uglier. Recommendation: class for v1, revisit
-   for Phase 18.1 if profiling demands it.
+3. **`EBusHandler<TBus>` as a class.** Inheritance + `IDisposable`
+   for auto-disconnect on `ScriptComponent.OnDestroy`. Struct variant
+   with `ref` returns considered for Phase 18.1 only if profiling
+   shows allocation pressure on hot-path subscriber-heavy scenarios.
 
-Defaults if not answered: (1) NuGet via a local feed in
-`Code/Tools/BindingGenerator/nuget/`, (2) primitives + EntityId only,
-(3) class.
+No further open decisions block implementation. Sub-phase ordering
+in §9 is authoritative.
