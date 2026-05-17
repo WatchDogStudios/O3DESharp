@@ -13,6 +13,7 @@
 #include <AzToolsFramework/ActionManager/ActionManagerRegistrationNotificationBus.h>
 #include <AzToolsFramework/Entity/EditorEntityContextBus.h>
 #include <EditorPythonBindings/EditorPythonBindingsBus.h>
+#include <O3DESharp/O3DESharpHotReloadBus.h>
 
 #include <Clients/O3DESharpSystemComponent.h>
 
@@ -42,6 +43,7 @@ namespace O3DESharp
         , protected AzToolsFramework::ActionManagerRegistrationNotificationBus::Handler
         , protected AzToolsFramework::EditorEntityContextNotificationBus::Handler
         , protected EditorPythonBindings::EditorPythonBindingsNotificationBus::Handler
+        , protected O3DESharpHotReloadNotificationBus::Handler
     {
         using BaseSystemComponent = O3DESharpSystemComponent;
     public:
@@ -117,6 +119,20 @@ namespace O3DESharp
         // to trigger the configured auto-attach. Hooked in Activate, dropped
         // in Deactivate alongside the other bus handlers.
         void OnStartPlayInEditorBegin() override;
+
+        // O3DESharpHotReloadNotificationBus - Phase 17d-3. Detects when the
+        // debugger detached across a hot-reload cycle (most IDEs preserve
+        // the attach but some lose it when the AssemblyLoadContext recycles)
+        // and re-triggers the configured AutoAttachOnPlay method so the
+        // user doesn't have to re-attach manually.
+        void OnBeforeUserAssemblyReload() override;
+        void OnAfterUserAssemblyReload() override;
+
+        // Snapshot of native-debugger-attached state captured in
+        // OnBeforeUserAssemblyReload. Used to decide whether to re-attach
+        // after the reload completes. Defaults to false; only meaningful
+        // between Before/After.
+        bool m_debuggerWasAttachedBeforeReload = false;
 
         // Phase 16: file watcher lifecycle helpers. StartAssemblyWatcher
         // reads the AutoReload settings, decides whether the watcher should

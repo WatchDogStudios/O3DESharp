@@ -20,6 +20,11 @@
 #include <AzCore/Settings/SettingsRegistry.h>
 #include <AzCore/Utils/Utils.h>
 #include <AzCore/IO/Path/Path.h>
+#include <AzCore/IO/SystemFile.h>
+
+#if defined(AZ_PLATFORM_WINDOWS)
+#   include <AzCore/PlatformIncl.h>  // pulls Windows.h with O3DE's safe defines
+#endif
 #include <AzToolsFramework/ActionManager/Action/ActionManagerInterface.h>
 #include <AzToolsFramework/ActionManager/Menu/MenuManagerInterface.h>
 #include <AzToolsFramework/API/EditorPythonRunnerRequestsBus.h>
@@ -179,6 +184,7 @@ namespace O3DESharp
         AzToolsFramework::ActionManagerRegistrationNotificationBus::Handler::BusConnect();
         AzToolsFramework::EditorEntityContextNotificationBus::Handler::BusConnect();
         EditorPythonBindings::EditorPythonBindingsNotificationBus::Handler::BusConnect();
+        O3DESharpHotReloadNotificationBus::Handler::BusConnect();
 
         // Register the C# script class property handler so EditorCSharpScriptComponent's
         // m_scriptClassName field gets the rich combo box + completer instead of a plain
@@ -243,6 +249,7 @@ namespace O3DESharp
             m_scriptClassPropertyHandler = nullptr;
         }
 
+        O3DESharpHotReloadNotificationBus::Handler::BusDisconnect();
         EditorPythonBindings::EditorPythonBindingsNotificationBus::Handler::BusDisconnect();
         AzToolsFramework::EditorEntityContextNotificationBus::Handler::BusDisconnect();
         AzToolsFramework::ActionManagerRegistrationNotificationBus::Handler::BusDisconnect();
@@ -264,12 +271,22 @@ namespace O3DESharp
         //   2. handler.connect() to attach to the bus
         //   3. handler.add_callback(...) for each of the 8 EBus events
         // After this hook fires, OnBrowseScript / OnCreateScript work end to end.
+        //
+        // Phase 17d also runs detect_preferred_ide / configure_auto_attach_defaults
+        // here. The bootstrap import is synchronous; piggy-backing the
+        // detection on the same Python hop avoids a second EditorPythonRunner
+        // round-trip and keeps editor-startup logic in one place.
         AZ_TracePrintf("O3DESharp", "OnPostInitialize: importing csharp_editor_bootstrap to wire the editor tools bus");
 
         AZStd::string pythonCode = AZStd::string::format(R"(
 %s
 try:
     import csharp_editor_bootstrap  # noqa: F401  - side-effect import: connects CSharpEditorToolsBus handler
+    try:
+        csharp_editor_bootstrap.configure_auto_attach_defaults()
+    except Exception as _ad_exc:
+        import azlmbr.legacy.general as general
+        general.log(f"[O3DESharp] configure_auto_attach_defaults failed (non-fatal): {_ad_exc}")
 except Exception as e:
     import azlmbr.legacy.general as general
     import traceback
@@ -937,12 +954,23 @@ except Exception as e:
 
     bool O3DESharpEditorSystemComponent::IsWaitForDebuggerOnActivateEnabled() const
     {
+        // Phase 17d: implicit defaulting. If the user hasn't explicitly
+        // set WaitForDebuggerOnActivate, fall back to "follow
+        // AutoAttachOnPlay" - if auto-attach is configured, the user has
+        // already opted into the debug flow, so waiting for the
+        // not-yet-attached debugger before scripts start is almost
+        // always what they want. Explicit toggles still win.
         bool value = false;
         if (auto* registry = AZ::SettingsRegistry::Get())
         {
-            registry->Get(value, WaitForDebuggerSettingKey);
+            if (registry->Get(value, WaitForDebuggerSettingKey))
+            {
+                // Explicit value present (true or false). Use it.
+                return value;
+            }
         }
-        return value;
+        // Implicit default: follow AutoAttachOnPlay non-emptiness.
+        return !GetAutoAttachOnPlay().empty();
     }
 
     void O3DESharpEditorSystemComponent::ToggleWaitForDebuggerOnActivate()
@@ -964,10 +992,51 @@ except Exception as e:
         // few editor frames before any script runs. By the time OnCreate
         // fires the debugger has usually finished attaching - and if not,
         // a script can pair this with Debugger.WaitForAttach to be sure.
-        const AZStd::string method = GetAutoAttachOnPlay();
+        AZStd::string method = GetAutoAttachOnPlay();
+
+        // Phase 17d: first-run defaulting. If the user hasn't explicitly
+        // set AutoAttachOnPlay AND the Python helper detect_preferred_ide
+        // wrote a sentinel file with the picked IDE, adopt that as the
+        // default on the first play entry. Write it back to the registry
+        // so subsequent sessions skip detection.
         if (method.empty())
         {
-            return;
+            AZ::IO::FixedMaxPath sentinelPath =
+                AZ::IO::FixedMaxPath(AZ::Utils::GetProjectPath()) /
+                "user" / ".csharp_default_auto_attach";
+            if (AZ::IO::SystemFile::Exists(sentinelPath.c_str()))
+            {
+                AZ::IO::SystemFile file;
+                if (file.Open(sentinelPath.c_str(), AZ::IO::SystemFile::SF_OPEN_READ_ONLY))
+                {
+                    char buf[64] = {};
+                    AZ::IO::SizeType bytes = file.Read(sizeof(buf) - 1, buf);
+                    file.Close();
+                    method.assign(buf, buf + bytes);
+                    // Trim whitespace - the sentinel is plain text "rider"
+                    // / "vscode" / "jit" but a stray newline can sneak in.
+                    while (!method.empty() && (method.back() == '\n' || method.back() == '\r' || method.back() == ' '))
+                    {
+                        method.pop_back();
+                    }
+                    if (!method.empty())
+                    {
+                        if (auto* registry = AZ::SettingsRegistry::Get())
+                        {
+                            registry->Set(AutoAttachOnPlaySettingKey, method);
+                        }
+                        AZ_Printf("O3DESharp",
+                            "First Game Mode entry: adopting detected debugger '%s' as the "
+                            "default AutoAttachOnPlay. Change via Tools > C# Scripting > "
+                            "Attach Debugger > Auto-attach on Game Mode.\n",
+                            method.c_str());
+                    }
+                }
+            }
+            if (method.empty())
+            {
+                return;
+            }
         }
 
         const char* bootstrapFn = nullptr;
@@ -984,6 +1053,74 @@ except Exception as e:
 
         AZ_Printf("O3DESharp", "OnStartPlayInEditorBegin: auto-attaching via '%s'\n", method.c_str());
         RunBootstrapFunctionAsync(bootstrapFn);
+    }
+
+    void O3DESharpEditorSystemComponent::OnBeforeUserAssemblyReload()
+    {
+        // Phase 17d-3: capture whether a native (mixed-mode / VS) debugger
+        // is attached so we can decide whether to re-trigger the
+        // AutoAttachOnPlay flow once the reload settles. We use the Win32
+        // IsDebuggerPresent here because it's a synchronous OS call with
+        // no Coral round-trip - safe to call from inside an EBus event
+        // handler. The "managed-only debugger attached" case (Rider in
+        // managed mode without a native debugger) isn't detected here,
+        // which is fine: Rider preserves its attach across CoreCLR
+        // AssemblyLoadContext recycling, so a re-attach isn't needed.
+#if defined(AZ_PLATFORM_WINDOWS)
+        m_debuggerWasAttachedBeforeReload = ::IsDebuggerPresent() != 0;
+#else
+        m_debuggerWasAttachedBeforeReload = false;
+#endif
+    }
+
+    void O3DESharpEditorSystemComponent::OnAfterUserAssemblyReload()
+    {
+        // If a debugger was attached before the reload but isn't anymore,
+        // re-trigger the configured AutoAttachOnPlay method so the user
+        // doesn't have to climb back into Tools > C# Scripting after
+        // every hot reload cycle. No-op when the debugger stayed attached
+        // (the common case) or when AutoAttachOnPlay isn't set.
+        if (!m_debuggerWasAttachedBeforeReload)
+        {
+            return;
+        }
+#if defined(AZ_PLATFORM_WINDOWS)
+        const bool stillAttached = ::IsDebuggerPresent() != 0;
+#else
+        const bool stillAttached = false;
+#endif
+        m_debuggerWasAttachedBeforeReload = false;
+
+        if (stillAttached)
+        {
+            return;
+        }
+        const AZStd::string method = GetAutoAttachOnPlay();
+        if (method.empty())
+        {
+            // User had a debugger attached pre-reload but never configured
+            // AutoAttach - they did it via the manual menu actions. Honor
+            // their intent and don't take initiative.
+            AZ_Printf("O3DESharp",
+                "Hot reload completed; debugger appears to have detached. "
+                "Configure Tools > C# Scripting > Attach Debugger > Auto-attach on Game Mode "
+                "if you want this re-attached automatically next time.\n");
+            return;
+        }
+
+        AZ_Printf("O3DESharp",
+            "Hot reload completed; native debugger detached during reload. "
+            "Re-triggering AutoAttachOnPlay ('%s').\n",
+            method.c_str());
+
+        const char* bootstrapFn = nullptr;
+        if (method == "jit")         { bootstrapFn = "trigger_jit_debugger"; }
+        else if (method == "rider")  { bootstrapFn = "attach_with_rider"; }
+        else if (method == "vscode") { bootstrapFn = "attach_with_vscode"; }
+        if (bootstrapFn != nullptr)
+        {
+            RunBootstrapFunctionAsync(bootstrapFn);
+        }
     }
 
     void O3DESharpEditorSystemComponent::ToggleAutoReloadScripts()

@@ -230,10 +230,22 @@ namespace O3DESharp
             // Coral::Type::InvokeStaticMethod looks up by type name directly,
             // sidestepping the inheritance issue.
             {
+                // Phase 17d implicit-default: if the user hasn't explicitly
+                // set WaitForDebuggerOnActivate, fall back to "follow
+                // AutoAttachOnPlay non-emptiness". That way enabling auto-
+                // attach also enables the matching wait by default, which
+                // is almost always what the user wants. SettingsRegistry::Get
+                // returns true when the key exists; false-on-absent lets us
+                // distinguish "explicitly set to false" from "never set".
                 bool waitForDebugger = false;
                 if (auto* registry = AZ::SettingsRegistry::Get())
                 {
-                    registry->Get(waitForDebugger, "/O3DE/O3DESharp/WaitForDebuggerOnActivate");
+                    if (!registry->Get(waitForDebugger, "/O3DE/O3DESharp/WaitForDebuggerOnActivate"))
+                    {
+                        AZStd::string autoAttach;
+                        registry->Get(autoAttach, "/O3DE/O3DESharp/AutoAttachOnPlay");
+                        waitForDebugger = !autoAttach.empty();
+                    }
                 }
                 const char* value = waitForDebugger ? "1" : "0";
 #if defined(AZ_PLATFORM_WINDOWS)
