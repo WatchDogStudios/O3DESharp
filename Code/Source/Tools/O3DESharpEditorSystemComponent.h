@@ -93,6 +93,12 @@ namespace O3DESharp
         void AttachWithRider();
         void AttachWithVSCode();
 
+        // Phase 17c: spawn <Project>.GameLauncher.exe and auto-attach the
+        // configured debugger to the freshly-launched runtime process. The
+        // "Run with Debugger" menu entry. Defers attach by 2s so CoreCLR
+        // has a chance to load before the IDE binds symbols.
+        void RunWithDebugger();
+
         // Phase 17b: settings-driven auto-attach. Reads
         // /O3DE/O3DESharp/AutoAttachOnPlay each time the user enters game
         // mode and triggers the configured attach method (jit/rider/vscode)

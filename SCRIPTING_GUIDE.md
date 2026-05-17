@@ -749,6 +749,7 @@ entries, listed in order of automation:
 | **Attach with VS Code** | Opens the project folder in VS Code; press F5 to launch the bundled `O3DESharp: Attach to Editor` configuration. | 2 |
 | **Copy Debugger Attach Info** | Drops the PID + a step-by-step hint string onto the clipboard. The original fallback for IDEs without one-click support. | ~6 |
 | **Auto-attach on Game Mode** | Cycles `Off → JIT → Rider → VS Code → Off`. When set, the editor invokes the selected attach method *before* Ctrl+G actually starts play, so by the time `OnCreate` runs the debugger is bound. | 0 (after toggling once) |
+| **Run with Debugger** *(Phase 17c)* | Spawns `<Project>.GameLauncher.exe` from `build/.../bin/<config>/` and auto-attaches your configured `Auto-attach on Game Mode` method (or JIT picker fallback) to the freshly-launched runtime. Use this to debug runtime-only paths that the editor never exercises (e.g. server launchers, exported player builds). Build the launcher target first via CMake. | 1 |
 
 Plus a separate gate that pauses script activation until a debugger
 attaches:
@@ -853,6 +854,10 @@ attach; use VS for this.
 | Stepping skips lines | The DLL was built in Release. Switch to Debug or drop `<Optimize>` from your Release config. |
 | Editor freezes after `WaitForAttach` and never resumes | Either the timeout was set to `TimeSpan.Zero` (= wait forever) and no debugger attached, or `IsAttached` never flipped. Restart the editor. Use a finite timeout in production. |
 | IDE loses breakpoints on hot-reload | Some IDEs reset breakpoints when the assembly load context recycles. Click Attach again or use Ctrl+Shift+F5. |
+| **Visual Studio**: "Could not attach to the process. Value does not fall within the expected range. The error code is E_INVALIDARG, or COR_E_ARGUMENT, or WIN32_ERROR_INVALID_PARAMETER, or 0x80070057." | Three common causes: <br>1. VS doesn't have the **.NET Core debugging components** installed. Open Visual Studio Installer → Modify → Individual Components → check ".NET Framework 4.x debugger" *and* ".NET Compiler Platform" *and* the runtime debug component for your target. <br>2. VS picked the wrong **Attach to** engine. In "Attach to Process", set "Attach to:" to **Managed (.NET Core, .NET 5+)** explicitly — the auto-detect heuristic sometimes guesses native-only when Coral is between init and first-script-run. <br>3. **Privilege mismatch** — VS is running elevated and the editor isn't (or vice versa). Run both as the same user/elevation. |
+| **Rider**: "Process is still running and does not respond" when triggering attach | The Rider attach action uses the `jetbrains://rider/attach-to-process?pid=<pid>` URL protocol (Phase 17c). If a Rider instance is already up, the URL is routed to it; if the URL handler isn't registered (older Toolbox install or sandbox setup), the launch falls through. Re-run JetBrains Toolbox or Rider's installer to refresh the protocol handler. |
+| **VS Code**: F5 launches the launcher but doesn't break | Your `launch.json` is still pointing at the wrong launcher exe name. Edit the `${input:launcherExeName}` prompt or hard-code your `<Project>.GameLauncher.exe`. The template ships with a placeholder of `GameLauncher.exe` which is intentionally wrong so the prompt fires once per workspace. |
+| "Run with Debugger" logs `No GameLauncher.exe found` | You haven't built the launcher target yet. From your project root: `cmake --build build/windows --target <Project>.GameLauncher --config profile`. |
 
 ---
 

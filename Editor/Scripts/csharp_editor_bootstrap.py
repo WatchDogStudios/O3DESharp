@@ -654,11 +654,27 @@ def trigger_jit_debugger():
 
 def attach_with_rider():
     """
-    Attach JetBrains Rider's managed debugger to the editor process via the
-    documented `rider64.exe attach-to-process <pid>` CLI (available in
-    Rider 2024.2+). Falls back to opening Rider if the attach subcommand
-    isn't recognized.
+    Attach JetBrains Rider's managed debugger to the editor process.
+
+    Implementation note: we use the documented JetBrains URL protocol
+    (jetbrains://rider/attach-to-process?pid=<pid>) instead of a CLI
+    subcommand. The URL handler is registered by Rider's installer and
+    works regardless of whether Rider is currently running:
+
+      - If Rider isn't running, the URL launches it then attaches.
+      - If Rider IS running, the URL is forwarded to the existing
+        instance via its single-instance lock socket. The CLI alternative
+        ('rider64.exe attach-to-process <pid>') refuses to launch a
+        second process, surfacing as
+            "Process ... is still running and does not respond"
+        from rider64.exe and breaking the one-click attach.
+
+    This also avoids depending on the specific CLI subcommand name
+    (which has varied across Rider versions: 'attach-to-process',
+    'attach', etc.). The URL protocol has been stable since the
+    "Debug any process from anywhere" feature shipped.
     """
+    pid = _editor_pid()
     rider = _find_rider_executable()
     if not rider:
         general.log(
@@ -667,7 +683,17 @@ def attach_with_rider():
             "Debugger' to pick from the OS debugger picker."
         )
         return False
-    return _spawn_detached([rider, "attach-to-process", str(_editor_pid())], "Rider attach")
+
+    import os
+    url = f"jetbrains://rider/attach-to-process?pid={pid}"
+    if os.name == "nt":
+        # Use cmd /c start "" <url> rather than os.startfile - the latter
+        # is sync on some Windows builds and would block until Rider
+        # finished launching. start /b detaches and returns immediately.
+        return _spawn_detached(["cmd", "/c", "start", "", url], "Rider attach (URL)")
+    # Linux: xdg-open routes to the registered handler. JetBrains Toolbox
+    # registers the same scheme.
+    return _spawn_detached(["xdg-open", url], "Rider attach (URL)")
 
 
 def attach_with_vscode():
@@ -707,6 +733,137 @@ def attach_with_vscode():
             f"Editor PID: {_editor_pid()}."
         )
     return ok
+
+
+def _find_game_launcher():
+    """
+    Locate <Project>.GameLauncher.exe under build/.../bin/<config>/ for
+    Phase 17c's 'Run with Debugger' flow. Returns the first launcher
+    found, preferring profile builds (best balance of debuggability +
+    speed), falling back to debug then release.
+
+    Returns (exe_path, config_name) or (None, None).
+    """
+    from pathlib import Path
+    try:
+        import azlmbr.paths as _paths
+    except ImportError:
+        return None, None
+
+    project_root = Path(_paths.projectroot)
+    # Most common O3DE build layouts:
+    #   build/windows/bin/<config>/<Project>.GameLauncher.exe
+    #   build/linux/bin/<config>/<Project>.GameLauncher
+    # We don't know <config>, so probe all three in preference order.
+    candidate_roots = [
+        project_root / "build" / "windows" / "bin",
+        project_root / "build" / "linux"   / "bin",
+        project_root / "build" / "bin",   # less-common flat layout
+    ]
+    for cfg in ("profile", "debug", "release"):
+        for root in candidate_roots:
+            cfg_dir = root / cfg
+            if not cfg_dir.is_dir():
+                continue
+            for entry in cfg_dir.iterdir():
+                name = entry.name
+                if name.lower().endswith("gamelauncher.exe") or (
+                    name.lower().endswith("gamelauncher") and entry.is_file()):
+                    return str(entry), cfg
+    return None, None
+
+
+def run_game_launcher_with_debugger(method: str = ""):
+    """
+    Phase 17c: spawn the GameLauncher and auto-attach the configured
+    debugger to the freshly-launched process. One-click "Run my project
+    with a debugger attached" - lets you debug runtime-only code paths
+    that don't exist inside the editor (player launchers, server
+    launchers, exported games).
+
+    `method` selects how to attach. Falls back to the saved
+    /O3DE/O3DESharp/AutoAttachOnPlay registry value, then to the JIT
+    picker.
+    """
+    import subprocess
+    import time
+
+    exe, config = _find_game_launcher()
+    if not exe:
+        general.log(
+            "[O3DESharp] No GameLauncher.exe found under build/.../bin/<config>/. "
+            "Build the launcher target (e.g. cmake --build . --target NewProject.GameLauncher --config profile) "
+            "and try again."
+        )
+        return False
+
+    # Launch the game launcher. close_fds keeps it detached from the
+    # editor's pipes so a long-running play session doesn't tie up our
+    # Python interpreter.
+    try:
+        proc = subprocess.Popen([exe], close_fds=True)
+    except Exception as e:  # noqa: BLE001
+        general.log(f"[O3DESharp] Failed to spawn {exe}: {e}")
+        return False
+
+    pid = proc.pid
+    general.log(f"[O3DESharp] Launched {exe} (PID {pid}, config {config})")
+
+    # Give CoreCLR time to initialize - debuggers can only bind to a
+    # process that's loaded the .NET runtime. Coral host init typically
+    # finishes within 1-2 seconds; we wait 2 to be safe. The IDE will
+    # bind any not-yet-loaded symbols when they appear, so a longer wait
+    # just delays the user's breakpoints.
+    time.sleep(2.0)
+
+    # Pick the attach method. Explicit arg wins; otherwise read the
+    # configured AutoAttachOnPlay; otherwise default to JIT picker.
+    if not method:
+        # Settings registry isn't reachable from Python directly; the
+        # AutoAttachOnPlay value is mirrored to the env var by C++ in
+        # Phase 17b (waited for) - but the AutoAttach VALUE itself isn't
+        # mirrored. So we fall back to JIT.
+        method = "jit"
+
+    method = method.lower()
+    if method == "jit":
+        # Reuse the existing trigger_jit_debugger flow but parameterise
+        # by PID instead of os.getpid().
+        return _trigger_jit_debugger_for_pid(pid)
+    elif method == "rider":
+        return _attach_rider_to_pid(pid)
+    elif method == "vscode":
+        return attach_with_vscode()  # opens the project; user presses F5
+    else:
+        general.log(f"[O3DESharp] Unknown attach method '{method}'. Use jit/rider/vscode.")
+        return False
+
+
+def _trigger_jit_debugger_for_pid(pid: int):
+    """Spawn vsjitdebugger.exe -p <pid> for an arbitrary PID."""
+    import os
+    from pathlib import Path
+    if os.name != "nt":
+        general.log(f"[O3DESharp] JIT picker only available on Windows. Manually attach to PID {pid}.")
+        return False
+    jit = Path(os.environ.get("SystemRoot", r"C:\Windows")) / "System32" / "vsjitdebugger.exe"
+    if not jit.is_file():
+        general.log(f"[O3DESharp] vsjitdebugger.exe not found. Manually attach to PID {pid}.")
+        return False
+    return _spawn_detached([str(jit), "-p", str(pid)], f"JIT picker for PID {pid}")
+
+
+def _attach_rider_to_pid(pid: int):
+    """Attach Rider to an arbitrary PID via the JetBrains URL protocol."""
+    import os
+    rider = _find_rider_executable()
+    if not rider:
+        general.log("[O3DESharp] Rider not found.")
+        return False
+    url = f"jetbrains://rider/attach-to-process?pid={pid}"
+    if os.name == "nt":
+        return _spawn_detached(["cmd", "/c", "start", "", url], f"Rider attach (PID {pid})")
+    return _spawn_detached(["xdg-open", url], f"Rider attach (PID {pid})")
 
 
 def generate_bindings():

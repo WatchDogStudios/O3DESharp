@@ -260,11 +260,16 @@ CSPROJ_TEMPLATE = r'''<Project Sdk="Microsoft.NET.Sdk">
 </Project>
 '''
 
-# Phase 17a: VS Code attach configuration. Dropped into <project>/.vscode/
-# by create_project so a user with VS Code installed can hit F5 to attach
-# the managed debugger to the editor without hand-editing any JSON.
+# Phase 17a/c: VS Code launch + attach configurations. Dropped into
+# <project>/.vscode/ by create_project so a user with VS Code installed
+# can hit F5 (pre-launch attach) or pick the matching "Attach" config to
+# attach to a running editor/launcher.
+#
 # `processName` does a substring match, so "Editor" picks up both the
 # regular Editor.exe and any launcher executable that contains the word.
+# The "launch" config uses workspaceFolder-relative paths so the same
+# template works regardless of build location; the user can override
+# `${O3DELauncherPath}` per-machine.
 VSCODE_LAUNCH_JSON_TEMPLATE = '''\
 {
     "version": "0.2.0",
@@ -280,6 +285,26 @@ VSCODE_LAUNCH_JSON_TEMPLATE = '''\
             "type": "coreclr",
             "request": "attach",
             "processName": "GameLauncher"
+        },
+        {
+            "name": "O3DESharp: Launch GameLauncher (profile)",
+            "type": "coreclr",
+            "request": "launch",
+            "preLaunchTask": "",
+            "program": "${workspaceFolder}/../../../../build/windows/bin/profile/${input:launcherExeName}",
+            "args": [],
+            "cwd": "${workspaceFolder}/../../../..",
+            "console": "internalConsole",
+            "stopAtEntry": false,
+            "justMyCode": true
+        }
+    ],
+    "inputs": [
+        {
+            "id": "launcherExeName",
+            "type": "promptString",
+            "description": "Game launcher exe name (e.g. NewProject.GameLauncher.exe). Set once and VS Code remembers it for the workspace.",
+            "default": "GameLauncher.exe"
         }
     ]
 }

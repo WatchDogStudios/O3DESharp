@@ -49,6 +49,9 @@ namespace O3DESharp
     static constexpr const char* CSharpAutoAttachOnPlayActionId      = "o3de.action.o3desharp.autoAttachOnPlay";
     static constexpr const char* CSharpWaitForDebuggerActionId       = "o3de.action.o3desharp.waitForDebuggerOnActivate";
 
+    // Phase 17c: launcher debugging.
+    static constexpr const char* CSharpRunWithDebuggerActionId       = "o3de.action.o3desharp.runWithDebugger";
+
     // Settings key for /O3DE/O3DESharp/AutoAttachOnPlay. Valid values:
     //   ""        - disabled (default)
     //   "jit"     - trigger_jit_debugger
@@ -522,6 +525,28 @@ except Exception as e:
                 [this]() { ToggleWaitForDebuggerOnActivate(); },
                 [this]() -> bool { return IsWaitForDebuggerOnActivateEnabled(); });
         }
+
+        // Phase 17c: Run with Debugger. Spawns <Project>.GameLauncher.exe
+        // from the project's build/.../bin/<config>/ directory and auto-
+        // attaches the JIT picker (or the configured AutoAttachOnPlay
+        // method if set) to the freshly-launched runtime. Lets users debug
+        // runtime-only code paths that the editor never exercises.
+        {
+            AzToolsFramework::ActionProperties props;
+            props.m_name = "Run with Debugger";
+            props.m_description =
+                "Spawn <Project>.GameLauncher.exe from build/.../bin/<config>/ and auto-attach "
+                "the JIT picker (or your configured AutoAttachOnPlay method) to the freshly "
+                "launched runtime. Use this to debug runtime-only code paths that don't fire "
+                "inside the editor (player launchers, server launchers, exported games). "
+                "Build the launcher target via CMake first.";
+            props.m_category = "Scripting";
+
+            actionManagerInterface->RegisterAction(
+                EditorIdentifiers::MainWindowActionContextIdentifier,
+                CSharpRunWithDebuggerActionId, props,
+                [this]() { RunWithDebugger(); });
+        }
     }
 
     void O3DESharpEditorSystemComponent::OnMenuBindingHook()
@@ -575,6 +600,8 @@ except Exception as e:
         menuManagerInterface->AddSeparatorToMenu(CSharpAttachDebuggerMenuId, 450);
         menuManagerInterface->AddActionToMenu(CSharpAttachDebuggerMenuId, CSharpAutoAttachOnPlayActionId, 500);
         menuManagerInterface->AddActionToMenu(CSharpAttachDebuggerMenuId, CSharpWaitForDebuggerActionId, 600);
+        menuManagerInterface->AddSeparatorToMenu(CSharpAttachDebuggerMenuId, 650);
+        menuManagerInterface->AddActionToMenu(CSharpAttachDebuggerMenuId, CSharpRunWithDebuggerActionId, 700);
     }
 
     // Helper to get Python code that sets up the O3DESharp module path
@@ -835,6 +862,38 @@ except Exception as e:
     void O3DESharpEditorSystemComponent::AttachWithVSCode()
     {
         RunBootstrapFunctionAsync("attach_with_vscode");
+    }
+
+    void O3DESharpEditorSystemComponent::RunWithDebugger()
+    {
+        // Use the configured AutoAttachOnPlay method (jit / rider / vscode)
+        // if the user has one set; otherwise default to the JIT picker.
+        // Pass it explicitly to run_game_launcher_with_debugger - the Python
+        // side can't read the settings registry directly, and the env-var
+        // bridge we use for WaitForDebuggerOnActivate isn't a great fit for
+        // a free-text method name.
+        AZStd::string method = GetAutoAttachOnPlay();
+        if (method.empty())
+        {
+            method = "jit";
+        }
+
+        AZStd::string pythonCode = AZStd::string::format(R"(
+%s
+try:
+    import csharp_editor_bootstrap
+    csharp_editor_bootstrap.run_game_launcher_with_debugger(%s)
+except Exception as e:
+    import azlmbr.legacy.general as general
+    general.log(f"[O3DESharp] run_game_launcher_with_debugger failed: {e}")
+)",
+            GetPythonPathSetup(),
+            AZStd::string::format("'%s'", method.c_str()).c_str());
+
+        AzToolsFramework::EditorPythonRunnerRequestBus::Broadcast(
+            &AzToolsFramework::EditorPythonRunnerRequestBus::Events::ExecuteByString,
+            pythonCode.c_str(),
+            false /* is file path */);
     }
 
     AZStd::string O3DESharpEditorSystemComponent::GetAutoAttachOnPlay() const
