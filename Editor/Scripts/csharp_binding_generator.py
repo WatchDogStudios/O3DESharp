@@ -168,11 +168,49 @@ class ClangSharpInvoker:
                when it's been deleted from the install location.
           3. build/bin/BindingGenerator under either gem_root or cwd.
         """
-        candidates: List[Path] = []
-
         script_dir = Path(__file__).parent
         gem_root = script_dir.parent.parent
 
+        # === Pass 1: prebuilt DLL ==================================
+        # Prefer the prebuilt DLL over the csproj. Why: invoking via
+        # `dotnet run --project <csproj>` re-runs MSBuild's restore +
+        # build pipeline on every invocation, which takes 30-180s of
+        # silent startup time before the tool emits a single line of
+        # output. Users watching the log see no progress and assume the
+        # generator is hung. `dotnet <path-to-dll>` skips the rebuild
+        # entirely and starts the tool in under a second, so first-line
+        # output appears immediately.
+        #
+        # The CMake target `O3DESharp.BindingGenerator` builds the DLL
+        # to <build>/bin/BindingGenerator/O3DESharp.BindingGenerator.dll
+        # via ExternalProject_Add - so on any developer machine where
+        # the engine has been configured + built once, the DLL is
+        # there. We just check the common build-tree locations.
+        dll_candidates: List[Path] = [
+            gem_root / "build" / "bin" / "BindingGenerator" / "O3DESharp.BindingGenerator.dll",
+            Path.cwd() / "build" / "bin" / "BindingGenerator" / "O3DESharp.BindingGenerator.dll",
+        ]
+
+        # Engine-relative build dir (when running inside the editor).
+        try:
+            import azlmbr.paths as _paths
+            engroot = Path(_paths.engroot)
+            dll_candidates.extend([
+                engroot / "Workspace" / "bin" / "BindingGenerator" / "O3DESharp.BindingGenerator.dll",
+                engroot / "build" / "bin" / "BindingGenerator" / "O3DESharp.BindingGenerator.dll",
+            ])
+        except Exception:
+            pass
+
+        for dll in dll_candidates:
+            if dll.is_file():
+                self.logger.info(f"Using prebuilt ClangSharp tool DLL: {dll}")
+                return str(dll)
+
+        # === Pass 2: csproj (fallback - triggers dotnet run rebuild) =
+        # Only reached when no prebuilt DLL is found. Costs the
+        # 30-180s rebuild penalty but at least the tool runs.
+        candidates: List[Path] = []
         candidates.append(
             gem_root / "Code" / "Tools" / "BindingGenerator" /
             "O3DESharp.BindingGenerator" / "O3DESharp.BindingGenerator.csproj"
@@ -194,10 +232,12 @@ class ClangSharpInvoker:
 
         for csproj in candidates:
             if csproj.exists():
-                self.logger.info(f"Using ClangSharp tool source project: {csproj}")
+                self.logger.info(
+                    f"Using ClangSharp tool source project (will trigger dotnet build): {csproj}"
+                )
                 return str(csproj)
 
-        # Check in CMake binary directory (if built as an executable)
+        # Check in CMake binary directory (last-resort)
         possible_paths = [
             gem_root / "build" / "bin" / "BindingGenerator",
             Path.cwd() / "build" / "bin" / "BindingGenerator",
@@ -216,7 +256,8 @@ class ClangSharpInvoker:
 
         self.logger.warning(
             "ClangSharp binding generator tool not found in common locations. "
-            f"Searched: {[str(c) for c in candidates]}"
+            f"Searched DLLs: {[str(d) for d in dll_candidates]} ; "
+            f"csprojs: {[str(c) for c in candidates]}"
         )
         return None
 
@@ -393,13 +434,25 @@ class ClangSharpInvoker:
         """Build command-line arguments for the ClangSharp tool."""
         tool_path = Path(self.tool_path)
 
-        # Base command - use dotnet run if it's a .csproj, or direct execution if built
-        if tool_path.suffix == ".csproj":
+        # Base command - prefer running the prebuilt DLL with `dotnet <dll>`
+        # because that skips the dotnet-run restore + build pipeline entirely
+        # (30-180s of silent startup → < 1s). Fall through to `dotnet run`
+        # only if all we have is a csproj.
+        if tool_path.suffix == ".dll":
+            # Prebuilt DLL path - fastest startup, no MSBuild involvement
+            args = ["dotnet", str(tool_path)]
+        elif tool_path.suffix == ".csproj":
+            # Csproj fallback - dotnet run with --no-build first attempt
+            # would be ideal but requires a prior build that we can't
+            # guarantee here. Plain dotnet run is what we have.
             args = ["dotnet", "run", "--project", str(tool_path), "--"]
         elif tool_path.is_dir():
-            # Directory with .csproj
-            csproj = tool_path / "BindingGenerator.csproj"
-            if csproj.exists():
+            # Directory - look for a DLL first, then fall back to csproj
+            dll = tool_path / "O3DESharp.BindingGenerator.dll"
+            csproj = tool_path / "O3DESharp.BindingGenerator.csproj"
+            if dll.exists():
+                args = ["dotnet", str(dll)]
+            elif csproj.exists():
                 args = ["dotnet", "run", "--project", str(csproj), "--"]
             else:
                 args = ["dotnet", "run", "--"]

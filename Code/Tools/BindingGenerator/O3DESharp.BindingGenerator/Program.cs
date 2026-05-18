@@ -21,6 +21,32 @@ namespace O3DESharp.BindingGenerator
     {
         static int Main(string[] args)
         {
+            // ============================================================
+            // Force line-buffered stdout/stderr so callers that pipe our
+            // output (the editor's C# Project Manager, CI, etc.) see
+            // progress lines as we emit them - not "silent for 3 minutes
+            // then a wall of buffered text at the end".
+            //
+            // .NET's default behavior when stdout is redirected to a pipe
+            // is block-buffering (typically 4KB). Console.WriteLine adds
+            // the line to the buffer but doesn't flush; the buffer only
+            // drains when it fills, the process exits, or someone calls
+            // Flush() explicitly. That's exactly what was making the
+            // generator look stuck: 11 gems' worth of "Processing gem:
+            // X" lines were piling up in the buffer, and the editor's
+            // log only refreshed when generation finished and the
+            // child's exit flushed the pipe.
+            //
+            // Wrapping Console.Out in a StreamWriter with AutoFlush=true
+            // makes every WriteLine call flush the underlying pipe, so
+            // each line appears in the editor log as it's emitted.
+            // Cheap (the writer is wrapping an already-open stream;
+            // AutoFlush just toggles a bool on each call) but
+            // transformative for the live-progress UX.
+            // ============================================================
+            Console.SetOut(new StreamWriter(Console.OpenStandardOutput()) { AutoFlush = true });
+            Console.SetError(new StreamWriter(Console.OpenStandardError()) { AutoFlush = true });
+
             var rootCommand = new RootCommand("O3DE C# Binding Generator - Generates C# bindings from C++ headers using ClangSharp");
 
             // Global options
