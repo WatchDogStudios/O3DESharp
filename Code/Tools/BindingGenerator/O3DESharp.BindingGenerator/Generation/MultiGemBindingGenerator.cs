@@ -39,14 +39,25 @@ namespace O3DESharp.BindingGenerator.Generation
         private readonly bool _verbose;
         private readonly bool _forceRebuild;
         private readonly string? _enginePath;
+
+        // When true, BuildIncludePaths walks ALL discovered gems and adds
+        // each one's include surface to the parse path, not just the
+        // direct dependencies declared in the current gem's gem.json.
+        // Used to work around gems with incomplete dep manifests (e.g.
+        // EMotionFX pulling IAudioSystem.h without declaring AudioSystem
+        // as a dependency). Costs more -I args per parse but resolves
+        // missing-header errors that strict-dep mode would surface as
+        // "no bindable members" skips.
+        private readonly bool _allGemsIncludePath;
         private BuildCache? _buildCache;
 
-        public MultiGemBindingGenerator(BindingConfig config, bool verbose = false, bool forceRebuild = false, string? enginePath = null)
+        public MultiGemBindingGenerator(BindingConfig config, bool verbose = false, bool forceRebuild = false, string? enginePath = null, bool allGemsIncludePath = false)
         {
             _config = config;
             _verbose = verbose;
             _forceRebuild = forceRebuild;
             _enginePath = enginePath;
+            _allGemsIncludePath = allGemsIncludePath;
         }
 
         /// <summary>
@@ -418,6 +429,29 @@ namespace O3DESharp.BindingGenerator.Generation
                 if (allGems.TryGetValue(depName, out var depGem))
                 {
                     AddGemIncludeSurface(includePaths, depGem.GemPath);
+                }
+            }
+
+            // Permissive mode: walk EVERY discovered gem's include
+            // surface, not just declared deps. Costs extra -I args
+            // per parse (libclang handles dozens fine) but resolves
+            // cross-gem header includes that gem.json doesn't declare
+            // - the EMotionFX/AudioSystem case where EMotionFX's
+            // AnimAudioComponentBus.h does #include <IAudioSystem.h>
+            // without AudioSystem appearing in EMotionFX's dependency
+            // list. With this on, the missing-header error goes away
+            // and the AnimAudioComponentRequests class (and similar
+            // cross-gem-reaching types) parse cleanly.
+            //
+            // We skip the gem being processed (already added above) to
+            // avoid duplicating its surface. Distinct() at the end of
+            // this method would catch it anyway but skipping is cheaper.
+            if (_allGemsIncludePath)
+            {
+                foreach (var kv in allGems)
+                {
+                    if (kv.Key == gem.GemName) continue;
+                    AddGemIncludeSurface(includePaths, kv.Value.GemPath);
                 }
             }
 

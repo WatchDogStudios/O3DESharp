@@ -93,6 +93,22 @@ namespace O3DESharp.BindingGenerator
                 aliases: new[] { "--output", "-o" },
                 description: "Output directory for generated C# bindings. If specified, all gem bindings are written under this directory instead of each gem's own directory.");
 
+            // Permissive include-path mode: when set, every discovered gem
+            // (not just declared dependencies) gets its include surface
+            // added to libclang's search path. Trades parse cost for
+            // resilience to incomplete dep declarations in gem.json -
+            // useful when generating against gems whose authors didn't
+            // declare every transitive include source (e.g. EMotionFX
+            // pulling IAudioSystem.h without declaring AudioSystem as a
+            // dep). Default off: strict mode catches missing-dep bugs at
+            // generation time, which is usually what you want for
+            // first-party gems. Editor flow defaults it on for the
+            // "just give me bindings" UX.
+            var allGemsIncludeOption = new Option<bool>(
+                aliases: new[] { "--all-gems-include" },
+                getDefaultValue: () => false,
+                description: "Add every discovered gem's include surface to the parse path, not just declared dependencies. Fixes cross-gem 'file not found' errors when gem.json doesn't declare every transitive include.");
+
             // List gems command
             var listGemsCommand = new Command("list-gems", "List all discovered gems in the project");
             listGemsCommand.AddOption(projectOption);
@@ -117,6 +133,7 @@ namespace O3DESharp.BindingGenerator
             generateCommand.AddOption(forceOption);
             generateCommand.AddOption(requireAttributeOption);
             generateCommand.AddOption(csharpOutputOption);
+            generateCommand.AddOption(allGemsIncludeOption);
             generateCommand.SetHandler((context) =>
             {
                 var project = context.ParseResult.GetValueForOption(projectOption) ?? ".";
@@ -128,7 +145,8 @@ namespace O3DESharp.BindingGenerator
                 var force = context.ParseResult.GetValueForOption(forceOption);
                 var requireAttribute = context.ParseResult.GetValueForOption(requireAttributeOption);
                 var csharpOutput = context.ParseResult.GetValueForOption(csharpOutputOption);
-                context.ExitCode = GenerateBindings(project, engine, config, gems, verbose, incremental, force, requireAttribute, csharpOutput);
+                var allGemsInclude = context.ParseResult.GetValueForOption(allGemsIncludeOption);
+                context.ExitCode = GenerateBindings(project, engine, config, gems, verbose, incremental, force, requireAttribute, csharpOutput, allGemsInclude);
             });
 
             // Init config command
@@ -160,6 +178,7 @@ namespace O3DESharp.BindingGenerator
             rootCommand.AddOption(forceOption);
             rootCommand.AddOption(requireAttributeOption);
             rootCommand.AddOption(csharpOutputOption);
+            rootCommand.AddOption(allGemsIncludeOption);
 
             rootCommand.SetHandler((context) =>
             {
@@ -172,7 +191,8 @@ namespace O3DESharp.BindingGenerator
                 var force = context.ParseResult.GetValueForOption(forceOption);
                 var requireAttribute = context.ParseResult.GetValueForOption(requireAttributeOption);
                 var csharpOutput = context.ParseResult.GetValueForOption(csharpOutputOption);
-                context.ExitCode = GenerateBindings(project, engine, config, gems, verbose, incremental, force, requireAttribute, csharpOutput);
+                var allGemsInclude = context.ParseResult.GetValueForOption(allGemsIncludeOption);
+                context.ExitCode = GenerateBindings(project, engine, config, gems, verbose, incremental, force, requireAttribute, csharpOutput, allGemsInclude);
             });
 
             return rootCommand.Invoke(args);
@@ -214,7 +234,7 @@ namespace O3DESharp.BindingGenerator
             }
         }
 
-        static int GenerateBindings(string projectPath, string? enginePath, string configPath, string[] specificGems, bool verbose, bool incremental, bool force, bool requireAttribute, string? csharpOutputDir)
+        static int GenerateBindings(string projectPath, string? enginePath, string configPath, string[] specificGems, bool verbose, bool incremental, bool force, bool requireAttribute, string? csharpOutputDir, bool allGemsIncludePath = false)
         {
             try
             {
@@ -257,7 +277,8 @@ namespace O3DESharp.BindingGenerator
                 Console.WriteLine($"Require O3DE_EXPORT_CSHARP attribute: {config.Global.RequireExportAttribute}");
                 Console.WriteLine($"Verbose: {verbose}");
                 Console.WriteLine($"Incremental: {incremental}");
-                Console.WriteLine($"Force rebuild: {force}\n");
+                Console.WriteLine($"Force rebuild: {force}");
+                Console.WriteLine($"All-gems-include: {allGemsIncludePath}\n");
 
                 // Discover gems
                 var discoveryService = new GemDiscoveryService(verbose, enginePath);
@@ -309,7 +330,7 @@ namespace O3DESharp.BindingGenerator
                 Console.WriteLine();
 
                 // Generate bindings
-                var generator = new MultiGemBindingGenerator(config, verbose, force, discoveryService.ResolvedEnginePath);
+                var generator = new MultiGemBindingGenerator(config, verbose, force, discoveryService.ResolvedEnginePath, allGemsIncludePath);
                 var projectDir = Path.GetDirectoryName(Path.GetFullPath(projectPath)) ?? projectPath;
                 generator.GenerateAll(allGems, sortedGems, projectDir);
 

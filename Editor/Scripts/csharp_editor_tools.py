@@ -2131,6 +2131,19 @@ Status: {status['message']}"""
             # callers can override by setting config.verbose=False.
             config.verbose = True
 
+            # Default all-gems-include=True for the editor flow.
+            # Many O3DE gems have incomplete gem.json dependency
+            # declarations - EMotionFX includes IAudioSystem.h without
+            # declaring AudioSystem as a dep, and the same pattern
+            # repeats across several first-party gems. In strict-dep
+            # mode those produce "file not found" parse errors that
+            # quietly degrade the generated bindings (the affected
+            # class gets skipped as "no bindable members"). The "I
+            # just want bindings to work" expectation is permissive
+            # mode; users with strict-dep hygiene needs can flip this
+            # off via config.all_gems_on_include_path = False.
+            config.all_gems_on_include_path = True
+
             self._log("Invoking ClangSharp binding generator (background thread, verbose)...", "INFO")
             self.binding_status_label.setText("Generating bindings (ClangSharp)...")
             # Disable the button while running so we don't get re-entrant

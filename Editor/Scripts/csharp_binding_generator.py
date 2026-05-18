@@ -68,6 +68,15 @@ class BindingGeneratorConfig:
     generate_gems: bool = True
     separate_gem_directories: bool = True
     generate_per_gem_projects: bool = True
+    # When True, every discovered gem's include surface gets added to
+    # libclang's search path (not just declared dependencies). Fixes
+    # cross-gem 'file not found' errors that arise when a gem.json
+    # doesn't declare every transitive include source - e.g. EMotionFX
+    # pulling IAudioSystem.h without AudioSystem appearing as a dep.
+    # Defaults False here (strict mode catches missing-dep bugs at
+    # generation time); the editor flow flips it True for the
+    # "just give me bindings" UX.
+    all_gems_on_include_path: bool = False
 
     # Gem filtering
     include_gems: List[str] = field(default_factory=list)
@@ -482,6 +491,9 @@ class ClangSharpInvoker:
 
         if config.verbose:
             args.append("--verbose")
+
+        if config.all_gems_on_include_path:
+            args.append("--all-gems-include")
 
         if config.include_gems:
             args.extend(["--gems", ",".join(config.include_gems)])
