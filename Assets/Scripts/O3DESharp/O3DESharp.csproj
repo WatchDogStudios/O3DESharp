@@ -36,6 +36,23 @@
     <O3DEIncremental>true</O3DEIncremental>
   </PropertyGroup>
 
+  <!--
+    Debug-mode build settings tuned for external managed-debugger attach.
+    DebugType=full produces Windows-format PDBs that ICorDebug's attach
+    handshake accepts cleanly - portable PDBs were observed to make
+    vsdbg/Rider/VS return E_INVALIDARG from DebugActiveProcess against
+    the embedded CoreCLR. PublishSingleFile/Compression=false keeps the
+    assemblies loose on disk so the debugger can read them.
+  -->
+  <PropertyGroup Condition="'$(Configuration)' == 'Debug'">
+    <Optimize>false</Optimize>
+    <DebugSymbols>true</DebugSymbols>
+    <DebugType>full</DebugType>
+    <!-- Force assemblies to stay loose on disk for the debugger -->
+    <PublishSingleFile>false</PublishSingleFile>
+    <EnableCompressionInSingleFile>false</EnableCompressionInSingleFile>
+  </PropertyGroup>
+
   <ItemGroup>
     <O3DEGems Include="O3DESharp" />
   </ItemGroup>

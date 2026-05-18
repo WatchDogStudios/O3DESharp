@@ -214,18 +214,31 @@ CSPROJ_TEMPLATE = r'''<Project Sdk="Microsoft.NET.Sdk">
     <Configurations>Debug;Release</Configurations>
     <Platforms>AnyCPU</Platforms>
 
-    <!-- Debugger-friendly defaults. Portable PDBs are required for both
-         Visual Studio and Rider "Attach to Process" managed-mode debugging
-         to bind line numbers, and they're cheap enough to ship in Release
-         too. -->
+    <!-- Default PDB format for non-Debug configs. Debug overrides this
+         to "full" below - see the Debug PropertyGroup for the full
+         rationale (short version: vsdbg / Rider / VS managed attach
+         against an embedded CoreCLR returned E_INVALIDARG from
+         DebugActiveProcess when the user-script DLL had portable PDBs;
+         switching Debug to full-format PDBs was the fix). Release
+         keeps portable because it's cheaper to ship and we don't
+         expect external-debugger attach in Release. -->
     <DebugType>portable</DebugType>
     <DebugSymbols>true</DebugSymbols>
   </PropertyGroup>
 
-  <!-- Per-config optimization. Debug stays unoptimized so the JIT keeps
-       locals + step boundaries intact for the debugger. Release optimizes. -->
+  <!-- Debug-mode build settings tuned for external managed-debugger
+       attach. DebugType=full produces Windows-format PDBs that
+       ICorDebug's attach handshake accepts cleanly; loose-on-disk
+       publish keeps the debugger able to read the assemblies. These
+       five properties together are what turned attach green across
+       vsdbg / Rider / Visual Studio for the embedded-Coral case. -->
   <PropertyGroup Condition="'$(Configuration)' == 'Debug'">
     <Optimize>false</Optimize>
+    <DebugSymbols>true</DebugSymbols>
+    <DebugType>full</DebugType>
+    <!-- Force assemblies to stay loose on disk for the debugger -->
+    <PublishSingleFile>false</PublishSingleFile>
+    <EnableCompressionInSingleFile>false</EnableCompressionInSingleFile>
     <DefineConstants>DEBUG;TRACE</DefineConstants>
   </PropertyGroup>
   <PropertyGroup Condition="'$(Configuration)' == 'Release'">

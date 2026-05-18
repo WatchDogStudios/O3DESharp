@@ -48,6 +48,23 @@
 
   <PropertyGroup Condition="'$(Configuration)' == 'Debug'">
     <DefineConstants>DEBUG;TRACE;O3DE_DEBUG</DefineConstants>
+    <!--
+      vsdbg / Rider / VS managed attach against an embedded CoreCLR
+      (Coral delegate-host mode) was returning E_INVALIDARG from
+      ICorDebug::DebugActiveProcess when this assembly was built with
+      DebugType=portable. Forcing DebugType=full for Debug builds plus
+      explicitly disabling single-file publish was the missing piece
+      that turned attach green across all three IDEs. The non-Debug
+      configs keep portable PDBs (set in the main PropertyGroup
+      above) because Profile/Release don't need full Windows-format
+      symbols and portable is cheaper to ship.
+    -->
+    <Optimize>false</Optimize>
+    <DebugSymbols>true</DebugSymbols>
+    <DebugType>full</DebugType>
+    <!-- Force assemblies to stay loose on disk for the debugger -->
+    <PublishSingleFile>false</PublishSingleFile>
+    <EnableCompressionInSingleFile>false</EnableCompressionInSingleFile>
   </PropertyGroup>
 
   <PropertyGroup Condition="'$(Configuration)' == 'Profile'">

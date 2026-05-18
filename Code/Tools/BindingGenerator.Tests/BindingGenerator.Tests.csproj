@@ -9,6 +9,20 @@
     <RootNamespace>O3DESharp.BindingGenerator.Tests</RootNamespace>
   </PropertyGroup>
 
+  <!--
+    Debug-mode build settings tuned for managed-debugger attach when
+    debugging the test runner. Matches the gem-wide convention from
+    O3DE.Core.csproj - DebugType=full + loose-on-disk assemblies.
+  -->
+  <PropertyGroup Condition="'$(Configuration)' == 'Debug'">
+    <Optimize>false</Optimize>
+    <DebugSymbols>true</DebugSymbols>
+    <DebugType>full</DebugType>
+    <!-- Force assemblies to stay loose on disk for the debugger -->
+    <PublishSingleFile>false</PublishSingleFile>
+    <EnableCompressionInSingleFile>false</EnableCompressionInSingleFile>
+  </PropertyGroup>
+
   <ItemGroup>
     <PackageReference Include="coverlet.collector" Version="6.0.0">
       <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
