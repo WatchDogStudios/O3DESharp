@@ -9,6 +9,7 @@
 #include "CSharpExposedPropertiesHandler.h"
 
 #include <O3DESharp/O3DESharpBus.h>
+#include <O3DESharp/O3DESharpExposedPropertyBus.h>
 
 #include <AzCore/Console/ILogger.h>
 #include <AzCore/JSON/document.h>
@@ -401,5 +402,73 @@ namespace O3DESharp
             const AZStd::string typeTag(qTypeTag.toUtf8().constData());
             instance[name] = ReadWidgetValue(w, typeTag);
         }
+
+        // Push the freshly-committed value map to any live runtime
+        // CSharpScriptComponent on the same entity. The
+        // O3DESharpExposedPropertyNotificationBus is addressed by
+        // entity id; the runtime component connects with its own id
+        // on Activate, so this propagates the inspector edit to the
+        // running managed instance without requiring a Reload Scripts
+        // or a re-enter of Game Mode.
+        //
+        // Entity-id discovery walks the InstanceDataNode chain from
+        // this field (m_exposedPropertyValues) up through
+        // EditorCSharpScriptConfig and finds the
+        // EditorCSharpScriptComponent that owns the config. The
+        // component knows its entity id natively. If the walk fails
+        // (unlikely outside hot-reload / shutdown edge cases), we
+        // skip the broadcast - the next BuildGameEntity will pick up
+        // the new values from the editor config the standard way.
+        if (node != nullptr)
+        {
+            const AZ::EntityId entityId = ResolveOwningEntityId(node);
+            if (entityId.IsValid())
+            {
+                O3DESharpExposedPropertyNotificationBus::Event(
+                    entityId,
+                    &O3DESharpExposedPropertyNotifications::OnExposedPropertyChanged,
+                    instance);
+            }
+        }
+    }
+
+    AZ::EntityId CSharpExposedPropertiesHandler::ResolveOwningEntityId(
+        AzToolsFramework::InstanceDataNode* startNode) const
+    {
+        // Walk up the InstanceDataNode chain looking for a node whose
+        // class data identifies an AZ::Component subclass. Cast the
+        // instance pointer at that level to AZ::Component and read
+        // its entity id. This is the standard InstanceDataNode -> owning
+        // component pattern used in O3DE tooling.
+        for (AzToolsFramework::InstanceDataNode* n = startNode; n != nullptr; n = n->GetParent())
+        {
+            const AZ::SerializeContext::ClassData* classData = n->GetClassMetadata();
+            if (classData == nullptr || classData->m_azRtti == nullptr) continue;
+
+            // We want EditorCSharpScriptComponent specifically. Its
+            // RTTI chains up to AZ::Component, but matching against
+            // EditorCSharpScriptComponent's exact RTTI gives us the
+            // component instance pointer without ambiguity. We can't
+            // include the header without a circular dep so we compare
+            // by class name string instead.
+            if (classData->m_name != nullptr &&
+                strcmp(classData->m_name, "EditorCSharpScriptComponent") == 0)
+            {
+                void* instancePtr = n->FirstInstance();
+                if (instancePtr != nullptr)
+                {
+                    // EditorCSharpScriptComponent inherits from
+                    // AZ::Component, which has GetEntityId. Cast via
+                    // AzRtti so we don't need the full type.
+                    auto* component = classData->m_azRtti->Cast<AZ::Component>(
+                        instancePtr, AZ::Component::TYPEINFO_Uuid());
+                    if (component != nullptr)
+                    {
+                        return component->GetEntityId();
+                    }
+                }
+            }
+        }
+        return AZ::EntityId();
     }
 } // namespace O3DESharp

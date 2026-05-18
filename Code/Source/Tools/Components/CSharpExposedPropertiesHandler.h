@@ -8,6 +8,7 @@
 
 #pragma once
 
+#include <AzCore/Component/EntityId.h>
 #include <AzCore/std/containers/unordered_map.h>
 #include <AzCore/std/string/string.h>
 #include <AzToolsFramework/UI/PropertyEditor/PropertyEditorAPI.h>
@@ -68,5 +69,17 @@ namespace O3DESharp
             QWidget* GUI,
             const property_t& instance,
             AzToolsFramework::InstanceDataNode* node) override;
+
+    private:
+        /// <summary>
+        /// Walk up the InstanceDataNode chain from the field node to
+        /// find the EditorCSharpScriptComponent that owns the config,
+        /// then return its entity id. Used by WriteGUIValuesIntoProperty
+        /// to broadcast property changes to the matching runtime
+        /// CSharpScriptComponent over O3DESharpExposedPropertyNotificationBus.
+        /// Returns an invalid EntityId if the walk fails (rare; usually
+        /// indicates we're being called outside the normal inspector flow).
+        /// </summary>
+        AZ::EntityId ResolveOwningEntityId(AzToolsFramework::InstanceDataNode* startNode) const;
     };
 } // namespace O3DESharp

@@ -505,16 +505,20 @@ except Exception as e:
         {
             AzToolsFramework::ActionProperties props;
             const AZStd::string current = GetAutoAttachOnPlay();
-            props.m_name = current.empty()
+            // Display "Off" when the value is empty (never been set) or
+            // when it's the explicit "off" sentinel value. Otherwise
+            // show the IDE name as-is.
+            props.m_name = (current.empty() || current == "off")
                 ? AZStd::string("Auto-attach on Game Mode: Off")
                 : AZStd::string::format("Auto-attach on Game Mode: %s", current.c_str());
             props.m_description =
-                "Cycle through Off / JIT / Rider / VS Code. When set, the editor LAUNCHES the "
-                "chosen IDE (non-blocking) right before Ctrl+G enters game mode. You then attach "
-                "manually from that IDE while the editor keeps running normally. For breakpoints "
-                "in OnCreate: either attach before Ctrl+G, or hit Tools > C# Scripting > Reload "
-                "Scripts after attaching to re-run OnCreate under the debugger. Persisted in "
-                "/O3DE/O3DESharp/AutoAttachOnPlay.";
+                "Cycle through Off / JIT / Rider / VS Code. When set to anything other than Off, "
+                "the editor LAUNCHES the chosen IDE (non-blocking) right before Ctrl+G enters "
+                "game mode. You then attach manually from that IDE while the editor keeps running "
+                "normally. For breakpoints in OnCreate: either attach before Ctrl+G, or hit Tools "
+                "> C# Scripting > Reload Scripts after attaching to re-run OnCreate under the "
+                "debugger. Explicit Off is honored - the auto-detected default does NOT come "
+                "back after you cycle past it. Persisted in /O3DE/O3DESharp/AutoAttachOnPlay.";
             props.m_category = "Scripting";
 
             actionManagerInterface->RegisterAction(
@@ -932,26 +936,38 @@ except Exception as e:
     void O3DESharpEditorSystemComponent::CycleAutoAttachOnPlay()
     {
         // off -> jit -> rider -> vscode -> off
-        const AZStd::string current = GetAutoAttachOnPlay();
+        //
+        // Always set the registry key to a non-empty value (we use the
+        // literal "off" for the disabled state) so OnStartPlayInEditorBegin
+        // can distinguish "user explicitly chose Off" from "key has never
+        // been set" via SettingsRegistry::Get's return value. The previous
+        // version cycled back to empty for the Off state, which made the
+        // sentinel-default code re-apply the auto-detected IDE on the
+        // next play - the textbook "I disabled this but it keeps coming
+        // back" bug the user reported.
+        AZStd::string current;
+        if (auto* registry = AZ::SettingsRegistry::Get())
+        {
+            registry->Get(current, AutoAttachOnPlaySettingKey);
+        }
         AZStd::string next;
-        if (current.empty())          { next = "jit"; }
-        else if (current == "jit")    { next = "rider"; }
-        else if (current == "rider")  { next = "vscode"; }
-        else                          { next = ""; } // includes "vscode" and any garbage value
+        if (current.empty() || current == "off") { next = "jit"; }
+        else if (current == "jit")               { next = "rider"; }
+        else if (current == "rider")             { next = "vscode"; }
+        else                                     { next = "off"; }  // vscode + any unknown value cycle to off
 
         if (auto* registry = AZ::SettingsRegistry::Get())
         {
             registry->Set(AutoAttachOnPlaySettingKey, next);
         }
 
-        AZ_Printf("O3DESharp", "Auto-attach on Game Mode: %s\n",
-            next.empty() ? "Off" : next.c_str());
+        AZ_Printf("O3DESharp", "Auto-attach on Game Mode: %s\n", next.c_str());
 
         // The action's display name was captured at register time. Refresh
         // it so the menu reflects the new state without an editor restart.
         if (auto* actionManagerInterface = AZ::Interface<AzToolsFramework::ActionManagerInterface>::Get())
         {
-            AZStd::string label = next.empty()
+            AZStd::string label = (next == "off")
                 ? AZStd::string("Auto-attach on Game Mode: Off")
                 : AZStd::string::format("Auto-attach on Game Mode: %s", next.c_str());
             actionManagerInterface->SetActionName(CSharpAutoAttachOnPlayActionId, label);
@@ -1001,14 +1017,36 @@ except Exception as e:
         // few editor frames before any script runs. By the time OnCreate
         // fires the debugger has usually finished attaching - and if not,
         // a script can pair this with Debugger.WaitForAttach to be sure.
-        AZStd::string method = GetAutoAttachOnPlay();
+        //
+        // Three-state semantics for the AutoAttachOnPlay registry key:
+        //
+        //   key NOT SET (Get returns false):
+        //     fresh project, no user interaction yet -> consult the
+        //     sentinel file (if any) and adopt detected IDE as a one-
+        //     time default. Then delete the sentinel so it can never
+        //     re-apply on subsequent runs.
+        //
+        //   key SET TO "off" (or any unknown value treated as "off"):
+        //     user explicitly chose no auto-attach. Honor it - don't
+        //     touch the sentinel, don't launch anything.
+        //
+        //   key SET TO "jit" / "rider" / "vscode":
+        //     user picked a specific IDE. Honor it.
+        //
+        // The previous code treated "key not set" and "key set to empty"
+        // identically (both `method.empty()`), so cycling to Off would
+        // trigger the sentinel re-apply on the NEXT play and silently
+        // re-enable the previously-auto-detected IDE. Distinguishing
+        // not-set from explicitly-empty via the registry Get return
+        // value fixes that.
+        AZStd::string method;
+        bool methodIsExplicitlySet = false;
+        if (auto* registry = AZ::SettingsRegistry::Get())
+        {
+            methodIsExplicitlySet = registry->Get(method, AutoAttachOnPlaySettingKey);
+        }
 
-        // Phase 17d: first-run defaulting. If the user hasn't explicitly
-        // set AutoAttachOnPlay AND the Python helper detect_preferred_ide
-        // wrote a sentinel file with the picked IDE, adopt that as the
-        // default on the first play entry. Write it back to the registry
-        // so subsequent sessions skip detection.
-        if (method.empty())
+        if (!methodIsExplicitlySet)
         {
             AZ::IO::FixedMaxPath sentinelPath =
                 AZ::IO::FixedMaxPath(AZ::Utils::GetProjectPath()) /
@@ -1041,11 +1079,23 @@ except Exception as e:
                             method.c_str());
                     }
                 }
+                // Delete the sentinel after one consumption regardless of
+                // what we read from it. The sentinel is a "first-run hint"
+                // from the Python detector; if we let it live, the user's
+                // subsequent explicit Off cycle would get steamrolled by
+                // it on the next play. One-shot semantics make the
+                // mental model "the user owns the registry value from
+                // here on, full stop."
+                AZ::IO::SystemFile::Delete(sentinelPath.c_str());
             }
-            if (method.empty())
-            {
-                return;
-            }
+        }
+
+        // After resolution: if method is empty OR explicitly "off",
+        // do not launch any IDE. The user opted out either implicitly
+        // (no IDE detected, no sentinel) or explicitly (cycled to Off).
+        if (method.empty() || method == "off")
+        {
+            return;
         }
 
         const char* bootstrapFn = nullptr;
@@ -1055,7 +1105,7 @@ except Exception as e:
         else
         {
             AZ_Warning("O3DESharp", false,
-                "Unknown AutoAttachOnPlay value '%s'; valid values are 'jit', 'rider', 'vscode', or empty.",
+                "Unknown AutoAttachOnPlay value '%s'; valid values are 'jit', 'rider', 'vscode', 'off', or empty.",
                 method.c_str());
             return;
         }

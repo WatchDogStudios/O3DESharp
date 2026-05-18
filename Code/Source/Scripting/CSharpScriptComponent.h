@@ -23,6 +23,7 @@
 #include <Coral/ManagedObject.hpp>
 
 #include <O3DESharp/O3DESharpHotReloadBus.h>
+#include <O3DESharp/O3DESharpExposedPropertyBus.h>
 
 namespace O3DESharp
 {
@@ -107,6 +108,7 @@ namespace O3DESharp
         , public AZ::TickBus::Handler
         , public AZ::TransformNotificationBus::Handler
         , public O3DESharpHotReloadNotificationBus::Handler
+        , public O3DESharpExposedPropertyNotificationBus::Handler
     {
     public:
         AZ_COMPONENT(CSharpScriptComponent, "{05918223-7DEF-48F6-8963-53BA48371E1D}");
@@ -179,6 +181,12 @@ namespace O3DESharp
         // dereference stale handles. See O3DESharpHotReloadBus.h.
         void OnBeforeUserAssemblyReload() override;
         void OnAfterUserAssemblyReload() override;
+
+        // O3DESharpExposedPropertyNotificationBus::Handler - inspector edits
+        // during Game Mode reach the running script via this bus. See
+        // O3DESharpExposedPropertyBus.h for the editor-side trigger.
+        void OnExposedPropertyChanged(
+            const AZStd::unordered_map<AZStd::string, AZStd::string>& newValues) override;
 
     private:
         /**

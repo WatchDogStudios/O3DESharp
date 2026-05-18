@@ -265,6 +265,16 @@ namespace O3DESharp
         // our managed state around an assembly-context reload (Phase 13).
         O3DESharpHotReloadNotificationBus::Handler::BusConnect();
 
+        // Connect to exposed-property-change notifications keyed by THIS
+        // entity's id. The editor-side CSharpExposedPropertiesHandler
+        // broadcasts to this bus when the user edits an [ExposedProperty]
+        // widget in the inspector during Game Mode. Without this connect
+        // the runtime would only see property values at Activate time
+        // (from BuildGameEntity's config copy) and stay stale on every
+        // inspector edit until the next Reload Scripts / Game Mode
+        // re-enter.
+        O3DESharpExposedPropertyNotificationBus::Handler::BusConnect(GetEntityId());
+
         m_isActivating = false;
     }
 
@@ -275,6 +285,7 @@ namespace O3DESharp
             GetEntity() ? GetEntity()->GetName().c_str() : "Unknown");
 
         // Disconnect from buses
+        O3DESharpExposedPropertyNotificationBus::Handler::BusDisconnect();
         O3DESharpHotReloadNotificationBus::Handler::BusDisconnect();
         AZ::TransformNotificationBus::Handler::BusDisconnect();
         AZ::TickBus::Handler::BusDisconnect();
@@ -499,6 +510,34 @@ namespace O3DESharp
         // Detach from TickBus so we don't pay the dispatch cost every frame for
         // a component we'll just no-op anyway.
         AZ::TickBus::Handler::BusDisconnect();
+    }
+
+    void CSharpScriptComponent::OnExposedPropertyChanged(
+        const AZStd::unordered_map<AZStd::string, AZStd::string>& newValues)
+    {
+        // Inspector edits flow through here during Game Mode. The editor
+        // component on the same entity-id broadcasts to this bus from
+        // CSharpExposedPropertiesHandler::WriteGUIValuesIntoProperty
+        // whenever the user commits a value change.
+        //
+        // We replace the local map wholesale (the editor side sends the
+        // full map, not a delta) and re-push to the managed instance.
+        // Push is no-op if m_disabledByException or the script isn't
+        // valid, so no extra guard needed here.
+        if (m_disabledByException)
+        {
+            return;
+        }
+
+        AZLOG_INFO(
+            "CSharpScriptComponent: Live-updating %zu exposed properties on entity '%s' "
+            "(script '%s') from inspector edit.",
+            newValues.size(),
+            GetEntity() ? GetEntity()->GetName().c_str() : "Unknown",
+            m_config.m_scriptClassName.c_str());
+
+        m_config.m_exposedPropertyValues = newValues;
+        PushExposedPropertiesToScript();
     }
 
     bool CSharpScriptComponent::CreateScriptInstance()

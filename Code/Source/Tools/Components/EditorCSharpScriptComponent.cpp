@@ -85,10 +85,17 @@ namespace O3DESharp
                     ->DataElement(AZ_CRC_CE("CSharpExposedProperties"), &EditorCSharpScriptConfig::m_exposedPropertyValues,
                         "Exposed Properties",
                         "Values for [ExposedProperty]-decorated fields on the selected script. "
-                        "These are applied to the managed instance before OnCreate.")
+                        "Applied to the managed instance before OnCreate, and pushed live to "
+                        "the runtime instance when edited during Game Mode.")
                         ->Attribute(AZ::Edit::Attributes::AutoExpand, true)
                         ->Attribute(AZ_CRC_CE("ScriptClassNameAttr"), &EditorCSharpScriptConfig::m_scriptClassName)
                     ;
+                    // (Entity-id discovery for the live-push broadcast is
+                    // done from the handler's WriteGUIValuesIntoProperty
+                    // via an InstanceDataNode walk - the EditContext
+                    // attribute would need the callable to live on the
+                    // same class as the field, which here is the config
+                    // not the component.)
             }
         }
     }
