@@ -7,6 +7,7 @@
  */
 
 using System;
+using System.Collections.Generic;
 using System.CommandLine;
 using System.CommandLine.Invocation;
 using System.IO;
@@ -107,7 +108,29 @@ namespace O3DESharp.BindingGenerator
             var allGemsIncludeOption = new Option<bool>(
                 aliases: new[] { "--all-gems-include" },
                 getDefaultValue: () => false,
-                description: "Add every discovered gem's include surface to the parse path, not just declared dependencies. Fixes cross-gem 'file not found' errors when gem.json doesn't declare every transitive include.");
+                description: "ClangSharp only. Add every discovered gem's include surface to the parse path, not just declared dependencies. Fixes cross-gem 'file not found' errors when gem.json doesn't declare every transitive include.");
+
+            // Generator backend selector: "reflection" (default) uses
+            // ReflectionDataExporter's JSON output (the BehaviorContext
+            // public-API surface; same data Lua / ScriptCanvas / Python
+            // bindings consume). "clang" uses the ClangSharp header
+            // parser - heavier, has to fight MSVC compat / cross-gem
+            // include paths, generates wrappers that might not have a
+            // BehaviorContext dispatch path (so they crash at runtime).
+            // Reflection backend is the recommended choice for everything
+            // a C# script would actually want to call.
+            var sourceOption = new Option<string>(
+                aliases: new[] { "--source" },
+                getDefaultValue: () => "reflection",
+                description: "Generator backend: 'reflection' (default, consumes reflection_data.json) or 'clang' (ClangSharp header parser).");
+
+            // Path to the reflection JSON. Defaults to
+            // <project>/Cache/pc/generated/reflection_data.json which is
+            // where the editor's AutoExportReflectionData writes it.
+            var reflectionDataOption = new Option<string?>(
+                aliases: new[] { "--reflection-data" },
+                getDefaultValue: () => null,
+                description: "Reflection backend only. Path to reflection_data.json. Defaults to <project>/Cache/pc/generated/reflection_data.json.");
 
             // List gems command
             var listGemsCommand = new Command("list-gems", "List all discovered gems in the project");
@@ -134,6 +157,8 @@ namespace O3DESharp.BindingGenerator
             generateCommand.AddOption(requireAttributeOption);
             generateCommand.AddOption(csharpOutputOption);
             generateCommand.AddOption(allGemsIncludeOption);
+            generateCommand.AddOption(sourceOption);
+            generateCommand.AddOption(reflectionDataOption);
             generateCommand.SetHandler((context) =>
             {
                 var project = context.ParseResult.GetValueForOption(projectOption) ?? ".";
@@ -146,7 +171,16 @@ namespace O3DESharp.BindingGenerator
                 var requireAttribute = context.ParseResult.GetValueForOption(requireAttributeOption);
                 var csharpOutput = context.ParseResult.GetValueForOption(csharpOutputOption);
                 var allGemsInclude = context.ParseResult.GetValueForOption(allGemsIncludeOption);
-                context.ExitCode = GenerateBindings(project, engine, config, gems, verbose, incremental, force, requireAttribute, csharpOutput, allGemsInclude);
+                var source = context.ParseResult.GetValueForOption(sourceOption) ?? "reflection";
+                var reflectionData = context.ParseResult.GetValueForOption(reflectionDataOption);
+                if (string.Equals(source, "reflection", StringComparison.OrdinalIgnoreCase))
+                {
+                    context.ExitCode = GenerateBindingsFromReflection(project, gems, verbose, csharpOutput, reflectionData);
+                }
+                else
+                {
+                    context.ExitCode = GenerateBindings(project, engine, config, gems, verbose, incremental, force, requireAttribute, csharpOutput, allGemsInclude);
+                }
             });
 
             // Init config command
@@ -179,6 +213,8 @@ namespace O3DESharp.BindingGenerator
             rootCommand.AddOption(requireAttributeOption);
             rootCommand.AddOption(csharpOutputOption);
             rootCommand.AddOption(allGemsIncludeOption);
+            rootCommand.AddOption(sourceOption);
+            rootCommand.AddOption(reflectionDataOption);
 
             rootCommand.SetHandler((context) =>
             {
@@ -192,7 +228,16 @@ namespace O3DESharp.BindingGenerator
                 var requireAttribute = context.ParseResult.GetValueForOption(requireAttributeOption);
                 var csharpOutput = context.ParseResult.GetValueForOption(csharpOutputOption);
                 var allGemsInclude = context.ParseResult.GetValueForOption(allGemsIncludeOption);
-                context.ExitCode = GenerateBindings(project, engine, config, gems, verbose, incremental, force, requireAttribute, csharpOutput, allGemsInclude);
+                var source = context.ParseResult.GetValueForOption(sourceOption) ?? "reflection";
+                var reflectionData = context.ParseResult.GetValueForOption(reflectionDataOption);
+                if (string.Equals(source, "reflection", StringComparison.OrdinalIgnoreCase))
+                {
+                    context.ExitCode = GenerateBindingsFromReflection(project, gems, verbose, csharpOutput, reflectionData);
+                }
+                else
+                {
+                    context.ExitCode = GenerateBindings(project, engine, config, gems, verbose, incremental, force, requireAttribute, csharpOutput, allGemsInclude);
+                }
             });
 
             return rootCommand.Invoke(args);
@@ -221,6 +266,91 @@ namespace O3DESharp.BindingGenerator
                 Console.WriteLine(new string('-', 80));
                 Console.WriteLine($"Total: {gems.Count}, Enabled: {gems.Values.Count(g => g.IsEnabled)}");
 
+                return 0;
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"Error: {ex.Message}");
+                if (verbose)
+                {
+                    Console.WriteLine(ex.StackTrace);
+                }
+                return 1;
+            }
+        }
+
+        /// <summary>
+        /// Default backend (--source reflection). Reads the JSON produced
+        /// at runtime by the C++ ReflectionDataExporter and emits C#
+        /// wrappers that dispatch through NativeReflection. No header
+        /// parsing, no MSVC compat, no cross-gem include walking.
+        /// </summary>
+        static int GenerateBindingsFromReflection(string projectPath, string[] specificGems, bool verbose, string? csharpOutputDir, string? reflectionDataOverride)
+        {
+            try
+            {
+                Console.WriteLine("O3DE C# Binding Generator - Reflection backend");
+                Console.WriteLine("==============================================\n");
+
+                // Resolve where to read the JSON from. Editor's
+                // AutoExportReflectionData writes to:
+                //   <project>/Cache/pc/generated/reflection_data.json
+                // so unless the caller overrides it, derive that path.
+                var projectAbs = Path.GetFullPath(projectPath);
+                if (!Directory.Exists(projectAbs))
+                {
+                    projectAbs = Path.GetDirectoryName(projectAbs) ?? projectAbs;
+                }
+                var reflectionPath = !string.IsNullOrEmpty(reflectionDataOverride)
+                    ? Path.GetFullPath(reflectionDataOverride!)
+                    : Path.Combine(projectAbs, "Cache", "pc", "generated", "reflection_data.json");
+
+                Console.WriteLine($"Project:        {projectAbs}");
+                Console.WriteLine($"Reflection JSON: {reflectionPath}");
+                Console.WriteLine($"Verbose:        {verbose}");
+
+                if (specificGems != null && specificGems.Length > 0)
+                {
+                    Console.WriteLine($"Gem filter:     {string.Join(", ", specificGems)}");
+                }
+                Console.WriteLine();
+
+                // Resolve output directory.
+                string outputDir;
+                if (!string.IsNullOrEmpty(csharpOutputDir))
+                {
+                    outputDir = Path.GetFullPath(csharpOutputDir);
+                }
+                else
+                {
+                    outputDir = Path.Combine(projectAbs, "Generated", "CSharp");
+                }
+                Console.WriteLine($"Output:         {outputDir}\n");
+
+                // Parse gem filter (comma-separated, like --gems Foo,Bar).
+                ISet<string>? gemFilter = null;
+                if (specificGems != null && specificGems.Length > 0)
+                {
+                    gemFilter = new HashSet<string>(
+                        specificGems.SelectMany(g => g.Split(',')).Select(g => g.Trim()),
+                        StringComparer.OrdinalIgnoreCase);
+                }
+
+                var generator = new ReflectionBindingGenerator(rootNamespace: "O3DE.Generated", verbose: verbose);
+                var result = generator.Generate(reflectionPath, outputDir, gemFilter);
+
+                if (!result.Success)
+                {
+                    Console.WriteLine($"Error: {result.ErrorMessage}");
+                    return 1;
+                }
+
+                Console.WriteLine();
+                Console.WriteLine($"========== Reflection Backend Complete ==========");
+                Console.WriteLine($"Classes:        {result.ClassFilesWritten}/{result.TotalClasses}");
+                Console.WriteLine($"EBuses:         {result.BusFilesWritten}/{result.TotalEBuses}");
+                Console.WriteLine($"Globals files:  {result.GlobalsFilesWritten} (covering {result.TotalGlobals} items)");
+                Console.WriteLine($"Output:         {outputDir}");
                 return 0;
             }
             catch (Exception ex)

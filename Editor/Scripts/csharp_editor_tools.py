@@ -2142,7 +2142,18 @@ Status: {status['message']}"""
             # just want bindings to work" expectation is permissive
             # mode; users with strict-dep hygiene needs can flip this
             # off via config.all_gems_on_include_path = False.
+            # (only meaningful in clang mode; reflection backend ignores)
             config.all_gems_on_include_path = True
+
+            # Backend: reflection by default for the editor flow. The
+            # BehaviorContext JSON path produces wrappers that are
+            # guaranteed callable at runtime (every wrapper dispatches
+            # through NativeReflection, which uses the same
+            # BehaviorContext we generated from). ClangSharp can
+            # produce wrappers for things not in BehaviorContext that
+            # would crash on first call - reflection avoids that
+            # entirely. Set config.source = "clang" to override.
+            config.source = "reflection"
 
             self._log("Invoking ClangSharp binding generator (background thread, verbose)...", "INFO")
             self.binding_status_label.setText("Generating bindings (ClangSharp)...")

@@ -78,6 +78,21 @@ class BindingGeneratorConfig:
     # "just give me bindings" UX.
     all_gems_on_include_path: bool = False
 
+    # Generator backend. "reflection" (default) consumes
+    # reflection_data.json from the editor's AutoExportReflectionData
+    # hook - same BehaviorContext data Lua/ScriptCanvas/Python use.
+    # "clang" uses ClangSharp header parsing (heavier, can produce
+    # wrappers without a BehaviorContext dispatch path that crash at
+    # runtime; kept as opt-in for advanced cases).
+    source: str = "reflection"
+
+    # Reflection backend only: explicit path to reflection_data.json.
+    # When None, the tool defaults to
+    # <project>/Cache/pc/generated/reflection_data.json (where the
+    # editor's auto-export writes it). Set this if your editor wrote
+    # the JSON to a custom location via ExportReflectionData(path).
+    reflection_data_path: Optional[str] = None
+
     # Gem filtering
     include_gems: List[str] = field(default_factory=list)
     exclude_gems: List[str] = field(default_factory=list)
@@ -494,6 +509,16 @@ class ClangSharpInvoker:
 
         if config.all_gems_on_include_path:
             args.append("--all-gems-include")
+
+        # Backend selector. Reflection is the default in both the C# CLI
+        # and here, but we pass it explicitly so the choice is logged and
+        # a future default-change in either layer doesn't silently flip
+        # the wrong way for existing callers.
+        if config.source:
+            args.extend(["--source", config.source])
+
+        if config.reflection_data_path:
+            args.extend(["--reflection-data", config.reflection_data_path])
 
         if config.include_gems:
             args.extend(["--gems", ",".join(config.include_gems)])
