@@ -39,39 +39,49 @@ set(CORAL_GIT_REPO "https://github.com/WatchDogStudios/Coral.git")
 set(CORAL_GIT_TAG "0d3f30e0449956049fa330a3a44a47b7860a2409")
 
 # Local-checkout override: if O3DESHARP_CORAL_SOURCE_DIR is set (cache
-# variable or env var) and points at a Coral working tree, FetchContent
-# uses that path instead of the GIT_REPOSITORY clone. Lets developers
-# iterate on Coral changes (the debugger-attach support added for the
-# managed-debug initiative, for instance) without pushing to the fork +
-# bumping the pinned SHA on every rebuild.
+# variable, env var, or auto-detected next to the gem) and points at a
+# Coral working tree, FetchContent uses that path instead of the
+# GIT_REPOSITORY clone. Lets developers iterate on Coral changes (the
+# debugger-attach support added for the managed-debug initiative, for
+# instance) without pushing to the fork + bumping the pinned SHA on
+# every rebuild.
 #
-# Two ways to set it:
+# Three ways to set it, in priority order:
 #   1. -DO3DESHARP_CORAL_SOURCE_DIR=<path>  on the cmake command line,
 #      or set as a CMake cache variable in your IDE's CMake settings.
+#      (Highest priority; sticks across configures.)
 #   2. set the O3DESHARP_CORAL_SOURCE_DIR environment variable before
-#      configuring (handy when invoking CMake from a per-developer
-#      build script).
+#      configuring. Re-evaluated every configure - changing the env
+#      var and re-running CMake takes effect without nuking the cache.
+#   3. Convention auto-detect: a Coral fork checkout at
+#      ../Coral-O3DESharp next to the gem (no machine-specific paths
+#      committed - just a sibling-directory convention).
 #
-# Convention-based auto-detect (no machine-specific absolute paths -
-# anything machine-specific belongs in the env var above): if a Coral
-# fork checkout sits at ../Coral-O3DESharp next to this gem
-# (CMAKE_CURRENT_LIST_DIR/../.. since this file is Code/CMakeLists.txt),
-# use it. Easy to opt in by placing the fork there; easy to opt out by
-# not placing it there. No-op on machines without that layout.
-if(NOT DEFINED CACHE{O3DESHARP_CORAL_SOURCE_DIR})
-    if(DEFINED ENV{O3DESHARP_CORAL_SOURCE_DIR})
-        set(_o3desharp_coral_src "$ENV{O3DESHARP_CORAL_SOURCE_DIR}")
-    else()
-        set(_o3desharp_coral_candidate "${CMAKE_CURRENT_LIST_DIR}/../../Coral-O3DESharp")
-        if(IS_DIRECTORY "${_o3desharp_coral_candidate}"
-                AND EXISTS "${_o3desharp_coral_candidate}/Coral.Native/Source/Coral/HostInstance.cpp")
-            set(_o3desharp_coral_src "${_o3desharp_coral_candidate}")
-        endif()
-        unset(_o3desharp_coral_candidate)
+# The variable is FORCED into the cache each configure, so the env var
+# wins over a previously-cached empty value (a footgun in the first
+# version of this block: once an empty value got cached, env-var
+# changes couldn't update it).
+if(DEFINED ENV{O3DESHARP_CORAL_SOURCE_DIR} AND NOT "$ENV{O3DESHARP_CORAL_SOURCE_DIR}" STREQUAL "")
+    set(O3DESHARP_CORAL_SOURCE_DIR "$ENV{O3DESHARP_CORAL_SOURCE_DIR}" CACHE PATH
+        "Optional local Coral fork checkout. When set, used instead of the GIT_REPOSITORY clone." FORCE)
+elseif(NOT O3DESHARP_CORAL_SOURCE_DIR)
+    set(_o3desharp_coral_candidate "${CMAKE_CURRENT_LIST_DIR}/../../Coral-O3DESharp")
+    if(IS_DIRECTORY "${_o3desharp_coral_candidate}"
+            AND EXISTS "${_o3desharp_coral_candidate}/Coral.Native/Source/Coral/HostInstance.cpp")
+        set(O3DESHARP_CORAL_SOURCE_DIR "${_o3desharp_coral_candidate}" CACHE PATH
+            "Optional local Coral fork checkout. When set, used instead of the GIT_REPOSITORY clone." FORCE)
     endif()
-    set(O3DESHARP_CORAL_SOURCE_DIR "${_o3desharp_coral_src}" CACHE PATH
-        "Optional local Coral fork checkout. When set, used instead of the GIT_REPOSITORY clone.")
-    unset(_o3desharp_coral_src)
+    unset(_o3desharp_coral_candidate)
+endif()
+
+# Forward to FetchContent's per-content override variable. This is the
+# CMake-supported way to redirect a FetchContent_Declare(... GIT_REPOSITORY
+# ...) at a local path, and it works around any cache staleness in the
+# regular GIT_REPOSITORY + FetchContent_MakeAvailable flow. Setting it
+# with FORCE so an empty cache value from a prior run can't shadow it.
+if(O3DESHARP_CORAL_SOURCE_DIR AND IS_DIRECTORY "${O3DESHARP_CORAL_SOURCE_DIR}")
+    set(FETCHCONTENT_SOURCE_DIR_CORAL "${O3DESHARP_CORAL_SOURCE_DIR}" CACHE PATH
+        "FetchContent override for Coral - mirrors O3DESHARP_CORAL_SOURCE_DIR" FORCE)
 endif()
 
 # Disable Coral examples and tests before FetchContent to speed up configuration
@@ -80,43 +90,60 @@ set(CORAL_TESTING OFF CACHE BOOL "" FORCE)
 
 include(FetchContent)
 
-# Use GIT_SHALLOW to only fetch the latest commit (much faster than full clone)
-# FIND_PACKAGE_ARGS allows using a pre-installed Coral if available
-if(O3DESHARP_CORAL_SOURCE_DIR AND IS_DIRECTORY "${O3DESHARP_CORAL_SOURCE_DIR}")
-    message(STATUS "O3DESharp: Using local Coral checkout at ${O3DESHARP_CORAL_SOURCE_DIR} (override GIT_REPOSITORY)")
-    FetchContent_Declare(
-        Coral
-        SOURCE_DIR "${O3DESHARP_CORAL_SOURCE_DIR}"
-        SOURCE_SUBDIR cmake
-    )
-else()
-    FetchContent_Declare(
-        Coral
-        GIT_REPOSITORY ${CORAL_GIT_REPO}
-        GIT_TAG ${CORAL_GIT_TAG}
-        GIT_SHALLOW TRUE
-        GIT_PROGRESS TRUE
-        SOURCE_SUBDIR cmake
-    )
-endif()
+# Single FetchContent_Declare regardless of local override - the
+# FETCHCONTENT_SOURCE_DIR_CORAL cache variable set just above is the
+# CMake-supported way to redirect the GIT_REPOSITORY at a local path
+# when present, so we don't need separate Declare calls. GIT_SHALLOW
+# keeps the fetch fast for the non-override case.
+FetchContent_Declare(
+    Coral
+    GIT_REPOSITORY ${CORAL_GIT_REPO}
+    GIT_TAG ${CORAL_GIT_TAG}
+    GIT_SHALLOW TRUE
+    GIT_PROGRESS TRUE
+    SOURCE_SUBDIR cmake
+)
 
-# please always be really clear about what third parties your gem uses.
-message(STATUS "O3DESharp Gem uses ${CORAL_GIT_REPO} (License: MIT)")
+# Loud status so a stale-cache footgun (the symptom that prompted this
+# whole rewrite: O3DESHARP_CORAL_SOURCE_DIR cached as empty + a stale
+# _deps/coral-src/ that FetchContent thought was already populated)
+# can't go unnoticed. Logs the actual source path that's about to be
+# used so a developer can sanity-check it matches their intent.
+if(O3DESHARP_CORAL_SOURCE_DIR AND IS_DIRECTORY "${O3DESHARP_CORAL_SOURCE_DIR}")
+    message(STATUS "O3DESharp: Using local Coral checkout at ${O3DESHARP_CORAL_SOURCE_DIR}")
+    message(STATUS "  (forwarded to FETCHCONTENT_SOURCE_DIR_CORAL; GIT_REPOSITORY is bypassed)")
+else()
+    message(STATUS "O3DESharp: Using upstream ${CORAL_GIT_REPO}@${CORAL_GIT_TAG} (License: MIT)")
+    message(STATUS "  Set O3DESHARP_CORAL_SOURCE_DIR (env var or -D...) to point at a local Coral fork checkout.")
+endif()
 
 # Use FetchContent_MakeAvailable instead of the older
 # FetchContent_GetProperties + FetchContent_Populate + add_subdirectory
 # dance. CMake 4.0 set policy CMP0169 to NEW by default, which
-# deprecates calling FetchContent_Populate with a content name and
-# made it a hard error under some configurations - "add_subdirectory
-# given source ... which is not an existing directory" comes from
-# the populate step being skipped under the new policy.
+# deprecates calling FetchContent_Populate with a content name.
 #
-# FetchContent_MakeAvailable handles both the GIT_REPOSITORY clone case
-# and the SOURCE_DIR override case uniformly: it populates the content
-# (cloning if needed, or just using the SOURCE_DIR as-is) and runs
-# add_subdirectory on the SOURCE_SUBDIR (the `cmake` subfolder of the
-# Coral tree) - which is exactly what the old explicit dance was doing.
+# FetchContent_MakeAvailable populates the content (cloning if needed,
+# or using FETCHCONTENT_SOURCE_DIR_CORAL as-is when set) and runs
+# add_subdirectory on the SOURCE_SUBDIR (Coral's `cmake/` subfolder).
 FetchContent_MakeAvailable(Coral)
+
+# Defensive sanity check: if MakeAvailable returned but Coral.Native
+# isn't a real target, we're in the stale-cache wedge state where
+# _deps/coral-src/ exists as an empty stub and FetchContent thought
+# "already populated" and skipped the clone. Fail loud with the
+# recovery command instead of falling through to the dozen confusing
+# "target not found" errors that follow.
+if(NOT TARGET Coral.Native)
+    message(FATAL_ERROR
+        "O3DESharp: Coral.Native target was not created by FetchContent_MakeAvailable. "
+        "This usually means _deps/coral-src exists as an empty stub from a previous "
+        "failed configure. Recovery:\n"
+        "  1. Delete F:/engine/Workspace/_deps/coral-src, coral-build, coral-tmp.\n"
+        "  2. Delete F:/engine/Workspace/CMakeCache.txt (or pass --fresh to cmake).\n"
+        "  3. Re-run CMake. If using a local fork, ensure O3DESHARP_CORAL_SOURCE_DIR "
+        "is set (env var or -D)."
+    )
+endif()
 
 # ============================================================
 # Coral.Managed Deployment Target
