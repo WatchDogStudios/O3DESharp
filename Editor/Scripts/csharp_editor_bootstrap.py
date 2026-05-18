@@ -865,18 +865,30 @@ def attach_with_vscode():
     managed-only constraint is part of the configuration itself.
 
     Concretely:
-      1. Find or create .vscode/launch.json next to the project's csproj
-         (Phase 17a's template uses processName="Editor", but pinning
-         the PID is more reliable when multiple editors are running).
-      2. Insert/replace a "O3DESharp: Attach Managed-Only (PID NNNN)"
-         config at the TOP of the configurations array so F5 picks it
-         without a chooser.
-      3. Open VS Code on the project root with --reuse-window so a
-         running VS Code picks up the file rewrite.
-      4. Log a one-line "press F5" instruction. We can't trigger F5 from
-         the CLI (VS Code's CLI has no --command flag and the C# extension
-         doesn't ship a URL handler for attach-to-process), so the F5
-         click is the irreducible last step.
+      1. Find every csproj under Gem/Source/CSharp/ AND the project root
+         itself, and stage launch.json in each .vscode/ folder. VS Code
+         only sees launch.json in its active workspace folder, and we
+         can't predict which folder the user (or C# Dev Kit) anchored
+         the workspace to. Writing to all candidates means F5 / the Run
+         and Debug picker finds our config from any of them.
+      2. Each launch.json gets a "O3DESharp: Attach Managed-Only (PID
+         NNNNN)" config inserted at the TOP of the configurations array
+         so the Run and Debug dropdown defaults to it.
+      3. Stage a .vscode/settings.json next to each launch.json that
+         neutralizes the C# Dev Kit interception that produces
+         "'<csproj>' does not support debugging. No launchable target
+         found." when the user presses F5 from a code file. Dev Kit's
+         default behavior is to scan for csproj/sln, treat them as
+         runnable, and intercept F5 - which obviously fails on class-
+         library csprojs like ours. We set `dotnet.defaultSolution` to
+         `disable` so Dev Kit stops asserting a debug target, and F5
+         falls through to launch.json. (Loses Solution Explorer in
+         Dev Kit; the file-level C# language server still works.)
+      4. Open VS Code on the project root with --reuse-window.
+      5. Log clear "go to Run and Debug, pick the config, click play"
+         instructions for the F5-from-code-file edge case. F5 alone is
+         unreliable across VS Code versions when multiple debug
+         providers compete; the Run-and-Debug-panel path is rock solid.
     """
     import json
     from pathlib import Path
@@ -898,10 +910,8 @@ def attach_with_vscode():
         project_root = Path(_paths.projectroot)
     except Exception:
         project_root = Path(".")
-    vscode_dir = project_root / ".vscode"
-    launch_path = vscode_dir / "launch.json"
 
-    # Build the PID-pinned config we want at the top of the list.
+    # Build the PID-pinned config we want at the top of every launch.json.
     config_name = f"O3DESharp: Attach Managed-Only (PID {pid})"
     new_config = {
         "name": config_name,
@@ -911,52 +921,94 @@ def attach_with_vscode():
         "justMyCode": True,
     }
 
-    # Merge with any existing launch.json - we want to preserve user-
-    # added configs (test runs, GameLauncher attach, etc.) and just
-    # replace our own auto-generated entries. If the file is malformed
-    # JSON, start from a clean template; losing user edits is bad but
-    # crashing on json.loads would lose the auto-attach UX entirely.
-    data = {"version": "0.2.0", "configurations": []}
-    if launch_path.is_file():
-        try:
-            data = json.loads(launch_path.read_text(encoding="utf-8"))
-            if not isinstance(data, dict):
+    # Targets: project root + every csproj's parent directory under
+    # Gem/Source/CSharp/. The csproj-level targets handle the
+    # very common case where C# Dev Kit pulled VS Code's workspace
+    # focus to the csproj folder; the project-root target handles
+    # users who explicitly open the project at its root.
+    target_dirs = [project_root]
+    csharp_root = project_root / "Gem" / "Source" / "CSharp"
+    if csharp_root.is_dir():
+        for csproj in csharp_root.rglob("*.csproj"):
+            target_dirs.append(csproj.parent)
+
+    written_launch = []
+    written_settings = []
+    for target_dir in target_dirs:
+        vscode_dir = target_dir / ".vscode"
+        launch_path = vscode_dir / "launch.json"
+        settings_path = vscode_dir / "settings.json"
+
+        # --- launch.json: merge our config into existing or fresh data. ---
+        data = {"version": "0.2.0", "configurations": []}
+        if launch_path.is_file():
+            try:
+                data = json.loads(launch_path.read_text(encoding="utf-8"))
+                if not isinstance(data, dict):
+                    data = {"version": "0.2.0", "configurations": []}
+            except Exception as e:
+                general.log(
+                    f"[O3DESharp] Existing launch.json at {launch_path} malformed ({e}); "
+                    f"rewriting with the auto-attach config only."
+                )
                 data = {"version": "0.2.0", "configurations": []}
+        cfgs = data.setdefault("configurations", [])
+        if not isinstance(cfgs, list):
+            cfgs = []
+        # Drop any stale auto-generated PID-pinned config so we don't
+        # grow the list every time the editor restarts with a new PID.
+        cfgs = [
+            c for c in cfgs
+            if not (isinstance(c, dict)
+                    and isinstance(c.get("name"), str)
+                    and c["name"].startswith("O3DESharp: Attach Managed-Only (PID"))
+        ]
+        cfgs.insert(0, new_config)
+        data["configurations"] = cfgs
+
+        try:
+            vscode_dir.mkdir(parents=True, exist_ok=True)
+            launch_path.write_text(json.dumps(data, indent=4), encoding="utf-8")
+            written_launch.append(launch_path)
         except Exception as e:
-            general.log(
-                f"[O3DESharp] Existing launch.json at {launch_path} is malformed ({e}); "
-                f"rewriting with the auto-attach config only."
-            )
-            data = {"version": "0.2.0", "configurations": []}
+            general.log(f"[O3DESharp] Could not write {launch_path}: {e}")
+            continue
 
-    cfgs = data.setdefault("configurations", [])
-    if not isinstance(cfgs, list):
-        cfgs = []
-    # Drop any stale auto-generated PID-pinned config so we don't grow
-    # the list every time the editor restarts with a new PID.
-    cfgs = [
-        c for c in cfgs
-        if not (isinstance(c, dict)
-                and isinstance(c.get("name"), str)
-                and c["name"].startswith("O3DESharp: Attach Managed-Only (PID"))
-    ]
-    cfgs.insert(0, new_config)
-    data["configurations"] = cfgs
+        # --- settings.json: defuse C# Dev Kit's F5 intercept. ---
+        # Only touches dotnet.defaultSolution if it's not already set -
+        # respect any explicit user choice (they may have pointed
+        # Dev Kit at a specific .sln they want loaded).
+        settings = {}
+        if settings_path.is_file():
+            try:
+                settings = json.loads(settings_path.read_text(encoding="utf-8"))
+                if not isinstance(settings, dict):
+                    settings = {}
+            except Exception:
+                settings = {}
+        if "dotnet.defaultSolution" not in settings:
+            settings["dotnet.defaultSolution"] = "disable"
+            try:
+                settings_path.write_text(json.dumps(settings, indent=4), encoding="utf-8")
+                written_settings.append(settings_path)
+            except Exception as e:
+                general.log(f"[O3DESharp] Could not write {settings_path}: {e}")
 
-    try:
-        vscode_dir.mkdir(parents=True, exist_ok=True)
-        launch_path.write_text(json.dumps(data, indent=4), encoding="utf-8")
-    except Exception as e:
-        general.log(f"[O3DESharp] Could not write {launch_path}: {e}")
+    if not written_launch:
+        general.log("[O3DESharp] Could not stage launch.json anywhere; aborting VS Code launch.")
         return False
 
     ok = _spawn_detached([code, "--reuse-window", str(project_root)], "VS Code")
     if ok:
         general.log(
-            f"[O3DESharp] VS Code launched + launch.json staged with managed-only attach "
-            f"to editor PID {pid}. Press F5 to attach (config: '{config_name}'). This "
-            f"avoids the 'Editor.exe already being debugged' error from the JIT picker "
-            f"because coreclr attaches via ICorDebug, not Win32 DebugActiveProcess."
+            f"[O3DESharp] VS Code launched. Staged managed-only attach to PID {pid} in "
+            f"{len(written_launch)} launch.json location(s); defused C# Dev Kit's F5 "
+            f"intercept in {len(written_settings)} settings.json(s). To attach: open "
+            f"Run and Debug (Ctrl+Shift+D), pick '{config_name}' from the dropdown, "
+            f"click the green play button. If you instead see \"'<csproj>' does not "
+            f"support debugging. No launchable target found\", you pressed F5 from a "
+            f"code file and Dev Kit hijacked it - use the Run and Debug panel instead. "
+            f"coreclr is managed-only by construction, no engine selector to flip."
         )
     return ok
 
