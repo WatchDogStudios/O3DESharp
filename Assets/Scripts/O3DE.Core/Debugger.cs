@@ -199,17 +199,25 @@ namespace O3DE
             if (!attached)
             {
                 // The default WaitForAttach already logged a generic
-                // timeout message. Add a Phase 17d-specific hint: if the
-                // IDE attach prompt is sitting open behind another window,
-                // confirming it now and using Tools > C# Scripting >
-                // Reload Scripts re-runs OnCreate with the debugger
-                // attached - so OnCreate-only breakpoints still bind on
-                // the second pass.
+                // timeout message. Add the engine-selection hint: the
+                // single most common cause of a stuck attach is the JIT
+                // picker handing the PID to VS or Rider, which then try
+                // to attach Native+Managed by default and either fail
+                // with "Editor.exe already being debugged" or hang on
+                // the native side. The cure is to either flip the IDE's
+                // Attach dialog to managed-only, or use VS Code which
+                // attaches managed-only by construction.
                 Debug.Log(
-                    "[O3DESharp] If your IDE shows an 'Attach to process' prompt now, " +
-                    "confirm it - any breakpoints you set after this point will still " +
-                    "bind. To re-run OnCreate under the debugger, hit " +
-                    "Tools > C# Scripting > Reload Scripts after the attach completes.");
+                    "[O3DESharp] WaitForAttach timed out. Most common cause: the JIT " +
+                    "picker handed the PID to VS / Rider with default engines " +
+                    "(Native + Managed), which collides on the Win32 debug lock " +
+                    "('Editor.exe already being debugged'). Fix: in the IDE's Attach " +
+                    "dialog, change 'Attach to:' / 'Debugger:' to 'Managed (.NET Core, " +
+                    ".NET 5+)' (VS) or '.NET Core' (Rider). Or use Tools > C# Scripting " +
+                    "> Attach with VS Code, which uses the coreclr debug type - managed-" +
+                    "only by construction, never collides. After attach succeeds, hit " +
+                    "Tools > C# Scripting > Reload Scripts to re-run OnCreate under the " +
+                    "debugger so OnCreate-only breakpoints still bind.");
             }
         }
     }

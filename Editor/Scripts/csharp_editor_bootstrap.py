@@ -471,17 +471,27 @@ def _editor_pid() -> int:
 
 def detect_preferred_ide() -> str:
     """
-    Return one of 'rider' / 'vscode' / 'jit' / '' based on what's
+    Return one of 'vscode' / 'rider' / 'jit' / '' based on what's
     installed on this machine. Cheap (no subprocess spawn), so it's
     safe to call on every editor start.
+
+    Priority order: vscode > rider > jit. VS Code wins when both VS
+    Code and Rider are installed because VS Code's coreclr attach is
+    managed-only by construction - no IDE-side engine selector to
+    flip, no risk of the "Editor.exe already being debugged" error
+    that Native+Managed JIT-picker attaches keep tripping over. Rider
+    and the JIT picker both work for advanced users who know to flip
+    the engine selector in the attach dialog, but they need that
+    extra step. The cycle menu (Phase 17b) still lets the user pick
+    any of them; this only sets the first-launch default.
     """
     import os
     from pathlib import Path
 
-    if _find_rider_executable():
-        return "rider"
     if _find_vscode_executable():
         return "vscode"
+    if _find_rider_executable():
+        return "rider"
     if os.name == "nt":
         jit = Path(os.environ.get("SystemRoot", r"C:\Windows")) / "System32" / "vsjitdebugger.exe"
         if jit.is_file():
@@ -711,6 +721,19 @@ def trigger_jit_debugger():
     listing every registered managed-mode debugger (Rider, Visual Studio,
     etc.) and attaches whichever the user clicks.
 
+    IMPORTANT engine-selection caveat: the JIT picker just hands the PID
+    to the chosen debugger. It cannot constrain the debugger's engine
+    selection. Visual Studio and Rider both default to Native+Managed
+    when attaching to an unmanaged host like Editor.exe, which produces
+    "Editor.exe already being debugged" if anything else (Coral, a stale
+    JIT lock, a half-cancelled previous attach) holds the Win32 debug
+    interface, AND it isn't what you want anyway for C#-only debugging.
+    Once the picker's debugger opens, switch its "Attach to:" /
+    "Debugger:" selector to "Managed (.NET Core, .NET 5+)" (VS) or ".NET
+    Core" (Rider) before confirming, then re-click Attach. The seamless
+    alternative is "Attach with VS Code" which uses the coreclr debug
+    type - managed-only by construction, never collides.
+
     Skipped (with a one-line warning) when a debugger is already attached
     - VS surfaces "Unable to attach to the crashing process. A debugger
     is already attached." in that case, which is confusing for users who
@@ -736,7 +759,17 @@ def trigger_jit_debugger():
     if os.name == "nt":
         jit = Path(os.environ.get("SystemRoot", r"C:\Windows")) / "System32" / "vsjitdebugger.exe"
         if jit.is_file():
-            return _spawn_detached([str(jit), "-p", str(pid)], "JIT debugger picker")
+            ok = _spawn_detached([str(jit), "-p", str(pid)], "JIT debugger picker")
+            if ok:
+                general.log(
+                    "[O3DESharp] JIT picker opened. When your IDE's Attach dialog shows up, "
+                    "set 'Attach to:' / 'Debugger:' to MANAGED ONLY (Visual Studio: 'Managed "
+                    "(.NET Core, .NET 5+)'; Rider: '.NET Core'). The default Native+Managed "
+                    "selection collides with the Win32 debug lock and gives 'Editor.exe "
+                    "already being debugged'. For zero-friction managed-only attach, "
+                    "use 'Attach with VS Code' instead (coreclr type is managed-only by design)."
+                )
+            return ok
         general.log(
             "[O3DESharp] vsjitdebugger.exe not found under System32. Install a Visual Studio "
             "component that registers as the JIT debugger, or attach manually from your IDE "
@@ -805,46 +838,125 @@ def attach_with_rider():
 
     general.log(
         f"[O3DESharp] Opening JIT picker for PID {pid}. Click 'JetBrains Rider' "
-        f"in the dialog that appears to attach the managed debugger."
+        f"in the dialog that appears. WHEN RIDER'S ATTACH DIALOG OPENS, change "
+        f"'Debugger:' from 'Auto-detect' to '.NET Core' before confirming - "
+        f"Auto-detect attaches Native+Managed, which collides with the Win32 "
+        f"debug lock and produces 'Editor.exe already being debugged'. For a "
+        f"managed-only attach with no engine fiddling, use 'Attach with VS Code' "
+        f"instead - its coreclr debug type is managed-only by construction."
     )
     return _trigger_jit_debugger_for_pid(pid)
 
 
 def attach_with_vscode():
     """
-    Open the current O3DE project folder in VS Code with the C# debug
-    extension. We can't fully one-click the attach because VS Code has no
-    'attach by PID' CLI primitive - but if the project carries the
-    `launch.json` template (Phase 17a drops one for new csprojs and the
-    Migrate command optionally adds it to existing ones), the user just
-    presses F5 once.
+    Open VS Code on the current O3DE project and stage a managed-only
+    attach configuration pinned to the current editor PID.
+
+    Why this path is the seamless one: VS Code's "coreclr" debug type
+    uses ICorDebug to attach to the .NET runtime hosted inside the
+    editor. It never calls Win32 DebugActiveProcess, so it cannot
+    collide with anything already attached to the native side. VS and
+    Rider, when invoked via the JIT picker, attach Native+Managed by
+    default and need their UI flipped to "Managed only" / ".NET Core"
+    to avoid the "Editor.exe already being debugged" error you get
+    when the native engine fights for the Win32 debug lock - which we
+    cannot do from outside the IDE. VS Code is the only IDE where the
+    managed-only constraint is part of the configuration itself.
+
+    Concretely:
+      1. Find or create .vscode/launch.json next to the project's csproj
+         (Phase 17a's template uses processName="Editor", but pinning
+         the PID is more reliable when multiple editors are running).
+      2. Insert/replace a "O3DESharp: Attach Managed-Only (PID NNNN)"
+         config at the TOP of the configurations array so F5 picks it
+         without a chooser.
+      3. Open VS Code on the project root with --reuse-window so a
+         running VS Code picks up the file rewrite.
+      4. Log a one-line "press F5" instruction. We can't trigger F5 from
+         the CLI (VS Code's CLI has no --command flag and the C# extension
+         doesn't ship a URL handler for attach-to-process), so the F5
+         click is the irreducible last step.
     """
+    import json
+    from pathlib import Path
     import azlmbr.paths as _paths
+
     code = _find_vscode_executable()
     if not code:
         general.log(
-            "[O3DESharp] Could not find VS Code's `code` CLI. Install VS Code and add it "
-            "to PATH (the installer's 'Add to PATH' option), or use 'Attach with Rider' / "
-            "'Trigger JIT Debugger' instead."
+            "[O3DESharp] Could not find VS Code's `code` CLI. Install VS Code and tick "
+            "'Add to PATH' in the installer, or fall back to 'Attach with Rider' / "
+            "'Trigger JIT Debugger' (and remember to flip the engine to 'Managed only' "
+            "in the IDE's Attach dialog - JIT picker attaches Native+Managed by default "
+            "which causes 'Editor.exe already being debugged')."
         )
         return False
 
+    pid = _editor_pid()
     try:
-        project_root = _paths.projectroot
+        project_root = Path(_paths.projectroot)
     except Exception:
-        project_root = "."
+        project_root = Path(".")
+    vscode_dir = project_root / ".vscode"
+    launch_path = vscode_dir / "launch.json"
 
-    # Two-step: open the project folder, then nudge the user toward F5. We
-    # could trigger workbench.action.debug.start via the --command flag but
-    # it requires a launch.json to already be active in the workspace and
-    # only fires once VS Code finishes loading - racy. Open + log is more
-    # reliable.
-    ok = _spawn_detached([code, "--new-window", project_root], "VS Code")
+    # Build the PID-pinned config we want at the top of the list.
+    config_name = f"O3DESharp: Attach Managed-Only (PID {pid})"
+    new_config = {
+        "name": config_name,
+        "type": "coreclr",
+        "request": "attach",
+        "processId": pid,
+        "justMyCode": True,
+    }
+
+    # Merge with any existing launch.json - we want to preserve user-
+    # added configs (test runs, GameLauncher attach, etc.) and just
+    # replace our own auto-generated entries. If the file is malformed
+    # JSON, start from a clean template; losing user edits is bad but
+    # crashing on json.loads would lose the auto-attach UX entirely.
+    data = {"version": "0.2.0", "configurations": []}
+    if launch_path.is_file():
+        try:
+            data = json.loads(launch_path.read_text(encoding="utf-8"))
+            if not isinstance(data, dict):
+                data = {"version": "0.2.0", "configurations": []}
+        except Exception as e:
+            general.log(
+                f"[O3DESharp] Existing launch.json at {launch_path} is malformed ({e}); "
+                f"rewriting with the auto-attach config only."
+            )
+            data = {"version": "0.2.0", "configurations": []}
+
+    cfgs = data.setdefault("configurations", [])
+    if not isinstance(cfgs, list):
+        cfgs = []
+    # Drop any stale auto-generated PID-pinned config so we don't grow
+    # the list every time the editor restarts with a new PID.
+    cfgs = [
+        c for c in cfgs
+        if not (isinstance(c, dict)
+                and isinstance(c.get("name"), str)
+                and c["name"].startswith("O3DESharp: Attach Managed-Only (PID"))
+    ]
+    cfgs.insert(0, new_config)
+    data["configurations"] = cfgs
+
+    try:
+        vscode_dir.mkdir(parents=True, exist_ok=True)
+        launch_path.write_text(json.dumps(data, indent=4), encoding="utf-8")
+    except Exception as e:
+        general.log(f"[O3DESharp] Could not write {launch_path}: {e}")
+        return False
+
+    ok = _spawn_detached([code, "--reuse-window", str(project_root)], "VS Code")
     if ok:
         general.log(
-            "[O3DESharp] VS Code launched. Press F5 to attach via the bundled "
-            "'O3DESharp: Attach to Editor' debug configuration (launch.json). "
-            f"Editor PID: {_editor_pid()}."
+            f"[O3DESharp] VS Code launched + launch.json staged with managed-only attach "
+            f"to editor PID {pid}. Press F5 to attach (config: '{config_name}'). This "
+            f"avoids the 'Editor.exe already being debugged' error from the JIT picker "
+            f"because coreclr attaches via ICorDebug, not Win32 DebugActiveProcess."
         )
     return ok
 
