@@ -32,11 +32,21 @@ o3de_sharp_netverify()
 # CORAL CLONE INFO
 # ===========================
 # NOTE(Mikael A.): Stay on main, do not change to internal coral branch!
-# Pin to a specific commit so dev and install paths are reproducible.
-# Bump this SHA in lockstep with the value embedded in the install code
-# block below (search for "O3DE_SUBDIRECTORY_INSTALL_CODE").
+#
+# Tracks the tip of WatchDogStudios/Coral main rather than pinning a
+# specific commit. Trade-off: dev builds are reproducible only as long
+# as the upstream history isn't rewritten - in practice that's fine
+# because we control the fork. The win is that GIT_SHALLOW=TRUE works
+# correctly (it only fetches the tip of the configured branch; pinning
+# an older SHA together with GIT_SHALLOW intermittently fails with
+# "unable to read tree <sha>" when the shallow window doesn't include
+# that commit), and so does iterating on Coral - push to main, re-run
+# CMake, get the new code.
+#
+# Keep this branch name in lockstep with the value embedded in the
+# install-code block below (search for "O3DE_SUBDIRECTORY_INSTALL_CODE").
 set(CORAL_GIT_REPO "https://github.com/WatchDogStudios/Coral.git")
-set(CORAL_GIT_TAG "0d3f30e0449956049fa330a3a44a47b7860a2409")
+set(CORAL_GIT_TAG "main")
 
 # Local-checkout override: if O3DESHARP_CORAL_SOURCE_DIR is set (cache
 # variable, env var, or auto-detected next to the gem) and points at a
@@ -346,12 +356,12 @@ endforeach()
 # that gets included in installers.  This is why we need to duplicate the github repo from above
 # and cannot reuse the variables above.  The rest of this file won't be there to refer to.
 set_property(DIRECTORY APPEND PROPERTY O3DE_SUBDIRECTORY_INSTALL_CODE [[
-    # NOTE: Keep this repo + SHA in sync with the dev-side CORAL_GIT_REPO /
+    # NOTE: Keep this repo + branch in sync with the dev-side CORAL_GIT_REPO /
     # CORAL_GIT_TAG above. Different values here mean dev builds and exported
     # installer builds will fetch different Coral sources and cannot produce
     # bit-identical binaries.
     set(CORAL_GIT_REPO "https://github.com/WatchDogStudios/Coral.git")
-    set(CORAL_GIT_TAG "0d3f30e0449956049fa330a3a44a47b7860a2409")
+    set(CORAL_GIT_TAG "main")
     message(STATUS "O3DESharp Gem uses ${CORAL_GIT_REPO} (License: MIT)")
 
     set(coralLibraries Coral.Native)
