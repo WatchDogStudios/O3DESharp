@@ -127,6 +127,28 @@ namespace O3DESharp
 
         m_config = config;
 
+        // Phase 18-debug: force-enable .NET diagnostics IPC channels before
+        // the runtime spins up. The CLR reads these env vars during
+        // Debugger::Startup, which fires inside hostfxr_initialize_for_runtime_config -
+        // setting them after Coral's HostInstance::Initialize is too late.
+        //
+        // Why we set them at all when the runtime defaults are already "1":
+        // some hosting contexts (corporate-policy GPOs, IIS-style hosts,
+        // certain CI runners that proxy through a launcher) inherit
+        // DOTNET_EnableDiagnostics=0 from their parent process, which
+        // silently disables managed-debugger attach. Forcing them on here
+        // makes the editor's debuggability invariant under the host's
+        // environment - external attach from vsdbg, JetBrains, or Visual
+        // Studio always works the same way regardless of who launched us.
+        //
+        // overwrite=false so a developer who explicitly disabled
+        // diagnostics for a perf-test run (DOTNET_EnableDiagnostics=0 in
+        // their shell) still wins; we only flip the unset case.
+        AZ::Utils::SetEnv("DOTNET_EnableDiagnostics",          "1", /*overwrite=*/false);
+        AZ::Utils::SetEnv("DOTNET_EnableDiagnostics_IPC",      "1", /*overwrite=*/false);
+        AZ::Utils::SetEnv("DOTNET_EnableDiagnostics_Debugger", "1", /*overwrite=*/false);
+        AZ::Utils::SetEnv("DOTNET_EnableDiagnostics_Profiler", "1", /*overwrite=*/false);
+
         // Setup Coral host settings
         Coral::HostSettings settings;
         settings.CoralDirectory = std::string(m_config.coralDirectory.c_str());

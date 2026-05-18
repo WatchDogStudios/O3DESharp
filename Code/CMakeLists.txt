@@ -38,6 +38,38 @@ o3de_sharp_netverify()
 set(CORAL_GIT_REPO "https://github.com/WatchDogStudios/Coral.git")
 set(CORAL_GIT_TAG "0d3f30e0449956049fa330a3a44a47b7860a2409")
 
+# Local-checkout override: if O3DESHARP_CORAL_SOURCE_DIR is set (cache
+# variable or env var) and points at a Coral working tree, FetchContent
+# uses that path instead of the GIT_REPOSITORY clone. Lets developers
+# iterate on Coral changes (the debugger-attach support added for the
+# managed-debug initiative, for instance) without pushing to the fork +
+# bumping the pinned SHA on every rebuild.
+#
+# Auto-detect: if neither the cache var nor the env var is set, but
+# F:/Coral-O3DESharp or ../Coral-O3DESharp/ next to the gem exists,
+# use that. (No-op on machines that don't have the local checkout.)
+if(NOT DEFINED CACHE{O3DESHARP_CORAL_SOURCE_DIR})
+    if(DEFINED ENV{O3DESHARP_CORAL_SOURCE_DIR})
+        set(_o3desharp_coral_src "$ENV{O3DESHARP_CORAL_SOURCE_DIR}")
+    else()
+        set(_o3desharp_coral_candidates
+            "${CMAKE_CURRENT_LIST_DIR}/../../Coral-O3DESharp"
+            "F:/Coral-O3DESharp"
+        )
+        foreach(_candidate ${_o3desharp_coral_candidates})
+            if(IS_DIRECTORY "${_candidate}" AND EXISTS "${_candidate}/Coral.Native/Source/Coral/HostInstance.cpp")
+                set(_o3desharp_coral_src "${_candidate}")
+                break()
+            endif()
+        endforeach()
+        unset(_o3desharp_coral_candidates)
+        unset(_candidate)
+    endif()
+    set(O3DESHARP_CORAL_SOURCE_DIR "${_o3desharp_coral_src}" CACHE PATH
+        "Optional local Coral fork checkout. When set, used instead of the GIT_REPOSITORY clone.")
+    unset(_o3desharp_coral_src)
+endif()
+
 # Disable Coral examples and tests before FetchContent to speed up configuration
 set(CORAL_EXAMPLE OFF CACHE BOOL "" FORCE)
 set(CORAL_TESTING OFF CACHE BOOL "" FORCE)
@@ -46,14 +78,23 @@ include(FetchContent)
 
 # Use GIT_SHALLOW to only fetch the latest commit (much faster than full clone)
 # FIND_PACKAGE_ARGS allows using a pre-installed Coral if available
-FetchContent_Declare(
-    Coral
-    GIT_REPOSITORY ${CORAL_GIT_REPO}
-    GIT_TAG ${CORAL_GIT_TAG}
-    GIT_SHALLOW TRUE
-    GIT_PROGRESS TRUE
-    SOURCE_SUBDIR cmake
-)
+if(O3DESHARP_CORAL_SOURCE_DIR AND IS_DIRECTORY "${O3DESHARP_CORAL_SOURCE_DIR}")
+    message(STATUS "O3DESharp: Using local Coral checkout at ${O3DESHARP_CORAL_SOURCE_DIR} (override GIT_REPOSITORY)")
+    FetchContent_Declare(
+        Coral
+        SOURCE_DIR "${O3DESHARP_CORAL_SOURCE_DIR}"
+        SOURCE_SUBDIR cmake
+    )
+else()
+    FetchContent_Declare(
+        Coral
+        GIT_REPOSITORY ${CORAL_GIT_REPO}
+        GIT_TAG ${CORAL_GIT_TAG}
+        GIT_SHALLOW TRUE
+        GIT_PROGRESS TRUE
+        SOURCE_SUBDIR cmake
+    )
+endif()
 
 # please always be really clear about what third parties your gem uses.
 message(STATUS "O3DESharp Gem uses ${CORAL_GIT_REPO} (License: MIT)")
