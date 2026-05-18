@@ -45,15 +45,21 @@ namespace O3DESharp.BindingGenerator.Parsing
 
             if (headerFiles.Count == 0)
             {
-                Log("No header files to parse");
+                // Unconditional - "no headers" is the kind of empty-output
+                // case where silence makes the run look stuck.
+                Console.WriteLine($"  [{gemName}] No header files to parse");
                 return bindings;
             }
 
-            Log($"Parsing {headerFiles.Count} header files for gem '{gemName}'");
+            // Unconditional header-count log so the editor's progress
+            // view shows the upcoming work size for this gem (e.g.
+            // EMotionFX with 247 headers is going to be slow, and the
+            // user deserves to know that BEFORE they wait 3 minutes).
+            Console.WriteLine($"  [{gemName}] Parsing {headerFiles.Count} header files...");
 
             // Build clang command line arguments
             var args = new List<string>();
-            
+
             // Add include paths
             foreach (var includePath in includePaths)
             {
@@ -73,24 +79,56 @@ namespace O3DESharp.BindingGenerator.Parsing
             args.Add("-ferror-limit=0");        // Continue parsing despite errors
             args.Add("-Wno-everything");         // Suppress all warnings
 
-            // Parse each header file
+            // Parse each header file. Unconditional [N/M] progress lines
+            // (and elapsed timing per file) so the editor log shows a
+            // moving cursor even with --verbose off. Without this, a
+            // single slow header inside a 200-file gem looks like the
+            // generator is wedged: there's no output between gem start
+            // and gem complete, sometimes for minutes.
+            var clangArgs = args.ToArray();
+            int total = headerFiles.Count;
+            int index = 0;
+            var gemSw = System.Diagnostics.Stopwatch.StartNew();
             foreach (var headerFile in headerFiles)
             {
+                index++;
+                var sw = System.Diagnostics.Stopwatch.StartNew();
+                // Trim the path to just the filename for the progress
+                // line so it's readable; verbose mode (gated below)
+                // still prints the full path inside ParseHeaderFile.
+                var shortName = System.IO.Path.GetFileName(headerFile);
+                Console.WriteLine($"  [{gemName}] ({index}/{total}) {shortName}");
                 try
                 {
-                    ParseHeaderFile(headerFile, args.ToArray(), bindings);
+                    ParseHeaderFile(headerFile, clangArgs, bindings);
                 }
                 catch (Exception ex)
                 {
-                    Console.WriteLine($"Error parsing {headerFile}: {ex.Message}");
+                    Console.WriteLine($"  [{gemName}] Error parsing {headerFile}: {ex.Message}");
                     if (_verbose)
                     {
                         Console.WriteLine(ex.StackTrace);
                     }
                 }
+                sw.Stop();
+                // Only print the timing line when a file was actually
+                // slow (>500ms). Per-file noise for the common case
+                // (<50ms libclang parses) would drown out the signal.
+                if (sw.ElapsedMilliseconds > 500)
+                {
+                    Console.WriteLine($"  [{gemName}]   ^^ {sw.ElapsedMilliseconds} ms");
+                }
             }
+            gemSw.Stop();
 
-            Log($"Parsed {bindings.Classes.Count} classes, {bindings.Functions.Count} functions, {bindings.Enums.Count} enums");
+            // Unconditional summary line - tells the user this gem's
+            // parse step finished and how long it took. Code-gen is
+            // typically fast after this, so "summary then Generated
+            // bindings 1 sec later" is the normal cadence.
+            Console.WriteLine(
+                $"  [{gemName}] Parsed {bindings.Classes.Count} classes, " +
+                $"{bindings.Functions.Count} functions, {bindings.Enums.Count} enums " +
+                $"in {gemSw.Elapsed.TotalSeconds:F1}s");
 
             return bindings;
         }

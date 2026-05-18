@@ -2122,8 +2122,16 @@ Status: {status['message']}"""
             config.separate_gem_directories = True
             config.generate_per_gem_projects = True
             config.include_gems = include_gems
+            # Default verbose=True for the editor flow so file-level
+            # progress, diagnostic counts, and per-file timing land in
+            # the log view. Without this the only output between
+            # "Processing gem: EMotionFX" and "Generated bindings" is
+            # silence, which makes a normal-but-slow parse (EMotionFX
+            # has ~250 headers) indistinguishable from a hang. CLI
+            # callers can override by setting config.verbose=False.
+            config.verbose = True
 
-            self._log("Invoking ClangSharp binding generator (background thread)...", "INFO")
+            self._log("Invoking ClangSharp binding generator (background thread, verbose)...", "INFO")
             self.binding_status_label.setText("Generating bindings (ClangSharp)...")
             # Disable the button while running so we don't get re-entrant
             # starts. The done-handler re-enables it.
