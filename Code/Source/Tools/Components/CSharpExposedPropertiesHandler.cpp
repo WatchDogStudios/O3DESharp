@@ -458,10 +458,14 @@ namespace O3DESharp
                 if (instancePtr != nullptr)
                 {
                     // EditorCSharpScriptComponent inherits from
-                    // AZ::Component, which has GetEntityId. Cast via
-                    // AzRtti so we don't need the full type.
-                    auto* component = classData->m_azRtti->Cast<AZ::Component>(
-                        instancePtr, AZ::Component::TYPEINFO_Uuid());
+                    // AZ::Component (which has GetEntityId). Use the
+                    // template-driven Cast overload to upcast from the
+                    // most-derived instance pointer through the
+                    // multiple-inheritance chain. Returns nullptr if the
+                    // type isn't actually a Component (defensive against
+                    // a future refactor where the class-name match
+                    // catches a non-Component type).
+                    auto* component = classData->m_azRtti->Cast<AZ::Component>(instancePtr);
                     if (component != nullptr)
                     {
                         return component->GetEntityId();
