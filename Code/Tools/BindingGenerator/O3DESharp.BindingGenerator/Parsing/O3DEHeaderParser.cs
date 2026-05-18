@@ -24,6 +24,60 @@ namespace O3DESharp.BindingGenerator.Parsing
         private readonly bool _verbose;
         private readonly bool _requireExportAttribute;
 
+        /// <summary>
+        /// AzCore headers that libclang -include's before every parse, so
+        /// the standard O3DE types (AZ::Vector3, AZ::Quaternion,
+        /// AZ::Data::AssetId, AZ::EntityId, AZStd::string, ...) are
+        /// always in scope - even for gem headers that take those types
+        /// as parameters but don't include them transitively. Ordered so
+        /// the EBus/Component foundation comes first (used by the math
+        /// types via Crc/Uuid) and asset/string/container types follow.
+        ///
+        /// libclang resolves these names via the -I paths from
+        /// BuildIncludePaths (which includes Code/Framework/AzCore), so
+        /// they get found by the same probe mechanism gem headers use.
+        /// Missing entries get a "file not found" warning but don't fail
+        /// the parse - so adding more here is safe.
+        /// </summary>
+        private static readonly string[] AzCorePreludeHeaders = new[]
+        {
+            // EBus / Component foundation (most-included roots in AzCore;
+            // pulling them first ensures everything downstream sees them)
+            "AzCore/EBus/EBus.h",
+            "AzCore/Component/ComponentBus.h",
+            "AzCore/Component/EntityId.h",
+            "AzCore/Component/Entity.h",
+            "AzCore/Component/TransformBus.h",
+
+            // Math types - the most frequent "no type named X in namespace AZ"
+            "AzCore/Math/Vector2.h",
+            "AzCore/Math/Vector3.h",
+            "AzCore/Math/Vector4.h",
+            "AzCore/Math/Quaternion.h",
+            "AzCore/Math/Transform.h",
+            "AzCore/Math/Color.h",
+            "AzCore/Math/Matrix3x3.h",
+            "AzCore/Math/Matrix4x4.h",
+            "AzCore/Math/Aabb.h",
+            "AzCore/Math/Crc.h",
+            "AzCore/Math/Uuid.h",
+
+            // Asset framework - AZ::Data::Asset, AZ::Data::AssetId
+            "AzCore/Asset/AssetCommon.h",
+
+            // String + container types - AZStd::string, AZStd::vector etc.
+            "AzCore/std/string/string.h",
+            "AzCore/std/string/string_view.h",
+            "AzCore/std/containers/vector.h",
+            "AzCore/std/containers/unordered_map.h",
+            "AzCore/std/smart_ptr/shared_ptr.h",
+            "AzCore/std/smart_ptr/intrusive_ptr.h",
+
+            // Misc widely-used utilities
+            "AzCore/RTTI/RTTI.h",
+            "AzCore/Outcome/Outcome.h",
+        };
+
         public O3DEHeaderParser(bool requireExportAttribute = false, bool verbose = false)
         {
             _typeMapper = new TypeMapper();
@@ -78,6 +132,26 @@ namespace O3DESharp.BindingGenerator.Parsing
             args.Add("-Wno-pragma-once-outside-header");
             args.Add("-ferror-limit=0");        // Continue parsing despite errors
             args.Add("-Wno-everything");         // Suppress all warnings
+
+            // Force-include common AzCore headers so types like AZ::Vector3,
+            // AZ::Data::AssetId, AZ::EntityId, and the basic STL replacements
+            // are in scope for every parse. Without this, headers that
+            // "don't include what they use" (a common O3DE anti-pattern -
+            // e.g. EMotionFX's MotionExtractionBus.h takes an AZ::Vector3
+            // parameter while only including ComponentBus.h) fail with
+            //   error: no type named 'Vector3' in namespace 'AZ'
+            // and the affected class gets skipped with "no bindable members".
+            //
+            // libclang resolves these names through the same -I paths we
+            // already added (BuildIncludePaths includes AzCore framework
+            // dir), so we can just name them by the canonical AzCore include
+            // path. Headers that ARE missing get silently skipped by the
+            // OS file-not-found path, which is fine - they're advisory.
+            foreach (var pre in AzCorePreludeHeaders)
+            {
+                args.Add("-include");
+                args.Add(pre);
+            }
 
             // Parse each header file. Unconditional [N/M] progress lines
             // (and elapsed timing per file) so the editor log shows a
