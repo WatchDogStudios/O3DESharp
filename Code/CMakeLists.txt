@@ -45,25 +45,29 @@ set(CORAL_GIT_TAG "0d3f30e0449956049fa330a3a44a47b7860a2409")
 # managed-debug initiative, for instance) without pushing to the fork +
 # bumping the pinned SHA on every rebuild.
 #
-# Auto-detect: if neither the cache var nor the env var is set, but
-# F:/Coral-O3DESharp or ../Coral-O3DESharp/ next to the gem exists,
-# use that. (No-op on machines that don't have the local checkout.)
+# Two ways to set it:
+#   1. -DO3DESHARP_CORAL_SOURCE_DIR=<path>  on the cmake command line,
+#      or set as a CMake cache variable in your IDE's CMake settings.
+#   2. set the O3DESHARP_CORAL_SOURCE_DIR environment variable before
+#      configuring (handy when invoking CMake from a per-developer
+#      build script).
+#
+# Convention-based auto-detect (no machine-specific absolute paths -
+# anything machine-specific belongs in the env var above): if a Coral
+# fork checkout sits at ../Coral-O3DESharp next to this gem
+# (CMAKE_CURRENT_LIST_DIR/../.. since this file is Code/CMakeLists.txt),
+# use it. Easy to opt in by placing the fork there; easy to opt out by
+# not placing it there. No-op on machines without that layout.
 if(NOT DEFINED CACHE{O3DESHARP_CORAL_SOURCE_DIR})
     if(DEFINED ENV{O3DESHARP_CORAL_SOURCE_DIR})
         set(_o3desharp_coral_src "$ENV{O3DESHARP_CORAL_SOURCE_DIR}")
     else()
-        set(_o3desharp_coral_candidates
-            "${CMAKE_CURRENT_LIST_DIR}/../../Coral-O3DESharp"
-            "F:/Coral-O3DESharp"
-        )
-        foreach(_candidate ${_o3desharp_coral_candidates})
-            if(IS_DIRECTORY "${_candidate}" AND EXISTS "${_candidate}/Coral.Native/Source/Coral/HostInstance.cpp")
-                set(_o3desharp_coral_src "${_candidate}")
-                break()
-            endif()
-        endforeach()
-        unset(_o3desharp_coral_candidates)
-        unset(_candidate)
+        set(_o3desharp_coral_candidate "${CMAKE_CURRENT_LIST_DIR}/../../Coral-O3DESharp")
+        if(IS_DIRECTORY "${_o3desharp_coral_candidate}"
+                AND EXISTS "${_o3desharp_coral_candidate}/Coral.Native/Source/Coral/HostInstance.cpp")
+            set(_o3desharp_coral_src "${_o3desharp_coral_candidate}")
+        endif()
+        unset(_o3desharp_coral_candidate)
     endif()
     set(O3DESHARP_CORAL_SOURCE_DIR "${_o3desharp_coral_src}" CACHE PATH
         "Optional local Coral fork checkout. When set, used instead of the GIT_REPOSITORY clone.")
