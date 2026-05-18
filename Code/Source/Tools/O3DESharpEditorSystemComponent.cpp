@@ -509,10 +509,12 @@ except Exception as e:
                 ? AZStd::string("Auto-attach on Game Mode: Off")
                 : AZStd::string::format("Auto-attach on Game Mode: %s", current.c_str());
             props.m_description =
-                "Cycle through Off / JIT / Rider / VS Code. When set, the editor invokes the "
-                "chosen attach method right before Ctrl+G enters game mode, so scripts that "
-                "block in OnCreate (e.g. via O3DE.Debugger.WaitForAttach) have a debugger "
-                "ready before they're activated. Persisted in /O3DE/O3DESharp/AutoAttachOnPlay.";
+                "Cycle through Off / JIT / Rider / VS Code. When set, the editor LAUNCHES the "
+                "chosen IDE (non-blocking) right before Ctrl+G enters game mode. You then attach "
+                "manually from that IDE while the editor keeps running normally. For breakpoints "
+                "in OnCreate: either attach before Ctrl+G, or hit Tools > C# Scripting > Reload "
+                "Scripts after attaching to re-run OnCreate under the debugger. Persisted in "
+                "/O3DE/O3DESharp/AutoAttachOnPlay.";
             props.m_category = "Scripting";
 
             actionManagerInterface->RegisterAction(
@@ -528,12 +530,16 @@ except Exception as e:
         // managed ScriptComponent base reads to decide whether to block.
         {
             AzToolsFramework::ActionProperties props;
-            props.m_name = "Wait For Debugger On Script Activate";
+            props.m_name = "Wait For Debugger On Script Activate (deprecated)";
             props.m_description =
-                "Block every CSharpScriptComponent::Activate before user OnCreate runs until a "
-                "managed debugger is attached (or 60s timeout). Useful for catching init-time "
-                "bugs without sprinkling O3DE.Debugger.WaitForAttach into every script. Pairs "
-                "well with Auto-attach on Game Mode.";
+                "DEPRECATED. Previously: blocked every CSharpScriptComponent::Activate until a "
+                "managed debugger attached, freezing the editor for up to 120s. The block has "
+                "been removed - this toggle no longer does anything in the gem. Kept so any "
+                "old user setting can still be cleared. To break in OnCreate, either: (a) "
+                "attach your IDE before pressing Ctrl+G, (b) hit Tools > C# Scripting > Reload "
+                "Scripts after attaching to re-run OnCreate under the debugger, or (c) add "
+                "O3DE.Debugger.WaitForAttach(...) explicitly in your script's OnCreate (that "
+                "WILL block the editor main thread - your script's choice, not the gem's).";
             props.m_category = "Scripting";
 
             actionManagerInterface->RegisterCheckableAction(
@@ -954,23 +960,26 @@ except Exception as e:
 
     bool O3DESharpEditorSystemComponent::IsWaitForDebuggerOnActivateEnabled() const
     {
-        // Phase 17d: implicit defaulting. If the user hasn't explicitly
-        // set WaitForDebuggerOnActivate, fall back to "follow
-        // AutoAttachOnPlay" - if auto-attach is configured, the user has
-        // already opted into the debug flow, so waiting for the
-        // not-yet-attached debugger before scripts start is almost
-        // always what they want. Explicit toggles still win.
+        // No more implicit defaulting. Earlier this method "followed
+        // AutoAttachOnPlay non-emptiness" so that configuring auto-attach
+        // also flipped on the editor-blocking wait. That coupling made
+        // every Game Mode entry freeze the editor for up to 120s while
+        // the user tried to figure out where the not-yet-attached
+        // debugger was - a worse UX than the no-attach baseline.
+        //
+        // The setting is now strictly user-controlled and disabled by
+        // default. Even when enabled, CSharpScriptComponent::Activate
+        // no longer issues a blocking call - the menu toggle is now
+        // informational only, so the setting key persists for users who
+        // explicitly want to opt in to the legacy behavior via their
+        // own scripting (Debugger.WaitForAttach in the script body).
+        // We keep the getter so the menu can show the current state.
         bool value = false;
         if (auto* registry = AZ::SettingsRegistry::Get())
         {
-            if (registry->Get(value, WaitForDebuggerSettingKey))
-            {
-                // Explicit value present (true or false). Use it.
-                return value;
-            }
+            registry->Get(value, WaitForDebuggerSettingKey);
         }
-        // Implicit default: follow AutoAttachOnPlay non-emptiness.
-        return !GetAutoAttachOnPlay().empty();
+        return value;
     }
 
     void O3DESharpEditorSystemComponent::ToggleWaitForDebuggerOnActivate()

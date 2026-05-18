@@ -1116,6 +1116,67 @@ class QuickActionPrompt(QDialog):
         super().keyPressEvent(event)
 
 
+class _BindingGenerationWorker(QThread):
+    """
+    Runs ClangSharpInvoker.generate_bindings on a background thread so
+    the C# Project Manager's UI stays responsive during the (often
+    multi-second-to-multi-minute) generation run.
+
+    Two signals talk back to the UI thread:
+      - log_line(str): emitted once per stdout/stderr line the tool
+        produces. Qt's queued connection marshals the call from this
+        thread back to whatever slot the UI wired it to (the project-
+        manager's _log helper).
+      - finished_signal(object, str): emitted once at the end with the
+        BindingGeneratorResult and the output directory string. We pass
+        the result as object because PySide2 Signal type erasure for
+        custom Python classes is finicky; the UI handler just dotted
+        attribute access on it.
+
+    The worker owns no UI; it just emits signals. That's the standard
+    "long-running task on a QThread" pattern and avoids any "UI accessed
+    from non-main thread" misuse.
+    """
+
+    log_line = Signal(str)
+    finished_signal = Signal(object, str)  # (BindingGeneratorResult, output_dir)
+
+    def __init__(self, invoker, project_path, config, output_dir):
+        super().__init__()
+        self._invoker = invoker
+        self._project_path = project_path
+        self._config = config
+        self._output_dir = output_dir
+
+    def run(self):
+        try:
+            # output_callback is invoked from this worker thread for
+            # every line the ClangSharp tool emits. Signal.emit is
+            # thread-safe and uses a queued connection to whatever
+            # main-thread slot subscribed (the _log helper).
+            result = self._invoker.generate_bindings(
+                project_path=self._project_path,
+                config=self._config,
+                output_callback=lambda line: self.log_line.emit(line),
+            )
+        except Exception as e:
+            # Never let an exception kill the worker silently - emit a
+            # synthetic failure result so the UI's finish handler still
+            # runs and re-enables the Generate button. The
+            # BindingGeneratorResult import is inside the worker to
+            # keep the module-level import surface small.
+            try:
+                from csharp_binding_generator import BindingGeneratorResult
+            except ImportError:
+                from .csharp_binding_generator import BindingGeneratorResult
+            import traceback
+            result = BindingGeneratorResult(
+                success=False,
+                error_message=f"Worker thread raised: {e}\n{traceback.format_exc()}"
+            )
+        self.finished_signal.emit(result, self._output_dir)
+
+
 class CSharpProjectManagerWindow(QDialog):
     """Main window for C# project management."""
     
@@ -1346,10 +1407,12 @@ class CSharpProjectManagerWindow(QDialog):
         # Binding action buttons
         binding_buttons_layout = QHBoxLayout()
         
-        generate_bindings_btn = QPushButton("Generate Bindings")
-        generate_bindings_btn.setToolTip("Generate C# bindings from current reflection data")
-        generate_bindings_btn.clicked.connect(self._generate_bindings)
-        binding_buttons_layout.addWidget(generate_bindings_btn)
+        # Stored on self so the worker-thread machinery can disable/
+        # re-enable it while a background generation is running.
+        self.generate_btn = QPushButton("Generate Bindings")
+        self.generate_btn.setToolTip("Generate C# bindings from current reflection data")
+        self.generate_btn.clicked.connect(self._generate_bindings)
+        binding_buttons_layout.addWidget(self.generate_btn)
         
         refresh_gems_btn = QPushButton("Refresh Gems")
         refresh_gems_btn.setToolTip("Refresh the list of available gems")
@@ -1992,13 +2055,23 @@ Status: {status['message']}"""
     def _generate_bindings(self):
         """
         Generate C# bindings by shelling out to the ClangSharp tool at
-        Code/Tools/BindingGenerator. Previously this method orchestrated
-        the deprecated Python BehaviorContext generator end-to-end -
-        loading reflection_data.json, walking gems in Python, etc.
-        The C# / libclang-based tool reads headers directly and does not
-        need a runtime reflection_data.json dump, which removes a whole
-        class of "the editor must be initialised first" error paths.
+        Code/Tools/BindingGenerator. Runs the tool on a background
+        QThread so the editor UI stays responsive (previously
+        invoker.generate_bindings ran on the UI thread inside one
+        QApplication.processEvents() call, freezing the C# Project
+        Manager for the entire 10-60s+ generation run). Streams the
+        tool's stdout/stderr line-by-line into the log view as it
+        arrives - the user sees real progress instead of a frozen
+        dialog followed by a wall of buffered text at the end.
         """
+        # Guard against double-start while a previous generation is
+        # still running on its worker thread.
+        if getattr(self, "_binding_worker", None) is not None and self._binding_worker.isRunning():
+            self._log(
+                "Binding generation already in progress; ignoring duplicate request.",
+                "WARNING",
+            )
+            return
         try:
             try:
                 from csharp_binding_generator import (
@@ -2050,59 +2123,97 @@ Status: {status['message']}"""
             config.generate_per_gem_projects = True
             config.include_gems = include_gems
 
-            self._log("Invoking ClangSharp binding generator...", "INFO")
+            self._log("Invoking ClangSharp binding generator (background thread)...", "INFO")
             self.binding_status_label.setText("Generating bindings (ClangSharp)...")
-            QtWidgets.QApplication.processEvents()
+            # Disable the button while running so we don't get re-entrant
+            # starts. The done-handler re-enables it.
+            if hasattr(self, "generate_btn") and self.generate_btn is not None:
+                self.generate_btn.setEnabled(False)
 
-            invoker = ClangSharpInvoker()
-            result = invoker.generate_bindings(project_path=project_path, config=config)
-
-            if result.success:
-                self._log("========== Binding Generation Complete ==========", "SUCCESS")
-                self._log(f"Classes generated: {result.classes_generated}", "SUCCESS")
-                self._log(f"EBuses generated: {result.ebuses_generated}", "SUCCESS")
-                self._log(f"Files written: {result.files_written}", "SUCCESS")
-                if result.processed_gems:
-                    self._log(f"Processed gems: {', '.join(result.processed_gems[:8])}", "INFO")
-                    if len(result.processed_gems) > 8:
-                        self._log(f"  ... and {len(result.processed_gems) - 8} more", "INFO")
-                self._log(f"Output directory: {output_dir}", "INFO")
-                for w in (result.warnings or []):
-                    self._log(f"Warning: {w}", "WARNING")
-
-                self.binding_status_label.setText(
-                    f"Generated {result.classes_generated} classes, "
-                    f"{result.ebuses_generated} EBuses"
-                )
-
-                QMessageBox.information(
-                    self,
-                    "Binding Generation Complete",
-                    f"Successfully generated C# bindings (ClangSharp):\n\n"
-                    f"• Classes: {result.classes_generated}\n"
-                    f"• EBuses: {result.ebuses_generated}\n"
-                    f"• Files: {result.files_written}\n\n"
-                    f"Output: {output_dir}",
-                )
-            else:
-                self._log(f"Binding generation failed: {result.error_message}", "ERROR")
-                self.binding_status_label.setText(f"Error: {result.error_message}")
-                QMessageBox.warning(
-                    self,
-                    "Binding Generation Failed",
-                    f"Failed to generate bindings:\n\n{result.error_message}",
-                )
+            # Spin the actual run onto a worker thread. The worker owns
+            # the invoker + the project_path/config it was given. It
+            # emits log_line for each stdout line and finished_signal
+            # when done, both marshalled back to this widget on the UI
+            # thread via Qt's queued connections.
+            self._binding_worker = _BindingGenerationWorker(
+                invoker=ClangSharpInvoker(),
+                project_path=project_path,
+                config=config,
+                output_dir=output_dir,
+            )
+            self._binding_worker.log_line.connect(
+                lambda line: self._log(line, "INFO"))
+            self._binding_worker.finished_signal.connect(self._on_binding_generation_finished)
+            self._binding_worker.start()
 
         except Exception as e:
             import traceback
             error_details = traceback.format_exc()
-            self._log(f"Error generating bindings: {e}", "ERROR")
+            self._log(f"Error starting binding generation: {e}", "ERROR")
             self._log(error_details, "ERROR")
             self.binding_status_label.setText(f"Error: {str(e)}")
+            if hasattr(self, "generate_btn") and self.generate_btn is not None:
+                self.generate_btn.setEnabled(True)
             QMessageBox.warning(
                 self,
                 "Error",
-                f"An error occurred while generating bindings:\n\n{e}",
+                f"An error occurred while starting binding generation:\n\n{e}",
+            )
+
+    def _on_binding_generation_finished(self, result_obj, output_dir):
+        """
+        UI-thread handler for the binding-generation-worker's finished
+        signal. Renders the same success/failure result the synchronous
+        version used to render, then re-enables the Generate button so
+        the user can kick off another run.
+        """
+        # Re-enable the Generate button before doing anything that can
+        # raise; otherwise an exception in the render path would leave
+        # the UI stuck on "Generating...".
+        if hasattr(self, "generate_btn") and self.generate_btn is not None:
+            self.generate_btn.setEnabled(True)
+        self._binding_worker = None
+
+        result = result_obj
+        if result is None:
+            self._log("Binding worker returned no result.", "ERROR")
+            self.binding_status_label.setText("Error: worker returned no result")
+            return
+
+        if result.success:
+            self._log("========== Binding Generation Complete ==========", "SUCCESS")
+            self._log(f"Classes generated: {result.classes_generated}", "SUCCESS")
+            self._log(f"EBuses generated: {result.ebuses_generated}", "SUCCESS")
+            self._log(f"Files written: {result.files_written}", "SUCCESS")
+            if result.processed_gems:
+                self._log(f"Processed gems: {', '.join(result.processed_gems[:8])}", "INFO")
+                if len(result.processed_gems) > 8:
+                    self._log(f"  ... and {len(result.processed_gems) - 8} more", "INFO")
+            self._log(f"Output directory: {output_dir}", "INFO")
+            for w in (result.warnings or []):
+                self._log(f"Warning: {w}", "WARNING")
+
+            self.binding_status_label.setText(
+                f"Generated {result.classes_generated} classes, "
+                f"{result.ebuses_generated} EBuses"
+            )
+
+            QMessageBox.information(
+                self,
+                "Binding Generation Complete",
+                f"Successfully generated C# bindings (ClangSharp):\n\n"
+                f"• Classes: {result.classes_generated}\n"
+                f"• EBuses: {result.ebuses_generated}\n"
+                f"• Files: {result.files_written}\n\n"
+                f"Output: {output_dir}",
+            )
+        else:
+            self._log(f"Binding generation failed: {result.error_message}", "ERROR")
+            self.binding_status_label.setText(f"Error: {result.error_message}")
+            QMessageBox.warning(
+                self,
+                "Binding Generation Failed",
+                f"Failed to generate bindings:\n\n{result.error_message}",
             )
     
     # ==================== End Binding Generation Methods ====================

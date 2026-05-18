@@ -40,7 +40,7 @@ import logging
 import subprocess
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import List, Optional, Set, Tuple
+from typing import Callable, List, Optional, Set, Tuple
 
 
 logger = logging.getLogger("O3DESharp.BindingGenerator")
@@ -225,6 +225,7 @@ class ClangSharpInvoker:
         project_path: str,
         config: Optional[BindingGeneratorConfig] = None,
         force_regenerate: bool = False,
+        output_callback: Optional[Callable[[str], None]] = None,
     ) -> BindingGeneratorResult:
         """
         Generate C# bindings using the ClangSharp tool.
@@ -233,6 +234,16 @@ class ClangSharpInvoker:
             project_path: Path to the O3DE project
             config: Binding generation configuration
             force_regenerate: If True, bypass incremental build cache
+            output_callback: Optional callable invoked with each line of
+                stdout/stderr as the tool emits it. When provided, the
+                tool runs in streaming mode (subprocess.Popen + line-by-
+                line read) instead of capture_output=True buffering -
+                lets callers display live progress in a UI without the
+                "completely silent for 60s, then a wall of text" UX.
+                The callback is invoked from THIS thread, so the caller
+                is responsible for thread-marshaling if the UI lives
+                elsewhere (the editor UI uses a QThread + signal for
+                exactly this case).
 
         Returns:
             BindingGeneratorResult with generation statistics
@@ -253,12 +264,27 @@ class ClangSharpInvoker:
         self.logger.info("Executing ClangSharp binding generator...")
         self.logger.debug(f"Command: {' '.join(args)}")
 
+        cwd = (
+            Path(self.tool_path).parent if Path(self.tool_path).is_file()
+            else self.tool_path
+        )
+
+        # Streaming path: line-by-line read via Popen. Used when a
+        # caller (the editor's Binding tab) wants live progress
+        # rendered in its log view as the tool runs, rather than a
+        # 60-second blank screen followed by a wall of buffered text.
+        if output_callback is not None:
+            return self._generate_streaming(args, cwd, config, output_callback)
+
+        # Legacy capture path: buffered run, single result. Kept for
+        # callers that don't care about progress UX (CLI scripts, tests,
+        # places where the caller is already on a worker thread).
         try:
             result = subprocess.run(
                 args,
                 capture_output=True,
                 text=True,
-                cwd=Path(self.tool_path).parent if Path(self.tool_path).is_file() else self.tool_path,
+                cwd=cwd,
                 timeout=1800,  # 30 minute timeout for full project generation
             )
 
@@ -283,6 +309,80 @@ class ClangSharpInvoker:
                 success=False,
                 error_message=f"Failed to execute ClangSharp tool: {str(e)}"
             )
+
+    def _generate_streaming(
+        self,
+        args: List[str],
+        cwd,
+        config: "BindingGeneratorConfig",
+        output_callback: Callable[[str], None],
+    ) -> "BindingGeneratorResult":
+        """
+        Run the generator with line-by-line stdout streaming.
+
+        Merges stderr into stdout so order is preserved (matches what a
+        user sees on a terminal). Each line is dispatched to
+        output_callback as it arrives, AND accumulated for the final
+        _parse_success_output pass so we still get classes/EBuses/files
+        counts on success.
+
+        Uses Popen with bufsize=1 + universal_newlines=True so the OS
+        pipe doesn't sit on lines until the buffer fills - that's the
+        whole point of streaming.
+        """
+        accumulated_stdout: List[str] = []
+        try:
+            proc = subprocess.Popen(
+                args,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,  # merge into stdout for order
+                text=True,
+                bufsize=1,
+                cwd=cwd,
+            )
+        except Exception as e:
+            return BindingGeneratorResult(
+                success=False,
+                error_message=f"Failed to launch ClangSharp tool: {str(e)}"
+            )
+
+        try:
+            # readline blocks per-line; we yield each to the callback
+            # so the UI can render it. None signals EOF.
+            assert proc.stdout is not None
+            for line in proc.stdout:
+                # Trim trailing newline so the callback can format as it
+                # likes. The accumulator keeps the raw line so the
+                # success-parser sees the same output it would have
+                # gotten from capture_output=True.
+                accumulated_stdout.append(line)
+                try:
+                    output_callback(line.rstrip("\r\n"))
+                except Exception:
+                    # Callback errors must not kill the generator run.
+                    pass
+        finally:
+            # Drain + close. Bound the wait at 30 minutes total (the
+            # same cap the legacy capture path enforces via timeout=).
+            try:
+                rc = proc.wait(timeout=1800)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+                return BindingGeneratorResult(
+                    success=False,
+                    error_message="ClangSharp tool timed out after 30 minutes"
+                )
+
+        full_stdout = "".join(accumulated_stdout)
+        if rc == 0:
+            return self._parse_success_output(full_stdout, config)
+        return BindingGeneratorResult(
+            success=False,
+            error_message=(
+                f"ClangSharp tool failed with exit code {rc}\n"
+                f"OUTPUT: {full_stdout}"
+            ),
+        )
 
     def _build_arguments(
         self,

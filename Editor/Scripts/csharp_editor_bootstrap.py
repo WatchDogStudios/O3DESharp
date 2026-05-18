@@ -1020,14 +1020,17 @@ def attach_with_vscode():
     ok = _spawn_detached([code, "--reuse-window", str(project_root)], "VS Code")
     if ok:
         general.log(
-            f"[O3DESharp] VS Code launched. Staged managed-only attach to PID {pid} in "
+            f"[O3DESharp] VS Code launched (NON-BLOCKING - the editor will keep "
+            f"running, take your time). Staged managed-only attach to PID {pid} in "
             f"{len(written_launch)} launch.json location(s); defused C# Dev Kit's F5 "
             f"intercept in {len(written_settings)} settings.json(s). To attach: open "
             f"Run and Debug (Ctrl+Shift+D), pick '{config_name}' from the dropdown, "
-            f"click the green play button. If you instead see \"'<csproj>' does not "
-            f"support debugging. No launchable target found\", you pressed F5 from a "
-            f"code file and Dev Kit hijacked it - use the Run and Debug panel instead. "
-            f"coreclr is managed-only by construction, no engine selector to flip."
+            f"click the green play button. To break in OnCreate (which has already "
+            f"run by the time you attach), hit Tools > C# Scripting > Reload Scripts "
+            f"after attach completes - that re-runs OnCreate under the live debugger. "
+            f"If you see \"'<csproj>' does not support debugging. No launchable target "
+            f"found\", you pressed F5 from a code file and Dev Kit hijacked it - use "
+            f"the Run and Debug panel instead."
         )
     return ok
 

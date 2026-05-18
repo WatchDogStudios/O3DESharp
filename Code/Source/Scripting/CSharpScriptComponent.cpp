@@ -207,76 +207,45 @@ namespace O3DESharp
             // Pass entity ID to the script
             SetEntityIdOnScript();
 
-            // Phase 17b: optional wait-for-debugger gate. We mirror the
-            // /O3DE/O3DESharp/WaitForDebuggerOnActivate setting into the
-            // O3DESHARP_WAIT_FOR_DEBUGGER environment variable so the
-            // managed O3DE.Debugger.WaitForAttachIfRequested() can read it
-            // without a separate C++<->managed RPC.
+            // ===========================================================
+            // Debugger attach is non-blocking. (Was: Phase 17b/17d wait-
+            // for-debugger gate that called O3DE.Debugger.WaitForAttachIfRequested
+            // here, blocking the editor main thread for up to 120s.)
             //
-            // We always set the variable (to "0" when disabled) so a stale
-            // value from a previous session can't accidentally trigger the
-            // wait. _putenv_s / setenv writes to the process env table the
-            // .NET runtime already initialized; CoreCLR's
-            // Environment.GetEnvironmentVariable consults live process env
-            // on every call, so no refresh is needed.
+            // Rationale for removing the block:
+            //   - The editor freezing for 120s on every Game Mode entry
+            //     was confusing UX. Users hitting Ctrl+G with the auto-
+            //     attach IDE already launched but not yet attached saw the
+            //     editor go non-responsive with no indication of progress.
+            //   - The blocking call was implicitly enabled whenever
+            //     AutoAttachOnPlay was set (the previous "implicit default"
+            //     followed auto-attach), so configuring the seamless flow
+            //     also configured the freeze. Most users didn't realize
+            //     these were coupled.
+            //   - There is no way to "stop a managed script for debugger
+            //     attach" without also stopping the editor; scripts run on
+            //     the editor main thread. So if you genuinely want a break
+            //     in OnCreate, the user-facing path below is more honest
+            //     (you're explicitly choosing to block).
             //
-            // The wait helper is invoked as a STATIC method on O3DE.Debugger
-            // rather than as an instance method on the user's script type.
-            // Coral::ManagedObject::InvokeMethod only resolves methods
-            // declared on the most-derived type (no inheritance walk), so
-            // a method on ScriptComponent wouldn't be visible on a
-            // MyGame.GameScript instance and Coral would log
-            //   "[Coral] Failed to find method '_O3DESharpWaitForAttachIfRequested'"
-            // Coral::Type::InvokeStaticMethod looks up by type name directly,
-            // sidestepping the inheritance issue.
-            {
-                // Phase 17d implicit-default: if the user hasn't explicitly
-                // set WaitForDebuggerOnActivate, fall back to "follow
-                // AutoAttachOnPlay non-emptiness". That way enabling auto-
-                // attach also enables the matching wait by default, which
-                // is almost always what the user wants. SettingsRegistry::Get
-                // returns true when the key exists; false-on-absent lets us
-                // distinguish "explicitly set to false" from "never set".
-                bool waitForDebugger = false;
-                if (auto* registry = AZ::SettingsRegistry::Get())
-                {
-                    if (!registry->Get(waitForDebugger, "/O3DE/O3DESharp/WaitForDebuggerOnActivate"))
-                    {
-                        AZStd::string autoAttach;
-                        registry->Get(autoAttach, "/O3DE/O3DESharp/AutoAttachOnPlay");
-                        waitForDebugger = !autoAttach.empty();
-                    }
-                }
-                const char* value = waitForDebugger ? "1" : "0";
-#if defined(AZ_PLATFORM_WINDOWS)
-                _putenv_s("O3DESHARP_WAIT_FOR_DEBUGGER", value);
-#else
-                setenv("O3DESHARP_WAIT_FOR_DEBUGGER", value, /*overwrite*/ 1);
-#endif
-                if (waitForDebugger)
-                {
-                    ICoralHostManager* hostManager = CoralHostManagerInterface::Get();
-                    Coral::Type* debuggerType = (hostManager != nullptr)
-                        ? hostManager->GetCoreType("O3DE.Debugger")
-                        : nullptr;
-                    if (debuggerType != nullptr)
-                    {
-                        // Fire-and-forget static call. Blocks the current
-                        // thread (which IS the editor main thread during
-                        // Activate) until the debugger attaches or the 60s
-                        // timeout elapses - same as the previous design,
-                        // just dispatched at the type level.
-                        debuggerType->InvokeStaticMethod("WaitForAttachIfRequested");
-                    }
-                    else
-                    {
-                        AZLOG_WARN(
-                            "CSharpScriptComponent: WaitForDebuggerOnActivate is enabled but "
-                            "O3DE.Debugger type was not found in the core context. Either "
-                            "O3DE.Core was not rebuilt against Phase 17 or it failed to load.");
-                    }
-                }
-            }
+            // The supported paths for debugging at script-create time:
+            //   1. ATTACH FIRST, THEN ENTER GAME MODE.
+            //      Attach your IDE to Editor.exe before pressing Ctrl+G.
+            //      OnCreate runs with the debugger already live so any
+            //      breakpoint in OnCreate binds and hits.
+            //   2. RELOAD SCRIPTS AFTER ATTACHING.
+            //      If you forgot step 1, hit Tools > C# Scripting > Reload
+            //      Scripts after the attach completes. That re-runs OnCreate
+            //      under the now-attached debugger.
+            //   3. EXPLICIT IN-SCRIPT BLOCK.
+            //      Add  O3DE.Debugger.WaitForAttach(TimeSpan.FromSeconds(30))
+            //      to the top of your OnCreate. This WILL block the editor
+            //      main thread - that's intentional because YOU asked for
+            //      it in YOUR script; that's a different proposition from
+            //      the gem silently blocking on every Activate.
+            //
+            // We do NOT call WaitForAttachIfRequested here anymore.
+            // ===========================================================
 
             // Push editor-configured [ExposedProperty] values into the managed
             // instance BEFORE OnCreate runs so user OnCreate code sees them.
