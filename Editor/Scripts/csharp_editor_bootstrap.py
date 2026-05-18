@@ -918,7 +918,26 @@ def attach_with_vscode():
         "type": "coreclr",
         "request": "attach",
         "processId": pid,
-        "justMyCode": True,
+        # justMyCode=false so we can step into framework code when
+        # tracking down a vsdbg attach failure - the marginal startup
+        # cost is irrelevant for an attach session, and stepping into
+        # Coral / runtime code is sometimes the only way to see why
+        # the host's managed state is wedged.
+        "justMyCode": False,
+        # Engine logging surfaces vsdbg's attach probe in the Debug
+        # Console: which CoreCLR it sees, which module list it loaded,
+        # what HRESULTs it got back from the debug API. Without this,
+        # attach failures collapse to a one-line "Failed to attach
+        # to process:" with no actionable detail. Cheap when attach
+        # succeeds (a few hundred lines, all in the Debug Console
+        # which the user only sees when they look), invaluable when
+        # it doesn't.
+        "logging": {
+            "engineLogging": True,
+            "moduleLoad": True,
+            "exceptions": True,
+            "programOutput": True,
+        },
     }
 
     # Targets: project root + every csproj's parent directory under
