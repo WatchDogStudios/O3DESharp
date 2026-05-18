@@ -133,6 +133,46 @@ namespace O3DESharp.BindingGenerator.Parsing
             args.Add("-ferror-limit=0");        // Continue parsing despite errors
             args.Add("-Wno-everything");         // Suppress all warnings
 
+            // MSVC-compatibility flags. Without these, libclang parses
+            // Microsoft's standard-library headers (<limits>, <type_traits>,
+            // <chrono>, ...) as if they were portable C++ - which fails
+            // because MSVC's STL uses Microsoft-specific intrinsics,
+            // attributes, and implicit-include conventions. The textbook
+            // failure (seen in the EMotionFX log):
+            //
+            //   <MSVC>/include/limits:223:
+            //     error: use of undeclared identifier 'CHAR_MIN'
+            //
+            // CHAR_MIN comes from <climits>; MSVC's <limits> normally
+            // depends on transitive includes that libclang doesn't expand
+            // the same way the MSVC frontend does. Setting the MSVC
+            // compatibility flags + explicit target triple closes the gap.
+            args.Add("-fms-extensions");
+            args.Add("-fms-compatibility");
+            // Pin the MSVC ABI version compiler-side. We don't have a way
+            // to detect the user's MSVC version cheaply here, but 19.40
+            // covers VS 2022 17.10 + VS 2026 - both ship MSVC 14.40+
+            // headers that need this set. Older toolchains accept the
+            // newer version as a superset.
+            args.Add("-fms-compatibility-version=19.40");
+            // The target triple tells libclang to look for MSVC's
+            // built-in macros (_MSC_VER, _WIN32, etc.) and to use MSVC
+            // calling conventions. Without it, headers gated on _MSC_VER
+            // get parsed under the wrong code path.
+            args.Add("--target=x86_64-pc-windows-msvc");
+
+            // Pre-include the C-style headers that MSVC's C++ standard
+            // headers depend on for compiler-intrinsic macros. This
+            // matters before AzCorePreludeHeaders because the AzCore
+            // headers themselves include <limits>, <chrono>, etc.
+            // transitively - if those C++ headers fail to parse, all the
+            // AzCore types they declare go missing too. <climits> covers
+            // CHAR_MIN / INT_MAX / etc.; <cstddef> covers size_t /
+            // ptrdiff_t; <cstdint> covers fixed-width integer types.
+            args.Add("-include"); args.Add("climits");
+            args.Add("-include"); args.Add("cstddef");
+            args.Add("-include"); args.Add("cstdint");
+
             // Force-include common AzCore headers so types like AZ::Vector3,
             // AZ::Data::AssetId, AZ::EntityId, and the basic STL replacements
             // are in scope for every parse. Without this, headers that
