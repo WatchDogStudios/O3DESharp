@@ -379,7 +379,69 @@ namespace O3DESharp.BindingGenerator.Generation
                 }
             }
 
+            // Drop editor-only headers. Editor types (gem editor UI,
+            // ComponentMode handlers, Qt widgets, asset editors, etc.)
+            // are not part of the runtime API surface that C# scripts
+            // can consume - they only exist in the editor process,
+            // never link into a packaged game launcher, and dragging
+            // them through the binding pipeline produces wrappers
+            // that crash on first call from a non-editor context.
+            //
+            // Three matching heuristics, applied to the path with both
+            // separator styles normalized:
+            //   - directory segment "Editor"   (Code/Editor/*, Editor/Source/*)
+            //   - directory segment "Tools"    (Tools/EMotionStudio/*, EMStudio/*)
+            //   - filename prefix  "Editor"   (EditorActorComponent.h, EditorSimpleMotionComponentBus.h)
+            //   - filename suffix  "EditorBus" (XxxEditorBus.h)
+            //   - directory contains "EMStudio" / "MysticQt" / "ComponentMode"
+            //     (EMotionFX-specific editor-only subsystems)
+            headerFiles = headerFiles.Where(f => !IsEditorOnlyHeader(f)).ToList();
+
             return headerFiles.Where(f => !excludedFiles.Contains(f)).Distinct().ToList();
+        }
+
+        /// <summary>
+        /// True if a header file lives in an editor-only location or has
+        /// an editor-only naming convention. Path comparison is case-
+        /// insensitive and tolerant of both separator styles so the same
+        /// rule works for "Code/Editor/Foo.h" and "Code\Editor\Foo.h".
+        /// </summary>
+        private static bool IsEditorOnlyHeader(string headerPath)
+        {
+            if (string.IsNullOrEmpty(headerPath)) return false;
+
+            // Normalize to forward-slash + lowercase for ordinal contains.
+            var norm = headerPath.Replace('\\', '/').ToLowerInvariant();
+
+            // Path-segment exclusions. Each pattern is wrapped in slashes
+            // so we match the segment exactly (not e.g. "EditorBag" or
+            // "WhiteboxEditorTools"). The leading / wraps the start-of-path
+            // case (e.g. "F:/.../Editor/Foo.h"); we ensure the path starts
+            // with a slash for the comparison below.
+            var slashed = "/" + norm.TrimStart('/');
+            string[] editorPathSegments =
+            {
+                "/editor/", "/tools/", "/emstudio/", "/mysticqt/",
+                "/componentmode/", "/editor source/", "/editorlib/",
+            };
+            foreach (var seg in editorPathSegments)
+            {
+                if (slashed.Contains(seg))
+                {
+                    return true;
+                }
+            }
+
+            // Filename-based exclusions. EditorActorComponentBus.h,
+            // EditorBus.h, FooEditorBus.h, etc.
+            var fileName = Path.GetFileName(norm);
+            if (fileName.StartsWith("editor", StringComparison.Ordinal)) return true;
+            if (fileName.EndsWith("editor.h", StringComparison.Ordinal)) return true;
+            if (fileName.EndsWith("editorbus.h", StringComparison.Ordinal)) return true;
+            if (fileName.EndsWith("editorrequests.h", StringComparison.Ordinal)) return true;
+            if (fileName.EndsWith("editornotifications.h", StringComparison.Ordinal)) return true;
+
+            return false;
         }
 
         private List<string> BuildIncludePaths(GemDescriptor gem, GemSettings settings, Dictionary<string, GemDescriptor> allGems)

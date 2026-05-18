@@ -512,6 +512,28 @@ namespace O3DESharp.BindingGenerator.Parsing
                     return true;
             }
 
+            // Skip editor-only types. The host-side header file filter
+            // (MultiGemBindingGenerator.IsEditorOnlyHeader) drops editor
+            // headers BEFORE the parser ever sees them, but Editor*
+            // classes can also be declared inline in non-editor headers
+            // (one bus header containing both runtime AND editor variants
+            // is a real pattern in O3DE - e.g. ActorComponentBus.h
+            // declaring EditorActorComponentRequests alongside the
+            // runtime ActorComponentRequests). This catches those.
+            //
+            // Match against the LAST segment of the fully-qualified name
+            // so namespaces like "Foo::Editor::Bar" don't false-positive.
+            var lastSeg = className;
+            var lastColon = className.LastIndexOf("::", StringComparison.Ordinal);
+            if (lastColon >= 0 && lastColon + 2 < className.Length)
+            {
+                lastSeg = className.Substring(lastColon + 2);
+            }
+            if (lastSeg.StartsWith("Editor", StringComparison.Ordinal))
+            {
+                return true;
+            }
+
             return false;
         }
 
