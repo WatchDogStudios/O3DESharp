@@ -1455,6 +1455,28 @@ namespace O3DESharp
 
                 AZ::BehaviorArgument result;
                 const bool hasReturn = method->HasResult();
+                if (hasReturn)
+                {
+                    // Pre-populate the result BehaviorArgument's type
+                    // metadata from the reflected return-type parameter.
+                    // BehaviorMethod::Call writes the return value into
+                    // result's storage but doesn't always set m_typeId,
+                    // m_name, or m_traits - and BehaviorArgumentToJsonValue
+                    // dispatches on m_typeId. Without this, primitives
+                    // like TickRequestBus::GetTickDeltaTime (float return)
+                    // come out with m_typeId = AZ::TypeId::CreateNull(),
+                    // hit the marshaler's catch-all error path, and
+                    // surface as
+                    //   "result marshal: unsupported return type 0x{00000000-...}"
+                    // even though the storage actually does contain the
+                    // float result.
+                    if (const auto* resultParam = method->GetResult())
+                    {
+                        result.m_typeId = resultParam->m_typeId;
+                        result.m_name = resultParam->m_name;
+                        result.m_traits = resultParam->m_traits;
+                    }
+                }
                 const bool ok = method->Call(
                     flatArgs.data(),
                     static_cast<unsigned int>(flatArgs.size()),
@@ -1462,6 +1484,16 @@ namespace O3DESharp
                 if (!ok)
                 {
                     return makeError("BehaviorMethod::Call returned false");
+                }
+                // Defensive: if Call did set m_typeId itself, we use that;
+                // if it didn't, our pre-populated value wins. Either way
+                // the marshaler now has a valid TypeId to dispatch on.
+                if (hasReturn && result.m_typeId.IsNull())
+                {
+                    if (const auto* resultParam = method->GetResult())
+                    {
+                        result.m_typeId = resultParam->m_typeId;
+                    }
                 }
 
                 // 6. Marshal the result back to JSON.
