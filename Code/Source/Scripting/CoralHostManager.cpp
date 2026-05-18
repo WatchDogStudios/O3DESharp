@@ -149,6 +149,16 @@ namespace O3DESharp
         AZ::Utils::SetEnv("DOTNET_EnableDiagnostics_Debugger", "1", /*overwrite=*/false);
         AZ::Utils::SetEnv("DOTNET_EnableDiagnostics_Profiler", "1", /*overwrite=*/false);
 
+        // Positive confirmation in the editor log that this code path
+        // actually executed. Useful when triaging future attach failures:
+        // if this line is MISSING from the log, the env-var setup didn't
+        // run (something earlier crashed or the binary is stale); if it's
+        // present, the runtime came up with diagnostics enabled and
+        // attach failures are happening for OTHER reasons (PIX hooks,
+        // anti-cheat drivers, kernel debug-port collisions, etc).
+        AZLOG_INFO("CoralHostManager: Forced DOTNET_EnableDiagnostics{,_IPC,_Debugger,_Profiler}=1 "
+                   "to ensure external managed-debugger attach works regardless of parent env.");
+
         // Setup Coral host settings
         Coral::HostSettings settings;
         settings.CoralDirectory = std::string(m_config.coralDirectory.c_str());
