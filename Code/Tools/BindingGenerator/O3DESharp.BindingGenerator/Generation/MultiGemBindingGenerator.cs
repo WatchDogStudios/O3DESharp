@@ -488,6 +488,27 @@ namespace O3DESharp.BindingGenerator.Generation
                 if (Directory.Exists(atomFeatureCommonInclude))
                     includePaths.Add(atomFeatureCommonInclude);
 
+                // Engine-wide legacy headers. O3DE inherited CryCommon /
+                // CryCommonTools from CryEngine and the EMotionFX-era gems
+                // still reference them via unprefixed includes
+                // (#include <BaseTypes.h> in MCore/Source/Config.h is the
+                // textbook case). These aren't tied to any single gem - they
+                // live under engine/Code/Legacy/* and have to be on the
+                // search path engine-wide for any gem that consumes them
+                // to parse cleanly.
+                var legacyDir = Path.Combine(_enginePath, "Code", "Legacy");
+                if (Directory.Exists(legacyDir))
+                {
+                    try
+                    {
+                        foreach (var legacySub in Directory.GetDirectories(legacyDir))
+                        {
+                            includePaths.Add(legacySub);
+                        }
+                    }
+                    catch { /* enum failure - non-fatal */ }
+                }
+
                 // Auto-discover 3rdParty package include paths
                 var thirdPartyPackagesDir = Resolve3rdPartyPackagesPath();
                 if (thirdPartyPackagesDir != null)
@@ -514,17 +535,25 @@ namespace O3DESharp.BindingGenerator.Generation
         }
 
         /// <summary>
-        /// Add every plausible header search path for a gem to the list.
-        /// See BuildIncludePaths for the full rationale; the short version:
-        ///   - Code/             (handles EMotionFX-style legacy layouts)
-        ///   - Code/Include      (standard O3DE public)
-        ///   - Code/Source       (standard O3DE private)
-        ///   - Code/Include/*    (one level deep - handles AudioSystem
-        ///                        nesting public headers under Engine/)
-        ///   - Code/Source/*     (one level deep - same for impl headers)
+        /// Add every plausible header search path for a gem. Covers the
+        /// three common O3DE layouts:
+        ///   - Standard: Code/Include + Code/Source
+        ///   - Legacy nested (EMotionFX, MCore): Code/&lt;GemName&gt;/Source,
+        ///     Code/&lt;GemName&gt;/Include, Code/MCore/Source, etc.
+        ///   - Sub-namespaced public: Code/Include/Engine, Code/Include/Common
+        ///
+        /// Strategy: add Code/ + Code/Include + Code/Source first (cheap,
+        /// catches 90% of cases), then walk Code/ recursively (bounded
+        /// depth, only directories containing header files) to catch the
+        /// rest. The recursive walk is the difference between
+        /// "EMotionFX::Integration types work" and "the entire gem just
+        /// gets skipped" - MCore's BaseTypes.h lives at
+        /// Code/MCore/Source/BaseTypes.h and the include #include &lt;BaseTypes.h&gt;
+        /// only resolves with that directory directly on the search path.
+        ///
         /// Non-existent directories are filtered at the end of
-        /// BuildIncludePaths via .Where(Directory.Exists) so adding paths
-        /// that don't exist for some gems is harmless.
+        /// BuildIncludePaths via .Where(Directory.Exists) so this can
+        /// over-add without ill effect.
         /// </summary>
         private static void AddGemIncludeSurface(List<string> includePaths, string gemPath)
         {
@@ -533,23 +562,81 @@ namespace O3DESharp.BindingGenerator.Generation
             includePaths.Add(Path.Combine(codeDir, "Include"));
             includePaths.Add(Path.Combine(codeDir, "Source"));
 
-            // One-level-deep walk of Code/Include and Code/Source. Bound
-            // by the number of top-level subdirs in each (typically 1-5)
-            // so this is cheap. Errors during enumeration (missing dir,
-            // ACL denial) get swallowed since the consuming
-            // Directory.Exists check downstream takes care of cleanup.
-            TryAddOneLevelDeep(includePaths, Path.Combine(codeDir, "Include"));
-            TryAddOneLevelDeep(includePaths, Path.Combine(codeDir, "Source"));
+            // Recursive walk of Code/, bounded depth, only directories
+            // that actually contain headers. Bounds the -I args we add
+            // per gem to "real header directories" instead of every
+            // subdir under Code/ (which could include obj/, bin/, etc).
+            //
+            // Depth 4 is enough for the deepest O3DE gem layouts seen so
+            // far (EMotionFX: Code/EMotionFX/Pipeline/SceneLoadingComponents/
+            // is 3 levels; some gems go 4 with platform-specific subdirs).
+            // The walk skips well-known noise directories (obj/, bin/,
+            // .git/, etc.) so we don't index build output.
+            TryAddHeaderDirectoriesRecursive(includePaths, codeDir, maxDepth: 4);
         }
 
-        private static void TryAddOneLevelDeep(List<string> includePaths, string root)
+        /// <summary>
+        /// Walk a directory tree adding every subdirectory that contains
+        /// header files (*.h or *.hpp). Bounded by maxDepth so we don't
+        /// recurse forever into pathological layouts. Skips noise dirs
+        /// (build output, version control, IDE caches) to keep the
+        /// -I arg list focused on real source.
+        /// </summary>
+        private static void TryAddHeaderDirectoriesRecursive(
+            List<string> includePaths, string root, int maxDepth, int depth = 0)
         {
+            if (depth > maxDepth) return;
             if (!Directory.Exists(root)) return;
+
             try
             {
+                // Add the root itself if it has any header at the top
+                // level (cheap top-of-dir glob, no recursion). Skipping
+                // this for dirs with no .h/.hpp means our -I list only
+                // contains directories libclang actually needs to probe.
+                bool hasHeaders = false;
+                try
+                {
+                    var hs = Directory.EnumerateFiles(root, "*.h", SearchOption.TopDirectoryOnly);
+                    using (var e = hs.GetEnumerator())
+                    {
+                        if (e.MoveNext()) hasHeaders = true;
+                    }
+                    if (!hasHeaders)
+                    {
+                        var hpps = Directory.EnumerateFiles(root, "*.hpp", SearchOption.TopDirectoryOnly);
+                        using (var e = hpps.GetEnumerator())
+                        {
+                            if (e.MoveNext()) hasHeaders = true;
+                        }
+                    }
+                }
+                catch { /* swallow file-IO ACL errors, treat as no headers */ }
+
+                if (hasHeaders)
+                {
+                    includePaths.Add(root);
+                }
+
                 foreach (var subDir in Directory.GetDirectories(root))
                 {
-                    includePaths.Add(subDir);
+                    var name = Path.GetFileName(subDir);
+                    // Skip well-known noise: build output, VCS metadata,
+                    // IDE caches. These never contain headers we want to
+                    // include, but they CAN contain files matching *.h
+                    // (e.g. a .git/COMMIT_EDITMSG.h file from a stray
+                    // commit message) that would pollute the search path.
+                    if (string.Equals(name, "obj", StringComparison.OrdinalIgnoreCase) ||
+                        string.Equals(name, "bin", StringComparison.OrdinalIgnoreCase) ||
+                        string.Equals(name, ".git", StringComparison.OrdinalIgnoreCase) ||
+                        string.Equals(name, ".vs", StringComparison.OrdinalIgnoreCase) ||
+                        string.Equals(name, ".vscode", StringComparison.OrdinalIgnoreCase) ||
+                        string.Equals(name, "Tests", StringComparison.OrdinalIgnoreCase) ||
+                        string.Equals(name, "Test", StringComparison.OrdinalIgnoreCase))
+                    {
+                        continue;
+                    }
+                    TryAddHeaderDirectoriesRecursive(includePaths, subDir, maxDepth, depth + 1);
                 }
             }
             catch
