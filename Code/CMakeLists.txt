@@ -173,18 +173,27 @@ if(TARGET Coral.Managed)
     get_property(gem_root_for_staging GLOBAL PROPERTY "@GEMROOT:${gem_name}@")
     set(CORAL_STAGING_DIR "${gem_root_for_staging}/bin/Coral")
     
-    # Create a custom target to stage Coral.Managed files
+    # Create a custom target to stage Coral.Managed files. Includes the
+    # portable PDB - without it sitting alongside the DLL, vsdbg /
+    # Rider / Visual Studio can attach to the runtime but cannot bind
+    # source-level breakpoints in Coral.Managed methods, and stack
+    # traces from there land as `<unknown source>`. The PDB is small
+    # (a few hundred KB) and shipping it has zero cost for users who
+    # never debug into Coral.
     add_custom_target(${gem_name}.StageCoral ALL
         COMMENT "O3DESharp: Staging Coral.Managed files for deployment"
         COMMAND ${CMAKE_COMMAND} -E make_directory "${CORAL_STAGING_DIR}"
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different 
-            "${CORAL_MANAGED_OUTPUT}/Coral.Managed.dll" 
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "${CORAL_MANAGED_OUTPUT}/Coral.Managed.dll"
             "${CORAL_STAGING_DIR}/Coral.Managed.dll"
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different 
-            "${CORAL_MANAGED_OUTPUT}/Coral.Managed.runtimeconfig.json" 
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "${CORAL_MANAGED_OUTPUT}/Coral.Managed.pdb"
+            "${CORAL_STAGING_DIR}/Coral.Managed.pdb"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "${CORAL_MANAGED_OUTPUT}/Coral.Managed.runtimeconfig.json"
             "${CORAL_STAGING_DIR}/Coral.Managed.runtimeconfig.json"
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different 
-            "${CORAL_MANAGED_OUTPUT}/Coral.Managed.deps.json" 
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "${CORAL_MANAGED_OUTPUT}/Coral.Managed.deps.json"
             "${CORAL_STAGING_DIR}/Coral.Managed.deps.json"
         DEPENDS Coral.Managed
     )
@@ -216,15 +225,22 @@ set(O3DE_CORE_BUILD_OUTPUT_DEBUG "${O3DE_CORE_SCRIPTS_DIR}/bin/Debug/net9.0")
 set(O3DE_CORE_BUILD_OUTPUT "${O3DE_CORE_BUILD_OUTPUT_RELEASE}")
 
 if(EXISTS "${O3DE_CORE_BUILD_OUTPUT}/O3DE.Core.dll")
-    # Create custom target to stage O3DE.Core files
+    # Create custom target to stage O3DE.Core files. Includes the
+    # portable PDB so external debuggers (vsdbg / Rider / VS) can bind
+    # source-level breakpoints in O3DE.Core methods - without the PDB
+    # next to the DLL, attach succeeds but stepping into framework
+    # code shows up as `<unknown source>`.
     add_custom_target(${gem_name}.StageO3DECore ALL
         COMMENT "O3DESharp: Staging O3DE.Core files for deployment"
         COMMAND ${CMAKE_COMMAND} -E make_directory "${O3DE_CORE_STAGING_DIR}"
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different 
-            "${O3DE_CORE_BUILD_OUTPUT}/O3DE.Core.dll" 
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "${O3DE_CORE_BUILD_OUTPUT}/O3DE.Core.dll"
             "${O3DE_CORE_STAGING_DIR}/O3DE.Core.dll"
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different 
-            "${O3DE_CORE_BUILD_OUTPUT}/O3DE.Core.deps.json" 
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "${O3DE_CORE_BUILD_OUTPUT}/O3DE.Core.pdb"
+            "${O3DE_CORE_STAGING_DIR}/O3DE.Core.pdb"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "${O3DE_CORE_BUILD_OUTPUT}/O3DE.Core.deps.json"
             "${O3DE_CORE_STAGING_DIR}/O3DE.Core.deps.json"
     )
     
@@ -506,12 +522,17 @@ ly_create_alias(NAME ${gem_name}.Unified.API NAMESPACE Gem TARGETS Gem::${gem_na
 # ============================================================
 # Now that the launcher target aliases exist, we can deploy runtime files to them
 
-# Deploy Coral.Managed files if the staging target exists
+# Deploy Coral.Managed files if the staging target exists. Ships the
+# portable PDB alongside the DLL so external managed debuggers can
+# resolve sources for Coral methods (vsdbg / Rider / VS look for a
+# matching .pdb next to the .dll on attach; without it, stack frames
+# from Coral.Managed show `<unknown source>`).
 if(TARGET ${gem_name}.StageCoral)
     ly_add_target_files(
         TARGETS ${gem_name}.Clients ${gem_name}.Servers ${gem_name}.Unified
         FILES
             "${CORAL_STAGING_DIR}/Coral.Managed.dll"
+            "${CORAL_STAGING_DIR}/Coral.Managed.pdb"
             "${CORAL_STAGING_DIR}/Coral.Managed.runtimeconfig.json"
             "${CORAL_STAGING_DIR}/Coral.Managed.deps.json"
         OUTPUT_SUBDIRECTORY "Bin/Scripts/Coral"
@@ -519,12 +540,15 @@ if(TARGET ${gem_name}.StageCoral)
     message(STATUS "O3DESharp: Coral will be deployed to Bin/Scripts/Coral/ for runtime and export")
 endif()
 
-# Deploy O3DE.Core files if the staging target exists
+# Deploy O3DE.Core files if the staging target exists. Includes the
+# PDB so external debuggers can step into O3DE.Core methods (Debugger,
+# Reflection, EBus, etc.) with source-level resolution.
 if(TARGET ${gem_name}.StageO3DECore)
     ly_add_target_files(
         TARGETS ${gem_name}.Clients ${gem_name}.Servers ${gem_name}.Unified
         FILES
             "${O3DE_CORE_STAGING_DIR}/O3DE.Core.dll"
+            "${O3DE_CORE_STAGING_DIR}/O3DE.Core.pdb"
             "${O3DE_CORE_STAGING_DIR}/O3DE.Core.deps.json"
         OUTPUT_SUBDIRECTORY "Bin/Scripts"
     )
