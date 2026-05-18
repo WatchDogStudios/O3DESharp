@@ -113,35 +113,83 @@ namespace O3DESharp.BindingGenerator.Generation
                 if (method.IsStatic || ExcludedMethods.Contains(method.Name))
                     continue;
 
+                // Skip methods whose name libclang couldn't extract as a
+                // valid C# identifier (anonymous, operator overload, or a
+                // metaprogramming-generated decl that came through with an
+                // empty/garbled name). Emitting "self.{name}(...)" with an
+                // empty name produces CS1001 "Identifier expected".
+                if (!IsValidCSharpIdentifier(method.Name))
+                    continue;
+
                 // Generate fluent wrapper for void methods starting with Set
-                if (method.ReturnType.CSharpTypeName == "void" && 
+                if (method.ReturnType.CSharpTypeName == "void" &&
                     method.Name.StartsWith("Set", StringComparison.OrdinalIgnoreCase))
                 {
                     extensions.Add(GenerateWithExtension(parsedClass, method));
                 }
 
                 // Generate fluent wrapper for methods that are candidates
-                if (method.ReturnType.CSharpTypeName == "void" && 
+                if (method.ReturnType.CSharpTypeName == "void" &&
                     IsFluentCandidate(method.Name))
                 {
                     extensions.Add(GenerateFluentExtension(parsedClass, method));
                 }
             }
 
-            // Generate builder pattern helpers for properties
+            // Generate builder pattern helpers for properties. EMotionFX's
+            // JointSelectionWidget (and a few similar types) had unnamed
+            // bitfield / anonymous-member properties slip through libclang's
+            // walk - their prop.Name was the empty string. The previous
+            // code happily emitted "public static T With(this T self, ...) {
+            // self. = value; }" which is a 16-CS1001-error invalid file.
+            // Guard the loop AND the per-prop generator below; whichever
+            // gem first surfaces a similar pattern won't break the build.
             foreach (var prop in parsedClass.Properties)
             {
-                if (!prop.IsReadOnly)
-                {
-                    extensions.Add(GeneratePropertyWithExtension(parsedClass, prop));
-                }
+                if (prop.IsReadOnly)
+                    continue;
+                if (!IsValidCSharpIdentifier(prop.Name))
+                    continue;
+                extensions.Add(GeneratePropertyWithExtension(parsedClass, prop));
             }
 
             return extensions.Where(e => !string.IsNullOrWhiteSpace(e)).Distinct().ToList();
         }
 
+        /// <summary>
+        /// Minimum-viable C# identifier validator: non-empty, starts with
+        /// letter or underscore (optionally preceded by an @ verbatim
+        /// prefix), and the remaining characters are all letter/digit/
+        /// underscore. Mirrors the implementation in CSharpCodeGenerator
+        /// rather than reaching across files - the two generators evolve
+        /// independently and we don't want to couple them just for a
+        /// six-line check.
+        /// </summary>
+        private static bool IsValidCSharpIdentifier(string? name)
+        {
+            if (string.IsNullOrWhiteSpace(name))
+                return false;
+            var check = name!.StartsWith("@") ? name.Substring(1) : name;
+            if (check.Length == 0 || (!char.IsLetter(check[0]) && check[0] != '_'))
+                return false;
+            for (int i = 1; i < check.Length; i++)
+            {
+                if (!char.IsLetterOrDigit(check[i]) && check[i] != '_')
+                    return false;
+            }
+            return true;
+        }
+
         private string GenerateWithExtension(ParsedClass parsedClass, ParsedMethod method)
         {
+            // Belt-and-suspenders: if the loop-level filter ever misses a
+            // bad name (refactor regression, callers outside
+            // GenerateClassExtensions, ...), refuse to emit rather than
+            // ship a CS1001-invalid file. method.Name.Substring(3) below
+            // would also throw on a 0-2 char name; guard that too.
+            if (!IsValidCSharpIdentifier(method.Name) || method.Name.Length <= 3)
+                return string.Empty;
+
             var sb = new StringBuilder();
 
             // Convert "SetFoo" to "WithFoo"
@@ -164,6 +212,11 @@ namespace O3DESharp.BindingGenerator.Generation
 
         private string GenerateFluentExtension(ParsedClass parsedClass, ParsedMethod method)
         {
+            // Belt-and-suspenders against bad method names slipping past
+            // the loop-level filter. Same rationale as GenerateWithExtension.
+            if (!IsValidCSharpIdentifier(method.Name))
+                return string.Empty;
+
             // Avoid duplicating if it's already a Set method
             if (method.Name.StartsWith("Set", StringComparison.OrdinalIgnoreCase))
                 return string.Empty;
@@ -189,8 +242,17 @@ namespace O3DESharp.BindingGenerator.Generation
 
         private string GeneratePropertyWithExtension(ParsedClass parsedClass, ParsedProperty prop)
         {
+            // Belt-and-suspenders against bad property names slipping
+            // past the loop-level filter. The EMotionFX regression that
+            // motivated this fix was JointSelectionWidget producing
+            // "self. = value;" because libclang gave us a ParsedProperty
+            // with an empty Name (looks like an unnamed bitfield or
+            // anonymous member that propagated through unscathed).
+            if (!IsValidCSharpIdentifier(prop.Name))
+                return string.Empty;
+
             var sb = new StringBuilder();
-            
+
             var withName = "With" + prop.Name;
 
             sb.AppendLine($"        /// <summary>");
