@@ -350,7 +350,11 @@ namespace O3DESharp.BindingGenerator
                 Console.WriteLine($"Classes:        {result.ClassFilesWritten}/{result.TotalClasses}");
                 Console.WriteLine($"EBuses:         {result.BusFilesWritten}/{result.TotalEBuses}");
                 Console.WriteLine($"Globals files:  {result.GlobalsFilesWritten} (covering {result.TotalGlobals} items)");
+                Console.WriteLine($"Project files:  {result.CsprojFilesWritten}");
                 Console.WriteLine($"Output:         {outputDir}");
+                Console.WriteLine();
+                Console.WriteLine($"To build: cd {outputDir}/<GemBucket> && dotnet build");
+                Console.WriteLine($"The built DLL auto-deploys to <Project>/Bin/Scripts/ where Coral picks it up.");
                 return 0;
             }
             catch (Exception ex)

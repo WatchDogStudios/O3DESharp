@@ -140,6 +140,14 @@ namespace O3DESharp.BindingGenerator.Generation
                 Directory.CreateDirectory(gemDir);
                 int gemClassCount = 0;
                 int gemSkippedCount = 0;
+                // Dedup by the C# class name we'd emit (the LAST segment
+                // of the FQN, sanitized). The JSON sometimes contains
+                // two reflected classes with the same simple name from
+                // different C++ namespaces (e.g. AzCore::RenderStates
+                // and Atom::RenderStates both reflected as "RenderStates").
+                // C# can only have one "public static class RenderStates"
+                // per namespace - first one wins.
+                var seenClassNames = new HashSet<string>(StringComparer.Ordinal);
                 foreach (var cls in gemGroup)
                 {
                     // Skip C++ template specializations - they reflect as
@@ -153,8 +161,28 @@ namespace O3DESharp.BindingGenerator.Generation
                         gemSkippedCount++;
                         continue;
                     }
-                    var cs = EmitClass(cls, gemGroup.Key);
+
+                    // Dedup key is the C# class name we're about to
+                    // declare (LastNamespaceSegment + SafeIdentifier),
+                    // not the filename. Two FQNs like AZ::RenderStates
+                    // and AZ::RHI::RenderStates would have distinct
+                    // filenames (AZ__RenderStates vs AZ__RHI__RenderStates)
+                    // but BOTH would try to declare `public static class
+                    // RenderStates` in the same C# namespace, which the
+                    // compiler rejects as CS0101 "namespace already
+                    // contains a definition for X".
+                    var csharpClassName = SafeIdentifier(LastNamespaceSegment(cls.Name));
+                    if (!seenClassNames.Add(csharpClassName))
+                    {
+                        if (_verbose)
+                        {
+                            Console.WriteLine($"  [{gemGroup.Key}] Skipping duplicate class name: {cls.Name} (collides with prior {csharpClassName})");
+                        }
+                        gemSkippedCount++;
+                        continue;
+                    }
                     var safeName = SafeFileName(cls.Name);
+                    var cs = EmitClass(cls, gemGroup.Key);
                     File.WriteAllText(Path.Combine(gemDir, safeName + ".g.cs"), cs);
                     classFiles++;
                     gemClassCount++;
@@ -163,7 +191,7 @@ namespace O3DESharp.BindingGenerator.Generation
                 {
                     Console.WriteLine(
                         $"  [{gemGroup.Key}] Wrote {gemClassCount} class wrappers" +
-                        (gemSkippedCount > 0 ? $" ({gemSkippedCount} template specializations skipped)" : ""));
+                        (gemSkippedCount > 0 ? $" ({gemSkippedCount} skipped - templates/duplicates)" : ""));
                 }
             }
 
@@ -171,16 +199,27 @@ namespace O3DESharp.BindingGenerator.Generation
             {
                 var gemDir = Path.Combine(outputDir, gemGroup.Key, "EBuses");
                 Directory.CreateDirectory(gemDir);
+                var seenBusNames = new HashSet<string>(StringComparer.Ordinal);
+                int written = 0;
                 foreach (var bus in gemGroup)
                 {
-                    var cs = EmitEBus(bus, gemGroup.Key);
                     var safeName = SafeFileName(bus.Name);
+                    if (!seenBusNames.Add(safeName))
+                    {
+                        if (_verbose)
+                        {
+                            Console.WriteLine($"  [{gemGroup.Key}] Skipping duplicate EBus: {bus.Name}");
+                        }
+                        continue;
+                    }
+                    var cs = EmitEBus(bus, gemGroup.Key);
                     File.WriteAllText(Path.Combine(gemDir, safeName + ".g.cs"), cs);
                     busFiles++;
+                    written++;
                 }
                 if (_verbose)
                 {
-                    Console.WriteLine($"  [{gemGroup.Key}] Wrote {gemGroup.Count()} EBus wrappers");
+                    Console.WriteLine($"  [{gemGroup.Key}] Wrote {written} EBus wrappers");
                 }
             }
 
@@ -200,16 +239,151 @@ namespace O3DESharp.BindingGenerator.Generation
                 }
             }
 
+            // Emit a csproj for every gem bucket that produced at least
+            // one .g.cs - the per-class / per-EBus files are useless
+            // on their own; the user needs a compilable project that
+            // references O3DE.Core (for NativeReflection dispatch) and
+            // builds + deploys to <Project>/Bin/Scripts/ where Coral
+            // loads it at runtime.
+            var allGemKeys = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            foreach (var g in classesByGem) allGemKeys.Add(g.Key);
+            foreach (var g in busesByGem) allGemKeys.Add(g.Key);
+            allGemKeys.UnionWith(globalsGemKeys);
+
+            int csprojFiles = 0;
+            foreach (var gemKey in allGemKeys)
+            {
+                var gemDir = Path.Combine(outputDir, gemKey);
+                if (!Directory.Exists(gemDir)) continue;
+                EmitProjectFile(gemDir, gemKey);
+                csprojFiles++;
+            }
+
             return new ReflectionGenerationResult
             {
                 Success = true,
                 ClassFilesWritten = classFiles,
                 BusFilesWritten = busFiles,
                 GlobalsFilesWritten = globalsFiles,
+                CsprojFilesWritten = csprojFiles,
                 TotalClasses = doc.Classes.Count,
                 TotalEBuses = doc.EBuses.Count,
                 TotalGlobals = doc.GlobalMethods.Count + doc.GlobalProperties.Count,
             };
+        }
+
+        /// <summary>
+        /// Emit O3DE.Generated.&lt;GemName&gt;.csproj into the gem
+        /// bucket's output directory. Matches the debug-friendly
+        /// settings from the user-script template
+        /// (DebugType=full + loose-on-disk + Debug constants), references
+        /// O3DE.Core via a path relative to project root, and includes
+        /// a DeployToBinScripts target so the built DLL + PDB land in
+        /// &lt;Project&gt;/Bin/Scripts/ where Coral picks them up at
+        /// runtime.
+        ///
+        /// The csproj path layout: &lt;output&gt;/&lt;Gem&gt;/&lt;Gem&gt;.csproj.
+        /// Relative-to-project-root: ../../../../  (4 levels up from
+        /// &lt;Project&gt;/Generated/CSharp/&lt;Gem&gt;/ - assuming the
+        /// caller passed --output &lt;Project&gt;/Generated/CSharp/).
+        /// </summary>
+        private void EmitProjectFile(string gemDir, string gemKey)
+        {
+            var assemblyName = $"O3DE.Generated.{SafeIdentifier(gemKey)}";
+            var rootNs = $"{_rootNamespace}.{SafeNamespaceSegment(gemKey)}";
+            var sb = new StringBuilder();
+
+            sb.AppendLine("<Project Sdk=\"Microsoft.NET.Sdk\">");
+            sb.AppendLine();
+            sb.AppendLine("  <!--");
+            sb.AppendLine("    Auto-generated by O3DESharp.BindingGenerator (reflection backend).");
+            sb.AppendLine("    Compiles the per-class / per-EBus / globals .g.cs files in this");
+            sb.AppendLine("    directory + subdirectories into a single assembly that scripts");
+            sb.AppendLine("    can reference. The generated DLL is deployed to");
+            sb.AppendLine("    <Project>/Bin/Scripts/ alongside the user script DLLs so Coral");
+            sb.AppendLine("    picks it up at runtime.");
+            sb.AppendLine("  -->");
+            sb.AppendLine();
+            sb.AppendLine("  <PropertyGroup>");
+            sb.AppendLine("    <TargetFramework>net9.0</TargetFramework>");
+            sb.AppendLine("    <ImplicitUsings>enable</ImplicitUsings>");
+            sb.AppendLine("    <Nullable>enable</Nullable>");
+            sb.AppendLine("    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>");
+            sb.AppendLine("    <LangVersion>latest</LangVersion>");
+            sb.AppendLine($"    <AssemblyName>{assemblyName}</AssemblyName>");
+            sb.AppendLine($"    <RootNamespace>{rootNs}</RootNamespace>");
+            sb.AppendLine("    <Configurations>Debug;Release</Configurations>");
+            sb.AppendLine("    <Platforms>AnyCPU</Platforms>");
+            sb.AppendLine();
+            sb.AppendLine("    <!-- Suppress CS1591 for whole assembly - generated wrappers");
+            sb.AppendLine("         intentionally leave many XML doc comments empty when the");
+            sb.AppendLine("         reflected source had none. -->");
+            sb.AppendLine("    <NoWarn>$(NoWarn);1591</NoWarn>");
+            sb.AppendLine();
+            sb.AppendLine("    <!-- Deploy target. <Project>/Generated/CSharp/<Gem>/ is 3");
+            sb.AppendLine("         directories below the project root; ../../../Bin/Scripts");
+            sb.AppendLine("         gets us there. User can override per-machine. -->");
+            sb.AppendLine("    <O3DEDeployPath Condition=\"'$(O3DEDeployPath)' == ''\">$(MSBuildProjectDirectory)\\..\\..\\..\\Bin\\Scripts</O3DEDeployPath>");
+            sb.AppendLine();
+            sb.AppendLine("    <!-- Default PDB format for non-Debug configs. Debug overrides");
+            sb.AppendLine("         to full below - external managed-debugger attach against");
+            sb.AppendLine("         the embedded CoreCLR (Coral delegate-host mode) needs");
+            sb.AppendLine("         full-format PDBs to handshake cleanly. -->");
+            sb.AppendLine("    <DebugType>portable</DebugType>");
+            sb.AppendLine("    <DebugSymbols>true</DebugSymbols>");
+            sb.AppendLine("  </PropertyGroup>");
+            sb.AppendLine();
+            sb.AppendLine("  <PropertyGroup Condition=\"'$(Configuration)' == 'Debug'\">");
+            sb.AppendLine("    <Optimize>false</Optimize>");
+            sb.AppendLine("    <DebugSymbols>true</DebugSymbols>");
+            sb.AppendLine("    <DebugType>full</DebugType>");
+            sb.AppendLine("    <PublishSingleFile>false</PublishSingleFile>");
+            sb.AppendLine("    <EnableCompressionInSingleFile>false</EnableCompressionInSingleFile>");
+            sb.AppendLine("    <DefineConstants>DEBUG;TRACE</DefineConstants>");
+            sb.AppendLine("  </PropertyGroup>");
+            sb.AppendLine("  <PropertyGroup Condition=\"'$(Configuration)' == 'Release'\">");
+            sb.AppendLine("    <Optimize>true</Optimize>");
+            sb.AppendLine("    <DefineConstants>TRACE</DefineConstants>");
+            sb.AppendLine("  </PropertyGroup>");
+            sb.AppendLine();
+            sb.AppendLine("  <!-- Reference O3DE.Core for NativeReflection + the math types");
+            sb.AppendLine("       (O3DE.Vector3 etc.) that generated wrappers use. -->");
+            sb.AppendLine("  <ItemGroup>");
+            sb.AppendLine("    <Reference Include=\"O3DE.Core\">");
+            sb.AppendLine("      <HintPath>$(MSBuildProjectDirectory)\\..\\..\\..\\Bin\\Scripts\\O3DE.Core.dll</HintPath>");
+            sb.AppendLine("      <Private>false</Private>");
+            sb.AppendLine("    </Reference>");
+            sb.AppendLine("  </ItemGroup>");
+            sb.AppendLine();
+            sb.AppendLine("  <!-- Auto-deploy after every Build. ContinueOnError prevents a");
+            sb.AppendLine("       locked Bin/Scripts/*.dll (engine running) from failing the");
+            sb.AppendLine("       IDE build entirely. -->");
+            sb.AppendLine("  <Target Name=\"DeployToBinScripts\" AfterTargets=\"Build\">");
+            sb.AppendLine($"    <Message Text=\"O3DESharp: deploying {assemblyName}.dll -&gt; $(O3DEDeployPath)\" Importance=\"high\"/>");
+            sb.AppendLine("    <MakeDir Directories=\"$(O3DEDeployPath)\"/>");
+            sb.AppendLine("    <Copy SourceFiles=\"$(TargetPath)\"");
+            sb.AppendLine("          DestinationFolder=\"$(O3DEDeployPath)\"");
+            sb.AppendLine("          SkipUnchangedFiles=\"true\"");
+            sb.AppendLine("          ContinueOnError=\"true\"/>");
+            sb.AppendLine("    <Copy SourceFiles=\"$(TargetDir)$(AssemblyName).pdb\"");
+            sb.AppendLine("          DestinationFolder=\"$(O3DEDeployPath)\"");
+            sb.AppendLine("          SkipUnchangedFiles=\"true\"");
+            sb.AppendLine("          ContinueOnError=\"true\"");
+            sb.AppendLine("          Condition=\"Exists('$(TargetDir)$(AssemblyName).pdb')\"/>");
+            sb.AppendLine("  </Target>");
+            sb.AppendLine();
+            sb.AppendLine("</Project>");
+
+            // The csproj name matches the gem bucket so multiple gem
+            // buckets coexist as siblings under Generated/CSharp/ without
+            // colliding. Use SafeFileName for Windows-safety in case
+            // we ever get exotic gem names with characters that break paths.
+            var csprojPath = Path.Combine(gemDir, $"{SafeFileName(gemKey)}.csproj");
+            File.WriteAllText(csprojPath, sb.ToString());
+            if (_verbose)
+            {
+                Console.WriteLine($"  [{gemKey}] Wrote project: {Path.GetFileName(csprojPath)}");
+            }
         }
 
         // -----------------------------------------------------------------
@@ -220,7 +394,7 @@ namespace O3DESharp.BindingGenerator.Generation
         {
             var sb = new StringBuilder();
             EmitFileHeader(sb, $"Wrappers for AZ class {cls.Name} (gem: {gemName})");
-            sb.AppendLine("using O3DE.Core.Reflection;");
+            sb.AppendLine("using O3DE.Reflection;");
             sb.AppendLine();
             sb.AppendLine($"namespace {_rootNamespace}.{SafeNamespaceSegment(gemName)}.Classes");
             sb.AppendLine("{");
@@ -239,6 +413,10 @@ namespace O3DESharp.BindingGenerator.Generation
             {
                 if (string.IsNullOrEmpty(m.Name)) continue;
                 if (IsGeneratorUnsafeName(m.Name)) continue;
+                // Skip methods whose parameter list has any MarshalType=Void
+                // - C# doesn't allow void parameters and the wrapper would
+                // be CS1536. See HasVoidParameter for the why.
+                if (HasVoidParameter(m.Parameters)) continue;
 
                 var returnType = MapMarshalToCSharp(m.ReturnType);
                 var methodName = SafeIdentifier(m.Name);
@@ -301,13 +479,27 @@ namespace O3DESharp.BindingGenerator.Generation
                 if (IsGeneratorUnsafeName(p.Name)) continue;
 
                 var propType = MapMarshalToCSharp(p.Type);
-                var propName = SafeIdentifier(p.Name);
+                // IdentifierSuffix (not SafeIdentifier) for the property
+                // name segment because we're concatenating it after "Get"
+                // / "Set" - SafeIdentifier would prefix C# keywords with
+                // @ (e.g. "namespace" -> "@namespace"), producing
+                // "Get@namespace" which is a parse error. The Get/Set
+                // prefix guarantees the result starts with a letter so
+                // we don't need the @ escape.
+                var propName = IdentifierSuffix(p.Name);
 
                 sb.AppendLine();
                 sb.AppendLine($"        /// <summary>Get {XmlEscape(p.Name)} - {XmlEscape(p.Description)}</summary>");
                 sb.AppendLine($"        public static {propType} Get{propName}(NativeObject __instance)");
                 sb.AppendLine("        {");
-                sb.AppendLine($"            return NativeReflection.GetProperty<{propType}>(__instance, \"{p.Name}\") ?? default({propType})!;");
+                // Null-forgiving (!) instead of ?? default: GetProperty<T>
+                // returns T? which is just T for value types, so ?? would
+                // be CS0019 "operator ?? cannot be applied to T and T".
+                // ! collapses cleanly for both T (no-op) and T? (strips
+                // nullability) - dispatcher's contract is that a missing
+                // property returns default(T), which scripts can detect
+                // via comparison if they care.
+                sb.AppendLine($"            return NativeReflection.GetProperty<{propType}>(__instance, \"{p.Name}\")!;");
                 sb.AppendLine("        }");
 
                 if (!p.IsReadOnly)
@@ -330,7 +522,7 @@ namespace O3DESharp.BindingGenerator.Generation
         {
             var sb = new StringBuilder();
             EmitFileHeader(sb, $"Wrappers for EBus {bus.Name} (gem: {gemName})");
-            sb.AppendLine("using O3DE.Core.Reflection;");
+            sb.AppendLine("using O3DE.Reflection;");
             sb.AppendLine();
             sb.AppendLine($"namespace {_rootNamespace}.{SafeNamespaceSegment(gemName)}.EBuses");
             sb.AppendLine("{");
@@ -348,6 +540,7 @@ namespace O3DESharp.BindingGenerator.Generation
             {
                 if (string.IsNullOrEmpty(e.Name)) continue;
                 if (IsGeneratorUnsafeName(e.Name)) continue;
+                if (HasVoidParameter(e.Parameters)) continue;
 
                 var returnType = MapMarshalToCSharp(e.ReturnType);
                 var eventName = SafeIdentifier(e.Name);
@@ -373,7 +566,7 @@ namespace O3DESharp.BindingGenerator.Generation
                         sb.AppendLine($"        public static {returnType} {eventName}({paramList})");
                         sb.AppendLine("        {");
                         sb.AppendLine($"            var __r = NativeReflection.BroadcastResultEBusEvent<{returnType}>(BusName, \"{e.Name}\"{(string.IsNullOrEmpty(argList) ? "" : ", " + argList)});");
-                        sb.AppendLine($"            return __r ?? default({returnType})!;");
+                        sb.AppendLine($"            return __r!;");
                         sb.AppendLine("        }");
                     }
                 }
@@ -398,7 +591,7 @@ namespace O3DESharp.BindingGenerator.Generation
                         sb.AppendLine($"        public static {returnType} {eventName}({addressType} busId{firstParamSep}{paramList})");
                         sb.AppendLine("        {");
                         sb.AppendLine($"            var __r = NativeReflection.SendResultEBusEvent<{returnType}>(BusName, \"{e.Name}\", busId{(string.IsNullOrEmpty(argList) ? "" : ", " + argList)});");
-                        sb.AppendLine($"            return __r ?? default({returnType})!;");
+                        sb.AppendLine($"            return __r!;");
                         sb.AppendLine("        }");
                     }
                 }
@@ -413,7 +606,7 @@ namespace O3DESharp.BindingGenerator.Generation
         {
             var sb = new StringBuilder();
             EmitFileHeader(sb, $"Global methods + properties (gem: {gemName})");
-            sb.AppendLine("using O3DE.Core.Reflection;");
+            sb.AppendLine("using O3DE.Reflection;");
             sb.AppendLine();
             sb.AppendLine($"namespace {_rootNamespace}.{SafeNamespaceSegment(gemName)}");
             sb.AppendLine("{");
@@ -424,6 +617,7 @@ namespace O3DESharp.BindingGenerator.Generation
             foreach (var m in methods)
             {
                 if (string.IsNullOrEmpty(m.Name) || IsGeneratorUnsafeName(m.Name)) continue;
+                if (HasVoidParameter(m.Parameters)) continue;
                 var returnType = MapMarshalToCSharp(m.ReturnType);
                 var methodName = SafeIdentifier(m.Name);
                 var paramList = string.Join(", ", m.Parameters.Select((p, i) =>
@@ -463,7 +657,7 @@ namespace O3DESharp.BindingGenerator.Generation
                 sb.AppendLine($"        /// <summary>{XmlEscape(p.Description)}</summary>");
                 sb.AppendLine($"        public static {propType} {propName}");
                 sb.AppendLine("        {");
-                sb.AppendLine($"            get => NativeReflection.GetGlobalProperty<{propType}>(\"{p.Name}\") ?? default({propType})!;");
+                sb.AppendLine($"            get => NativeReflection.GetGlobalProperty<{propType}>(\"{p.Name}\")!;");
                 if (!p.IsReadOnly)
                 {
                     sb.AppendLine($"            set => NativeReflection.SetGlobalProperty(\"{p.Name}\", value!);");
@@ -564,12 +758,27 @@ namespace O3DESharp.BindingGenerator.Generation
         /// <summary>
         /// Safe parameter name from a parameter's type_name (the C++ side
         /// doesn't reflect parameter names, just types). Pattern:
-        /// "&lt;typeName&gt;_&lt;index&gt;" with sanitization.
+        /// "arg&lt;index&gt;_&lt;typeName&gt;" with sanitization.
+        ///
+        /// Critical: we do NOT use SafeIdentifier here because it prefixes
+        /// C# reserved words with @ (turning "string" into "@string"), and
+        /// the @ is only valid at the START of an identifier. Pasting
+        /// "@string" after "arg0_" gives "arg0_@string" which is a parse
+        /// error. Strip-only sanitization (replace bad chars with _) is
+        /// what we want since the result is always prefixed with "argN_"
+        /// which guarantees it doesn't start with @ or a digit.
         /// </summary>
         private static string SafeParamName(string typeName, int index)
         {
-            var baseName = SafeIdentifier(string.IsNullOrEmpty(typeName) ? "arg" : typeName);
-            return $"arg{index}_{baseName}";
+            var src = string.IsNullOrEmpty(typeName) ? "arg" : typeName;
+            var sb = new StringBuilder(src.Length);
+            foreach (var c in src)
+            {
+                if (char.IsLetterOrDigit(c) || c == '_') sb.Append(c);
+                else sb.Append('_');
+            }
+            var sanitized = sb.Length == 0 ? "arg" : sb.ToString();
+            return $"arg{index}_{sanitized}";
         }
 
         /// <summary>
@@ -597,6 +806,46 @@ namespace O3DESharp.BindingGenerator.Generation
             string.IsNullOrEmpty(s)
                 ? string.Empty
                 : s.Replace("&", "&amp;").Replace("<", "&lt;").Replace(">", "&gt;");
+
+        /// <summary>
+        /// Sanitize a string into an identifier-tail-safe form: bad chars
+        /// replaced with _ but no @ keyword-escape prefix. Used when the
+        /// result is going to be concatenated AFTER another prefix
+        /// (Get/Set, etc.) which guarantees it doesn't start with a
+        /// digit or a keyword - so the @ escape is unnecessary and
+        /// would be a parse error mid-identifier.
+        /// </summary>
+        private static string IdentifierSuffix(string raw)
+        {
+            if (string.IsNullOrWhiteSpace(raw)) return "Unnamed";
+            var sb = new StringBuilder(raw.Length);
+            foreach (var c in raw)
+            {
+                if (char.IsLetterOrDigit(c) || c == '_') sb.Append(c);
+                else sb.Append('_');
+            }
+            return sb.Length == 0 ? "Unnamed" : sb.ToString();
+        }
+
+        /// <summary>
+        /// True if any parameter on a method/event has MarshalType=Void.
+        /// Methods that "take void" come through reflection as quirks of
+        /// the BehaviorContext registration (a generic helper signature
+        /// got reflected with void in a slot it can't actually accept).
+        /// C# doesn't allow void parameters, so the wrapper would be
+        /// CS1536. Skip the whole wrapper rather than emit garbage.
+        /// </summary>
+        private static bool HasVoidParameter(List<ReflectionParameter> parameters)
+        {
+            foreach (var p in parameters)
+            {
+                if (string.Equals(p.MarshalType, "Void", StringComparison.Ordinal))
+                {
+                    return true;
+                }
+            }
+            return false;
+        }
 
         /// <summary>
         /// True if the type's name is a C++ template specialization.
@@ -651,6 +900,7 @@ namespace O3DESharp.BindingGenerator.Generation
         public int ClassFilesWritten { get; set; }
         public int BusFilesWritten { get; set; }
         public int GlobalsFilesWritten { get; set; }
+        public int CsprojFilesWritten { get; set; }
         public int TotalClasses { get; set; }
         public int TotalEBuses { get; set; }
         public int TotalGlobals { get; set; }
