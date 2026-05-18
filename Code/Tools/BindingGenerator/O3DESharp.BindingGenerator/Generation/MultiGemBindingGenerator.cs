@@ -375,9 +375,33 @@ namespace O3DESharp.BindingGenerator.Generation
         {
             var includePaths = new List<string>();
 
-            // Add gem's own include paths
-            includePaths.Add(Path.Combine(gem.GemPath, "Code/Include"));
-            includePaths.Add(Path.Combine(gem.GemPath, "Code/Source"));
+            // Add the gem's include surface. The standard O3DE layout is
+            // Code/Include (public) + Code/Source (implementation), but
+            // we need three extra patterns to cover real-world gems:
+            //
+            //   Code/ itself
+            //     EMotionFX-style legacy layouts put files under
+            //     Code/<GemName>/Source/ and #include them as
+            //     <GemName/Source/X.h>. The include resolves only if
+            //     Code/ is on the include path (so libclang searches
+            //     Code/EMotionFX/Source/...).
+            //
+            //   Code/Include/* one level deep
+            //     Some gems (AudioSystem is the canonical example) nest
+            //     their public headers under Code/Include/Engine/ and
+            //     #include them as <IAudioSystem.h> with no prefix. To
+            //     resolve that you need Code/Include/Engine on the
+            //     search path, not just Code/Include.
+            //
+            //   Code/Source/* one level deep
+            //     Companion to the above for gems that put nested
+            //     directories under Code/Source/ and reference them
+            //     unprefixed.
+            //
+            // The cost of adding more search dirs is linear in the
+            // number of -I args; libclang handles dozens fine. Better
+            // to over-add and resolve than to under-add and bail.
+            AddGemIncludeSurface(includePaths, gem.GemPath);
 
             // Add global include paths from config
             includePaths.AddRange(_config.Global.IncludePaths);
@@ -385,12 +409,15 @@ namespace O3DESharp.BindingGenerator.Generation
             // Add gem-specific include paths
             includePaths.AddRange(settings.IncludePaths.Select(p => Path.Combine(gem.GemPath, p)));
 
-            // Add dependency include paths
+            // Add dependency include paths - use the same wide-search
+            // helper for each declared dep gem. The previous code only
+            // added depGem/Code/Include which missed AudioSystem-style
+            // nesting whenever any gem depended on a gem like that.
             foreach (var depName in gem.Dependencies)
             {
                 if (allGems.TryGetValue(depName, out var depGem))
                 {
-                    includePaths.Add(Path.Combine(depGem.GemPath, "Code/Include"));
+                    AddGemIncludeSurface(includePaths, depGem.GemPath);
                 }
             }
 
@@ -450,6 +477,51 @@ namespace O3DESharp.BindingGenerator.Generation
             }
 
             return includePaths.Distinct().Where(Directory.Exists).ToList();
+        }
+
+        /// <summary>
+        /// Add every plausible header search path for a gem to the list.
+        /// See BuildIncludePaths for the full rationale; the short version:
+        ///   - Code/             (handles EMotionFX-style legacy layouts)
+        ///   - Code/Include      (standard O3DE public)
+        ///   - Code/Source       (standard O3DE private)
+        ///   - Code/Include/*    (one level deep - handles AudioSystem
+        ///                        nesting public headers under Engine/)
+        ///   - Code/Source/*     (one level deep - same for impl headers)
+        /// Non-existent directories are filtered at the end of
+        /// BuildIncludePaths via .Where(Directory.Exists) so adding paths
+        /// that don't exist for some gems is harmless.
+        /// </summary>
+        private static void AddGemIncludeSurface(List<string> includePaths, string gemPath)
+        {
+            var codeDir = Path.Combine(gemPath, "Code");
+            includePaths.Add(codeDir);
+            includePaths.Add(Path.Combine(codeDir, "Include"));
+            includePaths.Add(Path.Combine(codeDir, "Source"));
+
+            // One-level-deep walk of Code/Include and Code/Source. Bound
+            // by the number of top-level subdirs in each (typically 1-5)
+            // so this is cheap. Errors during enumeration (missing dir,
+            // ACL denial) get swallowed since the consuming
+            // Directory.Exists check downstream takes care of cleanup.
+            TryAddOneLevelDeep(includePaths, Path.Combine(codeDir, "Include"));
+            TryAddOneLevelDeep(includePaths, Path.Combine(codeDir, "Source"));
+        }
+
+        private static void TryAddOneLevelDeep(List<string> includePaths, string root)
+        {
+            if (!Directory.Exists(root)) return;
+            try
+            {
+                foreach (var subDir in Directory.GetDirectories(root))
+                {
+                    includePaths.Add(subDir);
+                }
+            }
+            catch
+            {
+                // ACL denied / unmounted / similar - non-fatal.
+            }
         }
 
         private List<string> BuildDefines(GemSettings settings)
