@@ -277,30 +277,72 @@ namespace O3DESharp.BindingGenerator.Parsing
 
             using (translationUnit)
             {
-                // Log diagnostics in verbose mode
+                // Log diagnostics in verbose mode - but ONLY for errors
+                // whose source location is the header we asked libclang
+                // to parse. Diagnostics from MSVC's <limits>, <chrono>,
+                // <type_traits>, etc., are noise: they're either things
+                // libclang can't model the same way the MSVC frontend
+                // does (compiler-intrinsic constexpr issues) or quirks
+                // in MSVC's own STL headers that we have no way to fix
+                // from outside. The parser recovers past them and still
+                // finds the user's classes; printing them just makes
+                // the log unscannable.
+                //
+                // We compare the diagnostic's source-file path against
+                // the file we passed to TryParse. Cross-file errors
+                // (in #included transitive headers from any framework)
+                // get suppressed. Errors from the user's gem header
+                // itself - which is what we actually care about - still
+                // surface so a real syntax error in user code doesn't
+                // hide silently.
                 if (_verbose)
                 {
                     var numDiags = translationUnit.NumDiagnostics;
-                    int errorCount = 0;
+                    int relevantErrors = 0;
+                    int suppressedErrors = 0;
+                    var headerFileNormalized = NormalizeSourceFile(headerFile);
                     for (uint i = 0; i < numDiags; i++)
                     {
                         using var diag = translationUnit.GetDiagnostic(i);
-                        if (diag.Severity >= CXDiagnosticSeverity.CXDiagnostic_Error)
+                        if (diag.Severity < CXDiagnosticSeverity.CXDiagnostic_Error)
+                            continue;
+
+                        var diagFile = ExtractDiagnosticFile(diag);
+                        bool isInTargetFile =
+                            !string.IsNullOrEmpty(diagFile) &&
+                            string.Equals(
+                                NormalizeSourceFile(diagFile),
+                                headerFileNormalized,
+                                StringComparison.OrdinalIgnoreCase);
+
+                        if (!isInTargetFile)
                         {
-                            errorCount++;
-                            if (errorCount <= 5)
-                            {
-                                Log($"  Diag: {diag.Format(CXDiagnosticDisplayOptions.CXDiagnostic_DisplaySourceLocation).ToString()}");
-                            }
+                            suppressedErrors++;
+                            continue;
+                        }
+
+                        relevantErrors++;
+                        if (relevantErrors <= 5)
+                        {
+                            Log($"  Diag: {diag.Format(CXDiagnosticDisplayOptions.CXDiagnostic_DisplaySourceLocation).ToString()}");
                         }
                     }
-                    if (errorCount > 5)
+                    if (relevantErrors > 5)
                     {
-                        Log($"  ... and {errorCount - 5} more errors");
+                        Log($"  ... and {relevantErrors - 5} more errors in this file");
                     }
-                    if (errorCount > 0)
+                    if (relevantErrors > 0)
                     {
-                        Log($"  Total parse errors: {errorCount}");
+                        Log($"  Parse errors in {Path.GetFileName(headerFile)}: {relevantErrors}");
+                    }
+                    if (suppressedErrors > 0)
+                    {
+                        // Single-line summary instead of dumping each.
+                        // Mostly these are MSVC STL quirks libclang
+                        // recovers past; calling it out keeps the
+                        // signal that they happened without flooding
+                        // the log with the actual messages.
+                        Log($"  ({suppressedErrors} cross-file diagnostics suppressed)");
                     }
                 }
 
@@ -775,6 +817,55 @@ namespace O3DESharp.BindingGenerator.Parsing
             if (_verbose)
             {
                 Console.WriteLine($"[Parser] {message}");
+            }
+        }
+
+        /// <summary>
+        /// Extract the source-file path from a libclang diagnostic, or
+        /// empty string if the diagnostic has no file location (some
+        /// diagnostics come from command-line arg processing, not a
+        /// specific file). Mirrors the source-location extraction
+        /// pattern used in the cursor walk above.
+        /// </summary>
+        private static unsafe string ExtractDiagnosticFile(CXDiagnostic diag)
+        {
+            try
+            {
+                var loc = diag.Location;
+                CXFile file;
+                uint line, column, offset;
+                clang.getFileLocation(loc, (void**)&file, &line, &column, &offset);
+                if (file.Handle == IntPtr.Zero)
+                {
+                    return string.Empty;
+                }
+                return file.Name.CString ?? string.Empty;
+            }
+            catch
+            {
+                // libclang can throw on malformed diagnostics in error-
+                // recovery contexts; treat as "no file" so the caller
+                // suppresses rather than crashing.
+                return string.Empty;
+            }
+        }
+
+        /// <summary>
+        /// Normalize a source-file path for case-insensitive comparison.
+        /// Used to match a diagnostic's source file against the header
+        /// we asked libclang to parse - we want to keep diagnostics from
+        /// that file, suppress everything else (MSVC STL, AzCore, etc.).
+        /// </summary>
+        private static string NormalizeSourceFile(string path)
+        {
+            if (string.IsNullOrEmpty(path)) return string.Empty;
+            try
+            {
+                return Path.GetFullPath(path).Replace('\\', '/');
+            }
+            catch
+            {
+                return path.Replace('\\', '/');
             }
         }
     }
