@@ -103,15 +103,20 @@ endif()
 # please always be really clear about what third parties your gem uses.
 message(STATUS "O3DESharp Gem uses ${CORAL_GIT_REPO} (License: MIT)")
 
-# Check if already populated to avoid redundant work
-FetchContent_GetProperties(Coral)
-if(NOT coral_POPULATED)
-    message(STATUS "O3DESharp: Fetching Coral (this may take a moment on first run)...")
-    FetchContent_Populate(Coral)
-    add_subdirectory(${coral_SOURCE_DIR}/cmake ${coral_BINARY_DIR})
-endif()
-
-FetchContent_GetProperties(Coral)
+# Use FetchContent_MakeAvailable instead of the older
+# FetchContent_GetProperties + FetchContent_Populate + add_subdirectory
+# dance. CMake 4.0 set policy CMP0169 to NEW by default, which
+# deprecates calling FetchContent_Populate with a content name and
+# made it a hard error under some configurations - "add_subdirectory
+# given source ... which is not an existing directory" comes from
+# the populate step being skipped under the new policy.
+#
+# FetchContent_MakeAvailable handles both the GIT_REPOSITORY clone case
+# and the SOURCE_DIR override case uniformly: it populates the content
+# (cloning if needed, or just using the SOURCE_DIR as-is) and runs
+# add_subdirectory on the SOURCE_SUBDIR (the `cmake` subfolder of the
+# Coral tree) - which is exactly what the old explicit dance was doing.
+FetchContent_MakeAvailable(Coral)
 
 # ============================================================
 # Coral.Managed Deployment Target
