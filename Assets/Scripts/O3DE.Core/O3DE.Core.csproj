@@ -84,6 +84,26 @@
     </Reference>
   </ItemGroup>
 
+  <!--
+    Phase 18-E: O3DESharp source generators. The reference is marked
+    OutputItemType=Analyzer so MSBuild loads the assembly as a Roslyn
+    component rather than a regular reference. ReferenceOutputAssembly=
+    false means O3DE.Core.dll doesn't ship the analyzer assembly inside
+    itself (it's a build-time-only dependency).
+
+    The generator processes [EBus] / [EBusHandler] attributes on user
+    classes that derive from ScriptComponent and emits the
+    ConnectTo<BusName> / DisconnectFrom<BusName> / dispatch-shim
+    methods. End result: a user class with `[EBus("TickBus")]` gets
+    a `ConnectToTickBus()` method generated at compile time, without
+    the user writing any of the Connect/Disconnect/dispatch glue.
+  -->
+  <ItemGroup>
+    <ProjectReference Include="..\..\..\Code\Tools\SourceGenerators\O3DESharp.SourceGenerators.csproj"
+                      OutputItemType="Analyzer"
+                      ReferenceOutputAssembly="false" />
+  </ItemGroup>
+
   <!-- 
     Note: .NET SDK projects automatically include all *.cs files in the project directory.
     Do NOT add explicit <Compile Include="..." /> items - this causes NETSDK1022 duplicate errors.

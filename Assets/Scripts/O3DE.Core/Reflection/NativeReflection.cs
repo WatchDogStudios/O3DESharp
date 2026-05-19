@@ -48,6 +48,26 @@ namespace O3DE.Reflection
         internal static delegate* unmanaged<NativeString, NativeString, NativeString, NativeString> Reflection_BroadcastEBusEvent;
         internal static delegate* unmanaged<NativeString, NativeString, long, NativeString, NativeString> Reflection_SendEBusEvent;
 
+        // EBus handler authoring (Phase 18-E).
+        //
+        // Reflection_RegisterEBusHandler: tells the C++ side to spin up
+        // a BehaviorEBusHandler bound to the supplied managed token.
+        // When the bus fires an event for this handler, the C++ side
+        // calls back into managed via EBusHandlerRegistry.DispatchEvent.
+        //   args:   busName (string), address (ulong; 0 for broadcast),
+        //           managedToken (long; opaque key the C++ side passes
+        //           back when firing)
+        //   return: a non-zero confirmation handle on success, 0 on
+        //           failure (bus not reflected, address type mismatch,
+        //           etc.). The managed registry uses this to decide
+        //           whether to keep its entry around.
+        internal static delegate* unmanaged<NativeString, ulong, long, long> Reflection_RegisterEBusHandler;
+
+        // Reflection_UnregisterEBusHandler: tears down the
+        // BehaviorEBusHandler associated with the supplied managed
+        // token. No-op on the C++ side if the token isn't known.
+        internal static delegate* unmanaged<long, void> Reflection_UnregisterEBusHandler;
+
         // Object lifecycle
         internal static delegate* unmanaged<NativeString, NativeString, long> Reflection_CreateInstance;
         internal static delegate* unmanaged<NativeString, long, void> Reflection_DestroyInstance;
