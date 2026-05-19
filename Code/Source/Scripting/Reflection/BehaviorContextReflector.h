@@ -370,7 +370,10 @@ namespace O3DESharp
         ReflectedParameter::MarshalType DetermineMarshalType(const AZ::Uuid& typeId) const;
 
         /**
-         * Extracts common script attributes from an attribute array
+         * Extracts common script attributes from an attribute array.
+         * The 5-arg overload is preserved for existing callers; the
+         * 6-arg overload additionally extracts the Module attribute
+         * (gem name) with Category fallback.
          */
         void ExtractScriptAttributes(
             const AZ::AttributeArray& attributes,
@@ -378,6 +381,13 @@ namespace O3DESharp
             AZStd::string& outCategory,
             bool& outIsDeprecated,
             AZStd::string& outDeprecationMessage) const;
+        void ExtractScriptAttributes(
+            const AZ::AttributeArray& attributes,
+            AZStd::string& outDescription,
+            AZStd::string& outCategory,
+            bool& outIsDeprecated,
+            AZStd::string& outDeprecationMessage,
+            AZStd::string& outModuleName) const;
 
         /**
          * Checks if a class/method should be exposed to scripting based on its attributes

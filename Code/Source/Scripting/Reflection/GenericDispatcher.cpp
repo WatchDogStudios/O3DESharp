@@ -1248,60 +1248,19 @@ namespace O3DESharp
             return cls->FindMethod(methodNameStr.c_str()) != nullptr;
         }
 
-        Coral::String InvokeStaticMethod(Coral::String className, Coral::String methodName, Coral::String argsJson)
-        {
-            AZ_UNUSED(argsJson);
-            // TODO: Parse JSON args and invoke
-            std::string classNameStr(className);
-            std::string methodNameStr(methodName);
-            return Coral::String::New(AZStd::string::format("{\"error\":\"Not fully implemented: %s.%s\"}", classNameStr.c_str(), methodNameStr.c_str()).c_str());
-        }
-
-        Coral::String InvokeInstanceMethod(Coral::String className, Coral::String methodName, int64_t instanceHandle, Coral::String argsJson)
-        {
-            AZ_UNUSED(instanceHandle);
-            AZ_UNUSED(argsJson);
-            std::string classNameStr(className);
-            std::string methodNameStr(methodName);
-            return Coral::String::New(AZStd::string::format("{\"error\":\"Not fully implemented: %s.%s\"}", classNameStr.c_str(), methodNameStr.c_str()).c_str());
-        }
-
-        Coral::String InvokeGlobalMethod(Coral::String methodName, Coral::String argsJson)
-        {
-            AZ_UNUSED(argsJson);
-            std::string methodNameStr(methodName);
-            return Coral::String::New(AZStd::string::format("{\"error\":\"Not fully implemented: %s\"}", methodNameStr.c_str()).c_str());
-        }
-
-        Coral::String GetProperty(Coral::String className, Coral::String propertyName, int64_t instanceHandle)
-        {
-            AZ_UNUSED(instanceHandle);
-            std::string classNameStr(className);
-            std::string propertyNameStr(propertyName);
-            return Coral::String::New(AZStd::string::format("{\"error\":\"Not fully implemented: %s.%s\"}", classNameStr.c_str(), propertyNameStr.c_str()).c_str());
-        }
-
-        bool SetProperty(Coral::String className, Coral::String propertyName, int64_t instanceHandle, Coral::String valueJson)
-        {
-            AZ_UNUSED(className);
-            AZ_UNUSED(propertyName);
-            AZ_UNUSED(instanceHandle);
-            AZ_UNUSED(valueJson);
-            return false;
-        }
-
-        Coral::String GetGlobalProperty(Coral::String propertyName)
-        {
-            std::string propertyNameStr(propertyName);
-            return Coral::String::New(AZStd::string::format("{\"error\":\"Not fully implemented: %s\"}", propertyNameStr.c_str()).c_str());
-        }
-
-        bool SetGlobalProperty(Coral::String propertyName, Coral::String valueJson)
-        {
-            AZ_UNUSED(propertyName);
-            AZ_UNUSED(valueJson);
-            return false;
-        }
+        // Real implementations of these moved below DispatchEBusEvent so
+        // they can share the CallBehaviorMethodAndMarshalResult helper.
+        // The stubs that used to return "Not fully implemented" were
+        // pre-Phase-18 placeholders; every reflection-backend generated
+        // wrapper for a class method / global function / property now
+        // routes through one of the implementations below.
+        Coral::String InvokeStaticMethod(Coral::String className, Coral::String methodName, Coral::String argsJson);
+        Coral::String InvokeInstanceMethod(Coral::String className, Coral::String methodName, int64_t instanceHandle, Coral::String argsJson);
+        Coral::String InvokeGlobalMethod(Coral::String methodName, Coral::String argsJson);
+        Coral::String GetProperty(Coral::String className, Coral::String propertyName, int64_t instanceHandle);
+        bool SetProperty(Coral::String className, Coral::String propertyName, int64_t instanceHandle, Coral::String valueJson);
+        Coral::String GetGlobalProperty(Coral::String propertyName);
+        bool SetGlobalProperty(Coral::String propertyName, Coral::String valueJson);
 
         namespace
         {
@@ -1517,6 +1476,328 @@ namespace O3DESharp
                 return Coral::String::New(buffer.GetString());
             }
         } // namespace
+
+        namespace
+        {
+            // Phase 18-B: factor the "marshal args, call, marshal result"
+            // tail of DispatchEBusEvent into a reusable helper so the
+            // new class-method / global-method / property entry points
+            // don't have to duplicate it. Used by InvokeStaticMethod,
+            // InvokeGlobalMethod, GetGlobalProperty, SetGlobalProperty
+            // (and eventually the instance-method variants once we have
+            // a NativeObject handle table).
+            //
+            // contextLabel is used purely for the error-log prefix
+            // ("InvokeStaticMethod('AZ::Vector3', 'Length'): ...") so
+            // failures point at the right call site.
+            Coral::String CallBehaviorMethodAndMarshalResult(
+                AZ::BehaviorMethod* method,
+                const char* contextLabel,
+                Coral::String argsJson)
+            {
+                std::string argsJsonStr(argsJson);
+
+                auto makeError = [&](const char* fmt, ...) -> Coral::String
+                {
+                    va_list args;
+                    va_start(args, fmt);
+                    char buf[1024] = {};
+                    azvsnprintf(buf, sizeof(buf), fmt, args);
+                    va_end(args);
+                    AZ_Warning("O3DESharp", false, "%s: %s", contextLabel, buf);
+                    AZStd::string msg = AZStd::string::format("{\"error\":\"%s\"}", buf);
+                    return Coral::String::New(msg.c_str());
+                };
+
+                if (method == nullptr)
+                {
+                    return makeError("method is null");
+                }
+
+                // Parse the args array (empty when no parameters).
+                rapidjson::Document argsDoc;
+                if (argsJsonStr.empty())
+                {
+                    argsDoc.SetArray();
+                }
+                else
+                {
+                    argsDoc.Parse(argsJsonStr.c_str());
+                    if (argsDoc.HasParseError())
+                    {
+                        return makeError("args JSON parse error at offset %zu",
+                                         argsDoc.GetErrorOffset());
+                    }
+                }
+
+                Marshaling::StackAllocator marshalAlloc;
+                AZStd::vector<AZ::BehaviorArgument> dispatchArgs;
+                AZStd::string marshalError;
+                if (!Marshaling::MarshalJsonArrayToArguments(
+                        argsDoc, *method, dispatchArgs,
+                        marshalAlloc, marshalError, /*skipFront=*/0))
+                {
+                    return makeError("arg marshal: %s", marshalError.c_str());
+                }
+
+                AZ::BehaviorArgument result;
+                const bool hasReturn = method->HasResult();
+                if (hasReturn)
+                {
+                    // Same pre-population trick as DispatchEBusEvent uses -
+                    // see commit a2759ff for the rationale (some
+                    // BehaviorMethod subclasses don't write m_typeId on the
+                    // result, so the marshaler can't dispatch on it).
+                    if (const auto* resultParam = method->GetResult())
+                    {
+                        result.m_typeId = resultParam->m_typeId;
+                        result.m_name = resultParam->m_name;
+                        result.m_traits = resultParam->m_traits;
+                    }
+                }
+                const bool ok = method->Call(
+                    dispatchArgs.data(),
+                    static_cast<unsigned int>(dispatchArgs.size()),
+                    hasReturn ? &result : nullptr);
+                if (!ok)
+                {
+                    return makeError("BehaviorMethod::Call returned false");
+                }
+                if (hasReturn && result.m_typeId.IsNull())
+                {
+                    if (const auto* resultParam = method->GetResult())
+                    {
+                        result.m_typeId = resultParam->m_typeId;
+                    }
+                }
+
+                if (!hasReturn)
+                {
+                    return Coral::String::New("{\"ok\":true}");
+                }
+                rapidjson::Document resultDoc;
+                resultDoc.SetObject();
+                rapidjson::Value resultValue;
+                AZStd::string resultError;
+                if (!Marshaling::BehaviorArgumentToJsonValue(
+                        result, resultValue, resultDoc.GetAllocator(), resultError))
+                {
+                    return makeError("result marshal: %s", resultError.c_str());
+                }
+                resultDoc.AddMember("result", resultValue, resultDoc.GetAllocator());
+                rapidjson::StringBuffer buffer;
+                rapidjson::Writer<rapidjson::StringBuffer> writer(buffer);
+                resultDoc.Accept(writer);
+                return Coral::String::New(buffer.GetString());
+            }
+
+            // Helper to get the global BehaviorContext, returning nullptr
+            // if it isn't up yet (called during ComponentApplication
+            // teardown, etc.).
+            AZ::BehaviorContext* GetBehaviorContext()
+            {
+                AZ::BehaviorContext* ctx = nullptr;
+                AZ::ComponentApplicationBus::BroadcastResult(
+                    ctx, &AZ::ComponentApplicationRequests::GetBehaviorContext);
+                return ctx;
+            }
+        } // anonymous namespace
+
+        // -------------------------------------------------------------
+        // Real implementations of the Phase 18 entry points.
+        // -------------------------------------------------------------
+
+        Coral::String InvokeStaticMethod(Coral::String className, Coral::String methodName, Coral::String argsJson)
+        {
+            std::string classNameStr(className);
+            std::string methodNameStr(methodName);
+            const AZStd::string contextLabel = AZStd::string::format(
+                "InvokeStaticMethod('%s', '%s')", classNameStr.c_str(), methodNameStr.c_str());
+
+            auto* ctx = GetBehaviorContext();
+            if (ctx == nullptr)
+            {
+                AZStd::string msg = AZStd::string::format(
+                    "{\"error\":\"%s: no BehaviorContext\"}", contextLabel.c_str());
+                return Coral::String::New(msg.c_str());
+            }
+
+            auto classIt = ctx->m_classes.find(classNameStr.c_str());
+            if (classIt == ctx->m_classes.end())
+            {
+                AZStd::string msg = AZStd::string::format(
+                    "{\"error\":\"%s: class not reflected\"}", contextLabel.c_str());
+                return Coral::String::New(msg.c_str());
+            }
+            AZ::BehaviorClass* cls = classIt->second;
+
+            auto methodIt = cls->m_methods.find(methodNameStr.c_str());
+            if (methodIt == cls->m_methods.end())
+            {
+                AZStd::string msg = AZStd::string::format(
+                    "{\"error\":\"%s: method not reflected on class\"}", contextLabel.c_str());
+                return Coral::String::New(msg.c_str());
+            }
+            AZ::BehaviorMethod* method = methodIt->second;
+            if (method->IsMember())
+            {
+                AZStd::string msg = AZStd::string::format(
+                    "{\"error\":\"%s: method is an instance member; use InvokeInstanceMethod\"}",
+                    contextLabel.c_str());
+                return Coral::String::New(msg.c_str());
+            }
+
+            return CallBehaviorMethodAndMarshalResult(method, contextLabel.c_str(), argsJson);
+        }
+
+        Coral::String InvokeInstanceMethod(Coral::String className, Coral::String methodName, int64_t instanceHandle, Coral::String argsJson)
+        {
+            AZ_UNUSED(argsJson);  // consumed once the handle table lands
+            std::string classNameStr(className);
+            std::string methodNameStr(methodName);
+            // Instance dispatch requires a live BehaviorObject pointer
+            // identified by instanceHandle. Phase 18 doesn't ship the
+            // handle->BehaviorObject map yet (CreateInstance + a
+            // dispatcher-owned table), so this returns a clearer error
+            // than the pre-18 stub did. Once the handle table lands,
+            // this becomes:
+            //   1) look up BehaviorObject by instanceHandle
+            //   2) prepend it as the implicit `this` arg
+            //   3) call CallBehaviorMethodAndMarshalResult
+            // Until then, callers should drive instance methods through
+            // EBus events (which carry the entity id), or wait for the
+            // handle table to land.
+            AZStd::string msg = AZStd::string::format(
+                "{\"error\":\"InvokeInstanceMethod('%s', '%s', handle=%lld): "
+                "instance handle table not yet implemented - drive through EBus events instead\"}",
+                classNameStr.c_str(), methodNameStr.c_str(),
+                static_cast<long long>(instanceHandle));
+            return Coral::String::New(msg.c_str());
+        }
+
+        Coral::String InvokeGlobalMethod(Coral::String methodName, Coral::String argsJson)
+        {
+            std::string methodNameStr(methodName);
+            const AZStd::string contextLabel = AZStd::string::format(
+                "InvokeGlobalMethod('%s')", methodNameStr.c_str());
+
+            auto* ctx = GetBehaviorContext();
+            if (ctx == nullptr)
+            {
+                AZStd::string msg = AZStd::string::format(
+                    "{\"error\":\"%s: no BehaviorContext\"}", contextLabel.c_str());
+                return Coral::String::New(msg.c_str());
+            }
+
+            auto methodIt = ctx->m_methods.find(methodNameStr.c_str());
+            if (methodIt == ctx->m_methods.end())
+            {
+                AZStd::string msg = AZStd::string::format(
+                    "{\"error\":\"%s: global method not reflected\"}", contextLabel.c_str());
+                return Coral::String::New(msg.c_str());
+            }
+            AZ::BehaviorMethod* method = methodIt->second;
+            return CallBehaviorMethodAndMarshalResult(method, contextLabel.c_str(), argsJson);
+        }
+
+        Coral::String GetProperty(Coral::String className, Coral::String propertyName, int64_t instanceHandle)
+        {
+            std::string classNameStr(className);
+            std::string propertyNameStr(propertyName);
+            AZStd::string msg = AZStd::string::format(
+                "{\"error\":\"GetProperty('%s.%s', handle=%lld): "
+                "instance handle table not yet implemented\"}",
+                classNameStr.c_str(), propertyNameStr.c_str(),
+                static_cast<long long>(instanceHandle));
+            return Coral::String::New(msg.c_str());
+        }
+
+        bool SetProperty(Coral::String className, Coral::String propertyName, int64_t instanceHandle, Coral::String valueJson)
+        {
+            std::string classNameStr(className);
+            std::string propertyNameStr(propertyName);
+            AZ_UNUSED(valueJson);
+            AZ_Warning("O3DESharp", false,
+                "SetProperty('%s.%s', handle=%lld): instance handle table not yet implemented",
+                classNameStr.c_str(), propertyNameStr.c_str(),
+                static_cast<long long>(instanceHandle));
+            return false;
+        }
+
+        Coral::String GetGlobalProperty(Coral::String propertyName)
+        {
+            std::string propertyNameStr(propertyName);
+            const AZStd::string contextLabel = AZStd::string::format(
+                "GetGlobalProperty('%s')", propertyNameStr.c_str());
+
+            auto* ctx = GetBehaviorContext();
+            if (ctx == nullptr)
+            {
+                AZStd::string msg = AZStd::string::format(
+                    "{\"error\":\"%s: no BehaviorContext\"}", contextLabel.c_str());
+                return Coral::String::New(msg.c_str());
+            }
+
+            auto propIt = ctx->m_properties.find(propertyNameStr.c_str());
+            if (propIt == ctx->m_properties.end())
+            {
+                AZStd::string msg = AZStd::string::format(
+                    "{\"error\":\"%s: global property not reflected\"}", contextLabel.c_str());
+                return Coral::String::New(msg.c_str());
+            }
+            AZ::BehaviorProperty* prop = propIt->second;
+            if (prop->m_getter == nullptr)
+            {
+                AZStd::string msg = AZStd::string::format(
+                    "{\"error\":\"%s: property has no getter\"}", contextLabel.c_str());
+                return Coral::String::New(msg.c_str());
+            }
+            // No args for a property getter; the empty argsJson string
+            // exercises the no-args path inside the helper.
+            return CallBehaviorMethodAndMarshalResult(prop->m_getter, contextLabel.c_str(), Coral::String::New(""));
+        }
+
+        bool SetGlobalProperty(Coral::String propertyName, Coral::String valueJson)
+        {
+            std::string propertyNameStr(propertyName);
+
+            auto* ctx = GetBehaviorContext();
+            if (ctx == nullptr)
+            {
+                AZ_Warning("O3DESharp", false,
+                    "SetGlobalProperty('%s'): no BehaviorContext", propertyNameStr.c_str());
+                return false;
+            }
+            auto propIt = ctx->m_properties.find(propertyNameStr.c_str());
+            if (propIt == ctx->m_properties.end())
+            {
+                AZ_Warning("O3DESharp", false,
+                    "SetGlobalProperty('%s'): not reflected", propertyNameStr.c_str());
+                return false;
+            }
+            AZ::BehaviorProperty* prop = propIt->second;
+            if (prop->m_setter == nullptr)
+            {
+                AZ_Warning("O3DESharp", false,
+                    "SetGlobalProperty('%s'): no setter (readonly)", propertyNameStr.c_str());
+                return false;
+            }
+
+            // Setter signature is (newValue) - wrap the JSON value in an
+            // array so MarshalJsonArrayToArguments treats it as one arg.
+            const AZStd::string contextLabel = AZStd::string::format(
+                "SetGlobalProperty('%s')", propertyNameStr.c_str());
+            std::string valueJsonStr(valueJson);
+            AZStd::string wrappedJson = AZStd::string::format("[%s]",
+                valueJsonStr.empty() ? "null" : valueJsonStr.c_str());
+            Coral::String wrapped = Coral::String::New(wrappedJson.c_str());
+            Coral::String result = CallBehaviorMethodAndMarshalResult(
+                prop->m_setter, contextLabel.c_str(), wrapped);
+            // Setter is void-returning; "ok":true on success. We treat
+            // any error envelope as failure.
+            std::string resultStr(result);
+            return resultStr.find("\"ok\"") != std::string::npos;
+        }
 
         Coral::String BroadcastEBusEvent(Coral::String busName, Coral::String eventName, Coral::String argsJson)
         {

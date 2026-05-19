@@ -536,6 +536,27 @@ namespace O3DESharp.BindingGenerator.Generation
             sb.AppendLine("    {");
             sb.AppendLine($"        public const string BusName = \"{bus.Name}\";");
 
+            // Buses with a non-empty AddressType are addressed buses
+            // (TransformBus, ActorComponentRequestBus, etc.) - their
+            // events are typically called with a target entity id. The
+            // dispatcher's BehaviorEBusEventSender::m_event / m_broadcast
+            // pair lets either variant of an event resolve regardless of
+            // which the reflection JSON marked as "is_broadcast" - so
+            // for addressed buses we always emit BOTH the addressed
+            // (primary, EntityId-first) AND the broadcast (suffix:
+            // `*Broadcast`) variant. User picks per call site.
+            //
+            // The "primary" name follows the user's most-common usage
+            // pattern: `TransformBus.SetWorldTranslation(entityId, pos)`
+            // is what scripts almost always want. The broadcast variant
+            // (`TransformBus.SetWorldTranslationBroadcast(pos)`) targets
+            // every handler at once - rarely useful but kept available.
+            //
+            // Pure-broadcast buses (empty AddressType, e.g. TickBus's
+            // notification path) emit only the broadcast variant
+            // unsuffixed - there's no addressed dispatch path to call.
+            bool busIsAddressed = !string.IsNullOrEmpty(bus.AddressType.TypeName);
+
             foreach (var e in bus.Events)
             {
                 if (string.IsNullOrEmpty(e.Name)) continue;
@@ -547,11 +568,54 @@ namespace O3DESharp.BindingGenerator.Generation
                 var paramList = string.Join(", ", e.Parameters.Select((p, i) =>
                     $"{MapMarshalToCSharp(new ReflectionTypeInfo { MarshalType = p.MarshalType, TypeName = p.TypeName })} {SafeParamName(p.TypeName, i)}"));
                 var argList = string.Join(", ", e.Parameters.Select((p, i) => SafeParamName(p.TypeName, i)));
+                var firstParamSep = string.IsNullOrEmpty(paramList) ? "" : ", ";
 
                 sb.AppendLine();
-                if (e.IsBroadcast)
+
+                if (busIsAddressed)
                 {
-                    // Broadcast event - delivered to all handlers.
+                    // Primary (addressed) - takes the bus id first.
+                    if (returnType == "void")
+                    {
+                        sb.AppendLine($"        /// <summary>Send {XmlEscape(e.Name)} to the handler addressed by busId.</summary>");
+                        sb.AppendLine($"        public static void {eventName}(ulong busId{firstParamSep}{paramList})");
+                        sb.AppendLine("        {");
+                        sb.AppendLine($"            NativeReflection.SendEBusEvent(BusName, \"{e.Name}\", busId{(string.IsNullOrEmpty(argList) ? "" : ", " + argList)});");
+                        sb.AppendLine("        }");
+                    }
+                    else
+                    {
+                        sb.AppendLine($"        /// <summary>Send {XmlEscape(e.Name)} to the handler addressed by busId; returns the handler's result.</summary>");
+                        sb.AppendLine($"        public static {returnType} {eventName}(ulong busId{firstParamSep}{paramList})");
+                        sb.AppendLine("        {");
+                        sb.AppendLine($"            var __r = NativeReflection.SendResultEBusEvent<{returnType}>(BusName, \"{e.Name}\", busId{(string.IsNullOrEmpty(argList) ? "" : ", " + argList)});");
+                        sb.AppendLine($"            return __r!;");
+                        sb.AppendLine("        }");
+                    }
+
+                    // Broadcast variant - same name + "Broadcast" suffix.
+                    sb.AppendLine();
+                    if (returnType == "void")
+                    {
+                        sb.AppendLine($"        /// <summary>Broadcast {XmlEscape(e.Name)} to ALL handlers on this bus (not the usual per-entity flow; prefer the addressed overload above unless you really mean every handler).</summary>");
+                        sb.AppendLine($"        public static void {eventName}Broadcast({paramList})");
+                        sb.AppendLine("        {");
+                        sb.AppendLine($"            NativeReflection.BroadcastEBusEvent(BusName, \"{e.Name}\"{(string.IsNullOrEmpty(argList) ? "" : ", " + argList)});");
+                        sb.AppendLine("        }");
+                    }
+                    else
+                    {
+                        sb.AppendLine($"        /// <summary>Broadcast {XmlEscape(e.Name)} to ALL handlers on this bus; returns the first handler's result.</summary>");
+                        sb.AppendLine($"        public static {returnType} {eventName}Broadcast({paramList})");
+                        sb.AppendLine("        {");
+                        sb.AppendLine($"            var __r = NativeReflection.BroadcastResultEBusEvent<{returnType}>(BusName, \"{e.Name}\"{(string.IsNullOrEmpty(argList) ? "" : ", " + argList)});");
+                        sb.AppendLine($"            return __r!;");
+                        sb.AppendLine("        }");
+                    }
+                }
+                else
+                {
+                    // Pure-broadcast bus - one wrapper, unsuffixed.
                     if (returnType == "void")
                     {
                         sb.AppendLine($"        /// <summary>Broadcast {XmlEscape(e.Name)} to all handlers.</summary>");
@@ -566,31 +630,6 @@ namespace O3DESharp.BindingGenerator.Generation
                         sb.AppendLine($"        public static {returnType} {eventName}({paramList})");
                         sb.AppendLine("        {");
                         sb.AppendLine($"            var __r = NativeReflection.BroadcastResultEBusEvent<{returnType}>(BusName, \"{e.Name}\"{(string.IsNullOrEmpty(argList) ? "" : ", " + argList)});");
-                        sb.AppendLine($"            return __r!;");
-                        sb.AppendLine("        }");
-                    }
-                }
-                else
-                {
-                    // Addressed event - delivered to a specific handler by busId.
-                    var addressType = string.IsNullOrEmpty(bus.AddressType.TypeName)
-                        ? "ulong"
-                        : "ulong"; // we marshal addresses as ulong handles uniformly via the dispatch path
-                    var firstParamSep = string.IsNullOrEmpty(paramList) ? "" : ", ";
-                    if (returnType == "void")
-                    {
-                        sb.AppendLine($"        /// <summary>Send {XmlEscape(e.Name)} to the handler addressed by busId.</summary>");
-                        sb.AppendLine($"        public static void {eventName}({addressType} busId{firstParamSep}{paramList})");
-                        sb.AppendLine("        {");
-                        sb.AppendLine($"            NativeReflection.SendEBusEvent(BusName, \"{e.Name}\", busId{(string.IsNullOrEmpty(argList) ? "" : ", " + argList)});");
-                        sb.AppendLine("        }");
-                    }
-                    else
-                    {
-                        sb.AppendLine($"        /// <summary>Send {XmlEscape(e.Name)} to the handler addressed by busId; returns the handler's result.</summary>");
-                        sb.AppendLine($"        public static {returnType} {eventName}({addressType} busId{firstParamSep}{paramList})");
-                        sb.AppendLine("        {");
-                        sb.AppendLine($"            var __r = NativeReflection.SendResultEBusEvent<{returnType}>(BusName, \"{e.Name}\", busId{(string.IsNullOrEmpty(argList) ? "" : ", " + argList)});");
                         sb.AppendLine($"            return __r!;");
                         sb.AppendLine("        }");
                     }

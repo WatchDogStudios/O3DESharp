@@ -9,11 +9,17 @@
 #include "BehaviorContextMarshaling.h"
 
 #include <AzCore/Component/EntityId.h>
+#include <AzCore/Math/Vector2.h>
 #include <AzCore/Math/Vector3.h>
 #include <AzCore/Math/Vector4.h>
 #include <AzCore/Math/Quaternion.h>
 #include <AzCore/Math/Color.h>
 #include <AzCore/Math/Transform.h>
+#include <AzCore/Math/Matrix3x3.h>
+#include <AzCore/Math/Matrix4x4.h>
+#include <AzCore/Math/Aabb.h>
+#include <AzCore/Math/Crc.h>
+#include <AzCore/Math/Uuid.h>
 #include <AzCore/std/string/string.h>
 
 namespace O3DESharp::Marshaling
@@ -78,6 +84,12 @@ namespace O3DESharp::Marshaling
                 SetArgumentValueInline(outArg, AZ::EntityId(static_cast<AZ::u64>(sval)));
                 return true;
             }
+            // Crc32 is a u32 hash - same direct integer map.
+            if (MatchesType(param, azrtti_typeid<AZ::Crc32>()))
+            {
+                SetArgumentValueInline(outArg, AZ::Crc32(static_cast<AZ::u32>(sval)));
+                return true;
+            }
 
             errorOut = AZStd::string::format(
                 "JSON integer cannot bind to parameter of type 0x%s",
@@ -115,6 +127,16 @@ namespace O3DESharp::Marshaling
             {
                 errorOut = "expected JSON string";
                 return false;
+            }
+            // Uuid - parse the canonical "{XXXX-...}" form. Mirrors the
+            // outgoing direction in BehaviorArgumentToJsonValue which
+            // serializes Uuids as their string form.
+            if (MatchesType(param, azrtti_typeid<AZ::Uuid>()))
+            {
+                AZStd::string_view sv(json.GetString(), json.GetStringLength());
+                AZ::Uuid u = AZ::Uuid::CreateString(sv.data(), sv.size());
+                SetArgumentValueInline(outArg, u);
+                return true;
             }
             if (!MatchesType(param, azrtti_typeid<AZStd::string>()))
             {
@@ -161,7 +183,11 @@ namespace O3DESharp::Marshaling
                 vals[i] = static_cast<float>(json[i].GetDouble());
             }
             TVec v;
-            if constexpr (Components == 3)
+            if constexpr (Components == 2)
+            {
+                v = TVec(vals[0], vals[1]);
+            }
+            else if constexpr (Components == 3)
             {
                 v = TVec(vals[0], vals[1], vals[2]);
             }
@@ -219,15 +245,100 @@ namespace O3DESharp::Marshaling
         }
         if (json.IsArray())
         {
+            // Dispatch on the parameter's reflected type. We try each
+            // math-type marshaler in turn; whichever one matches the
+            // param's TypeId takes the array. An empty errorOut on a
+            // false return means "type didn't match, try the next one";
+            // a non-empty errorOut is a shape error (wrong element
+            // count, non-number element) that should abort the chain.
+            if (MarshalFloatArrayToVector<AZ::Vector2, 2>(json, param, outArg, errorOut)) { return true; }
+            if (!errorOut.empty()) { return false; }
             if (MarshalFloatArrayToVector<AZ::Vector3, 3>(json, param, outArg, errorOut)) { return true; }
-            if (errorOut.empty() == false) { return false; } // shape error
+            if (!errorOut.empty()) { return false; }
             if (MarshalFloatArrayToVector<AZ::Vector4, 4>(json, param, outArg, errorOut)) { return true; }
-            if (errorOut.empty() == false) { return false; }
+            if (!errorOut.empty()) { return false; }
             if (MarshalFloatArrayToVector<AZ::Quaternion, 4>(json, param, outArg, errorOut)) { return true; }
-            if (errorOut.empty() == false) { return false; }
+            if (!errorOut.empty()) { return false; }
             if (MarshalFloatArrayToVector<AZ::Color, 4>(json, param, outArg, errorOut)) { return true; }
+            if (!errorOut.empty()) { return false; }
+
+            // Multi-component types that don't fit the 2/3/4-element
+            // pattern: Aabb is 6 floats (min+max), Matrix3x3 is 9,
+            // Matrix4x4 is 16, Transform is 10 (position + quaternion +
+            // uniform-scale + 2 reserved). Each handler inspects the
+            // param's TypeId and the array length; misses fall through
+            // with empty errorOut so the chain can keep trying.
+            if (MatchesType(param, azrtti_typeid<AZ::Aabb>()) && json.Size() == 6)
+            {
+                float v[6];
+                for (rapidjson::SizeType i = 0; i < 6; ++i)
+                {
+                    if (!json[i].IsNumber()) { errorOut = "expected number in Aabb array"; return false; }
+                    v[i] = static_cast<float>(json[i].GetDouble());
+                }
+                AZ::Aabb aabb = AZ::Aabb::CreateFromMinMax(
+                    AZ::Vector3(v[0], v[1], v[2]),
+                    AZ::Vector3(v[3], v[4], v[5]));
+                SetArgumentValueInline(outArg, aabb);
+                return true;
+            }
+            if (MatchesType(param, azrtti_typeid<AZ::Matrix3x3>()) && json.Size() == 9)
+            {
+                float v[9];
+                for (rapidjson::SizeType i = 0; i < 9; ++i)
+                {
+                    if (!json[i].IsNumber()) { errorOut = "expected number in Matrix3x3 array"; return false; }
+                    v[i] = static_cast<float>(json[i].GetDouble());
+                }
+                AZ::Matrix3x3 mat = AZ::Matrix3x3::CreateFromValue(0.f);
+                for (int r = 0; r < 3; ++r)
+                {
+                    for (int c = 0; c < 3; ++c)
+                    {
+                        mat.SetElement(r, c, v[r * 3 + c]);
+                    }
+                }
+                SetArgumentValueInline(outArg, mat);
+                return true;
+            }
+            if (MatchesType(param, azrtti_typeid<AZ::Matrix4x4>()) && json.Size() == 16)
+            {
+                float v[16];
+                for (rapidjson::SizeType i = 0; i < 16; ++i)
+                {
+                    if (!json[i].IsNumber()) { errorOut = "expected number in Matrix4x4 array"; return false; }
+                    v[i] = static_cast<float>(json[i].GetDouble());
+                }
+                AZ::Matrix4x4 mat = AZ::Matrix4x4::CreateZero();
+                for (int r = 0; r < 4; ++r)
+                {
+                    for (int c = 0; c < 4; ++c)
+                    {
+                        mat.SetElement(r, c, v[r * 4 + c]);
+                    }
+                }
+                SetArgumentValueInline(outArg, mat);
+                return true;
+            }
+            if (MatchesType(param, azrtti_typeid<AZ::Transform>()) && json.Size() == 10)
+            {
+                float v[10];
+                for (rapidjson::SizeType i = 0; i < 10; ++i)
+                {
+                    if (!json[i].IsNumber()) { errorOut = "expected number in Transform array"; return false; }
+                    v[i] = static_cast<float>(json[i].GetDouble());
+                }
+                AZ::Transform tr = AZ::Transform::CreateFromQuaternionAndTranslation(
+                    AZ::Quaternion(v[3], v[4], v[5], v[6]),
+                    AZ::Vector3(v[0], v[1], v[2]));
+                tr.SetUniformScale(v[7]);
+                SetArgumentValueInline(outArg, tr);
+                return true;
+            }
+
             errorOut = "JSON array doesn't match any supported math type "
-                       "(Vector3, Vector4, Quaternion, Color)";
+                       "(Vector2, Vector3, Vector4, Quaternion, Color, Aabb, "
+                       "Matrix3x3, Matrix4x4, Transform)";
             return false;
         }
         if (json.IsNull())
@@ -280,37 +391,122 @@ namespace O3DESharp::Marshaling
             return true;
         }
 
-        // Vec / Quat / Color marshal back to JSON arrays.
-        auto packVec = [&](float x, float y, float z, float w, bool hasW)
+        // Vec / Quat / Color / Aabb / Matrix all marshal back to JSON
+        // arrays. The C# UnpackBareJsonValue / UnpackJsonArray in
+        // NativeReflection reconstructs the typed struct from element
+        // count (2/3/4 → Vector2/3/4 or Quat depending on the requested
+        // T, 6 → Aabb min+max, 9 → Matrix3x3, 16 → Matrix4x4, etc.).
+        auto packArr = [&](std::initializer_list<float> values)
         {
             outJson.SetArray();
-            outJson.PushBack(x, alloc);
-            outJson.PushBack(y, alloc);
-            outJson.PushBack(z, alloc);
-            if (hasW) { outJson.PushBack(w, alloc); }
+            for (float v : values)
+            {
+                outJson.PushBack(v, alloc);
+            }
         };
+
+        if (t == azrtti_typeid<AZ::Vector2>())
+        {
+            const auto* v = arg.GetAsUnsafe<AZ::Vector2>();
+            packArr({ v->GetX(), v->GetY() });
+            return true;
+        }
         if (t == azrtti_typeid<AZ::Vector3>())
         {
             const auto* v = arg.GetAsUnsafe<AZ::Vector3>();
-            packVec(v->GetX(), v->GetY(), v->GetZ(), 0.f, false);
+            packArr({ v->GetX(), v->GetY(), v->GetZ() });
             return true;
         }
         if (t == azrtti_typeid<AZ::Vector4>())
         {
             const auto* v = arg.GetAsUnsafe<AZ::Vector4>();
-            packVec(v->GetX(), v->GetY(), v->GetZ(), v->GetW(), true);
+            packArr({ v->GetX(), v->GetY(), v->GetZ(), v->GetW() });
             return true;
         }
         if (t == azrtti_typeid<AZ::Quaternion>())
         {
             const auto* q = arg.GetAsUnsafe<AZ::Quaternion>();
-            packVec(q->GetX(), q->GetY(), q->GetZ(), q->GetW(), true);
+            packArr({ q->GetX(), q->GetY(), q->GetZ(), q->GetW() });
             return true;
         }
         if (t == azrtti_typeid<AZ::Color>())
         {
             const auto* c = arg.GetAsUnsafe<AZ::Color>();
-            packVec(c->GetR(), c->GetG(), c->GetB(), c->GetA(), true);
+            packArr({ c->GetR(), c->GetG(), c->GetB(), c->GetA() });
+            return true;
+        }
+        if (t == azrtti_typeid<AZ::Aabb>())
+        {
+            // 6 floats: [minX, minY, minZ, maxX, maxY, maxZ].
+            const auto* aabb = arg.GetAsUnsafe<AZ::Aabb>();
+            const auto mn = aabb->GetMin();
+            const auto mx = aabb->GetMax();
+            packArr({ mn.GetX(), mn.GetY(), mn.GetZ(), mx.GetX(), mx.GetY(), mx.GetZ() });
+            return true;
+        }
+        if (t == azrtti_typeid<AZ::Matrix3x3>())
+        {
+            // 9 floats, row-major flatten.
+            const auto* m = arg.GetAsUnsafe<AZ::Matrix3x3>();
+            outJson.SetArray();
+            for (int r = 0; r < 3; ++r)
+            {
+                for (int c = 0; c < 3; ++c)
+                {
+                    outJson.PushBack(m->GetElement(r, c), alloc);
+                }
+            }
+            return true;
+        }
+        if (t == azrtti_typeid<AZ::Matrix4x4>())
+        {
+            // 16 floats, row-major flatten.
+            const auto* m = arg.GetAsUnsafe<AZ::Matrix4x4>();
+            outJson.SetArray();
+            for (int r = 0; r < 4; ++r)
+            {
+                for (int c = 0; c < 4; ++c)
+                {
+                    outJson.PushBack(m->GetElement(r, c), alloc);
+                }
+            }
+            return true;
+        }
+        if (t == azrtti_typeid<AZ::Transform>())
+        {
+            // 10 floats: translation (3) + rotation quaternion (4) + uniform scale (1) + reserved (2).
+            // Storing as a flat array lets the C# side reconstruct via
+            // Transform.CreateFromQuaternionAndTranslation + SetUniformScale.
+            // Slots 8-9 are reserved zeros for forward compat (skew, etc.).
+            const auto* tr = arg.GetAsUnsafe<AZ::Transform>();
+            const auto pos = tr->GetTranslation();
+            const auto rot = tr->GetRotation();
+            const float scl = tr->GetUniformScale();
+            packArr({
+                pos.GetX(), pos.GetY(), pos.GetZ(),
+                rot.GetX(), rot.GetY(), rot.GetZ(), rot.GetW(),
+                scl, 0.f, 0.f,
+            });
+            return true;
+        }
+
+        // Identifier / hash types - marshal as their underlying numeric
+        // representation. C# wrappers can treat these as opaque IDs.
+        if (t == azrtti_typeid<AZ::Crc32>())
+        {
+            const auto* crc = arg.GetAsUnsafe<AZ::Crc32>();
+            outJson.SetUint(static_cast<AZ::u32>(*crc));
+            return true;
+        }
+        if (t == azrtti_typeid<AZ::Uuid>())
+        {
+            // Uuids serialize as their string form ("{XXXX-...}") since
+            // there's no efficient numeric carrier for 128 bits in JSON.
+            // C# side parses with Guid.Parse.
+            const auto* uuid = arg.GetAsUnsafe<AZ::Uuid>();
+            const auto uuidStr = uuid->ToString<AZStd::string>();
+            outJson.SetString(uuidStr.c_str(),
+                static_cast<rapidjson::SizeType>(uuidStr.size()), alloc);
             return true;
         }
 
