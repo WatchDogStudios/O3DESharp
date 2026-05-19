@@ -1177,6 +1177,75 @@ class _BindingGenerationWorker(QThread):
         self.finished_signal.emit(result, self._output_dir)
 
 
+class _BindingBuildWorker(QThread):
+    """
+    Phase 18-D: post-generation auto-build worker.
+
+    Runs `dotnet build -c Debug` on each csproj the generator emitted,
+    one at a time (sequential so the log stays readable; the build of
+    one csproj typically takes <5 seconds for a fresh wrapper set, so
+    parallelism wouldn't move the needle much). Streams each line of
+    MSBuild output to log_line; emits finished_signal with (success,
+    failed_csprojs) when done.
+
+    Why Debug not Release: the csproj template's Debug-config
+    PropertyGroup uses DebugType=full + loose-on-disk + PDB shipping,
+    which is what we need for managed-debugger attach to bind line
+    numbers in the wrappers. Release would build smaller DLLs but
+    sacrifice the debug experience for no measurable runtime win
+    (the dispatch path is the cost, not the wrapper indirection).
+
+    Build success criterion: dotnet exit code 0 AND the expected
+    output DLL exists at the typical bin/Debug/net9.0/ location. The
+    DeployToBinScripts target inside each csproj copies the DLL to
+    Bin/Scripts/ which is what the CSharpAssemblyWatcher watches -
+    a successful build automatically triggers hot-reload.
+    """
+
+    log_line = Signal(str)
+    # (success: bool, failed_csprojs: list[str])
+    finished_signal = Signal(bool, list)
+
+    def __init__(self, csprojs):
+        super().__init__()
+        self._csprojs = list(csprojs)
+
+    def run(self):
+        import subprocess
+        from pathlib import Path
+        failed = []
+        for csproj in self._csprojs:
+            self.log_line.emit(f"[Build] {Path(csproj).name} ...")
+            try:
+                # Use Popen + line-streaming so the log scrolls in
+                # real time (same trick the generator wrapper uses).
+                proc = subprocess.Popen(
+                    ["dotnet", "build", csproj, "-c", "Debug", "--nologo"],
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.STDOUT,
+                    text=True,
+                    bufsize=1,
+                )
+                assert proc.stdout is not None
+                for line in proc.stdout:
+                    self.log_line.emit(line.rstrip("\r\n"))
+                rc = proc.wait(timeout=300)
+                if rc != 0:
+                    failed.append(csproj)
+                    self.log_line.emit(f"[Build] {Path(csproj).name}: FAILED (exit {rc})")
+                else:
+                    self.log_line.emit(f"[Build] {Path(csproj).name}: OK")
+            except subprocess.TimeoutExpired:
+                failed.append(csproj)
+                self.log_line.emit(f"[Build] {Path(csproj).name}: TIMEOUT (5 minutes)")
+                try: proc.kill()
+                except Exception: pass
+            except Exception as e:
+                failed.append(csproj)
+                self.log_line.emit(f"[Build] {Path(csproj).name}: EXCEPTION - {e}")
+        self.finished_signal.emit(len(failed) == 0, failed)
+
+
 class CSharpProjectManagerWindow(QDialog):
     """Main window for C# project management."""
     
@@ -2230,15 +2299,24 @@ Status: {status['message']}"""
                 f"{result.ebuses_generated} EBuses"
             )
 
-            QMessageBox.information(
-                self,
-                "Binding Generation Complete",
-                f"Successfully generated C# bindings (ClangSharp):\n\n"
-                f"• Classes: {result.classes_generated}\n"
-                f"• EBuses: {result.ebuses_generated}\n"
-                f"• Files: {result.files_written}\n\n"
-                f"Output: {output_dir}",
-            )
+            # Phase 18-D: chain into auto-build so the generated
+            # wrappers are actually usable as soon as generation
+            # finishes. Generated .g.cs files are useless on their own -
+            # they need to land in a deployed DLL for Coral to load.
+            # We walk the output directory looking for emitted .csproj
+            # files (one per gem bucket from ReflectionBindingGenerator)
+            # and shell out `dotnet build` on each.
+            #
+            # The csproj's DeployToBinScripts MSBuild target copies the
+            # output DLL + PDB into <Project>/Bin/Scripts/ - where the
+            # CSharpAssemblyWatcher (Phase 13a) is listening with a
+            # FileSystemWatcher. Its OnFileChanged hook fires the
+            # O3DESharpHotReloadNotificationBus, which CSharpScriptComponent
+            # subscribes to and which triggers Coral's AssemblyLoadContext
+            # unload+reload. End result: user clicks "Generate Bindings",
+            # gets working wrappers live in the running editor, no
+            # restart needed.
+            self._start_auto_build_after_generation(output_dir, result)
         else:
             self._log(f"Binding generation failed: {result.error_message}", "ERROR")
             self.binding_status_label.setText(f"Error: {result.error_message}")
@@ -2246,6 +2324,94 @@ Status: {status['message']}"""
                 self,
                 "Binding Generation Failed",
                 f"Failed to generate bindings:\n\n{result.error_message}",
+            )
+
+    def _start_auto_build_after_generation(self, output_dir, generation_result):
+        """
+        Walk output_dir for emitted .csproj files and dotnet-build each.
+        Runs on a worker QThread so the UI stays responsive; each line
+        of MSBuild output streams to the log view via signals.
+
+        Skip the auto-build if there are no csprojs (the ClangSharp
+        backend emits per-gem projects too, but a misconfigured output
+        directory could produce just .cs files - in that case the user
+        is doing something manual and we shouldn't second-guess them).
+        """
+        import glob
+        csprojs = sorted(glob.glob(str(output_dir) + "/**/*.csproj", recursive=True))
+        if not csprojs:
+            self._log(
+                "No .csproj files emitted under the output directory; skipping auto-build. "
+                "Manually run `dotnet build` on your binding csproj when ready.",
+                "WARNING")
+            # Still show the generation-success dialog so the user knows
+            # the cs files are there even though we didn't auto-build.
+            QMessageBox.information(
+                self,
+                "Binding Generation Complete",
+                f"Successfully generated C# bindings:\n\n"
+                f"• Classes: {generation_result.classes_generated}\n"
+                f"• EBuses: {generation_result.ebuses_generated}\n"
+                f"• Files: {generation_result.files_written}\n\n"
+                f"Output: {output_dir}\n\n"
+                f"No .csproj was emitted; build manually to use the wrappers.",
+            )
+            return
+
+        self._log(
+            f"Auto-building {len(csprojs)} binding csproj(s) so Coral can hot-reload "
+            f"the wrappers without an editor restart...", "INFO")
+
+        # Disable the Generate button while the build runs - re-enabled
+        # when the build worker finishes. Same UX as the generation
+        # phase, so the user doesn't kick off a second regen mid-build
+        # (which would race with the DLL deploy).
+        if hasattr(self, "generate_btn") and self.generate_btn is not None:
+            self.generate_btn.setEnabled(False)
+
+        self._binding_build_worker = _BindingBuildWorker(csprojs)
+        self._binding_build_worker.log_line.connect(
+            lambda line: self._log(line, "INFO"))
+        self._binding_build_worker.finished_signal.connect(
+            lambda success, failed_csprojs: self._on_binding_build_finished(
+                success, failed_csprojs, generation_result, output_dir))
+        self._binding_build_worker.start()
+
+    def _on_binding_build_finished(self, success, failed_csprojs, generation_result, output_dir):
+        """Done-handler for the post-generation auto-build."""
+        if hasattr(self, "generate_btn") and self.generate_btn is not None:
+            self.generate_btn.setEnabled(True)
+        self._binding_build_worker = None
+
+        if success:
+            self._log("========== Binding Auto-Build Complete ==========", "SUCCESS")
+            self._log(
+                "DLLs deployed to Bin/Scripts/. The CSharpAssemblyWatcher should fire "
+                "the hot-reload bus and Coral will pick up the new wrappers within a few "
+                "seconds - no editor restart needed.", "SUCCESS")
+            QMessageBox.information(
+                self,
+                "Binding Generation + Build Complete",
+                f"Successfully generated and built C# bindings:\n\n"
+                f"• Classes: {generation_result.classes_generated}\n"
+                f"• EBuses: {generation_result.ebuses_generated}\n"
+                f"• Files: {generation_result.files_written}\n\n"
+                f"Output: {output_dir}\n\n"
+                f"DLLs deployed to Bin/Scripts/. Hot-reload will pick up the changes.",
+            )
+        else:
+            failed_list = "\n".join(f"  • {Path(p).name}" for p in failed_csprojs)
+            self._log(
+                f"{len(failed_csprojs)} binding csproj(s) failed to build:\n{failed_list}",
+                "ERROR")
+            QMessageBox.warning(
+                self,
+                "Binding Auto-Build Failed",
+                f"Generation succeeded, but {len(failed_csprojs)} csproj(s) failed to build:\n\n"
+                f"{failed_list}\n\n"
+                f"Check the log for MSBuild output. The generated .g.cs files are still in "
+                f"{output_dir} - inspect them, fix any issue (or report a generator bug), "
+                f"and manually run `dotnet build` to retry.",
             )
     
     # ==================== End Binding Generation Methods ====================
