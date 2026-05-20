@@ -255,13 +255,15 @@ namespace O3DESharp.SourceGenerators
                 sb.AppendLine();
             }
 
-            // Dispatch shim per bus. Switches on event name and forwards
-            // to the user method. Args unmarshaling is a STUB - the
-            // full version needs to parse argsJson into typed parameters
-            // matching the user method's signature, which depends on the
-            // C++ managed-handler bridge to actually be invoked. Until
-            // then the shim returns null for every event, which the
-            // C++ side will treat as "no handler" (a safe no-op).
+            // Dispatch shim per bus. Switches on event name, parses
+            // argsJson into a JsonElement, unmarshals each user-method
+            // parameter via EBusHandlerRegistry.UnmarshalArg<T>, and
+            // calls the user method. EBus events are treated as void
+            // (matches the C++ side's ForwardEventToManaged which
+            // discards the result BehaviorArgument); shim returns
+            // {"ok":true} after the call. Future Phase 18-E3 work
+            // could extend this to capture a real return value when
+            // the bus reflects one.
             foreach (var bus in info.Buses)
             {
                 var sanitized = SanitizeIdent(bus.BusName);
@@ -272,18 +274,42 @@ namespace O3DESharp.SourceGenerators
                 sb.AppendLine($"{indent}    /// </summary>");
                 sb.AppendLine($"{indent}    private string? __Dispatch{sanitized}Event(string eventName, string argsJson)");
                 sb.AppendLine($"{indent}    {{");
+                sb.AppendLine($"{indent}        // argsJson is a JSON array; the C++ side packs each event");
+                sb.AppendLine($"{indent}        // parameter in order, marshaled by BehaviorContextMarshaling.");
+                sb.AppendLine($"{indent}        using var __doc = System.Text.Json.JsonDocument.Parse(argsJson);");
+                sb.AppendLine($"{indent}        var __args = __doc.RootElement;");
                 sb.AppendLine($"{indent}        switch (eventName)");
                 sb.AppendLine($"{indent}        {{");
                 foreach (var h in info.Handlers)
                 {
                     sb.AppendLine($"{indent}            case \"{h.EventName}\":");
-                    sb.AppendLine($"{indent}                // TODO(Phase 18-E2): unmarshal argsJson into typed params");
-                    sb.AppendLine($"{indent}                // matching {h.MethodName}({string.Join(", ", h.Parameters.Select(p => p.TypeName))})");
-                    sb.AppendLine($"{indent}                // and invoke. Returns \"{{\\\"ok\\\":true}}\" for void events.");
-                    sb.AppendLine($"{indent}                // For now, invoke with default-constructed args so user code");
-                    sb.AppendLine($"{indent}                // wiring can be exercised end-to-end while the bridge lands.");
-                    var defaults = string.Join(", ", h.Parameters.Select(p => $"default({p.TypeName})!"));
-                    sb.AppendLine($"{indent}                this.{h.MethodName}({defaults});");
+                    if (h.Parameters.Count == 0)
+                    {
+                        sb.AppendLine($"{indent}                this.{h.MethodName}();");
+                    }
+                    else
+                    {
+                        // Emit one UnmarshalArg call per parameter,
+                        // indexed by position. The 'when arrayLength >=
+                        // i' guard is implicit - if the C++ side
+                        // packed fewer args than the method expects,
+                        // GetArrayLength check below short-circuits.
+                        sb.AppendLine($"{indent}                if (__args.ValueKind == System.Text.Json.JsonValueKind.Array && __args.GetArrayLength() >= {h.Parameters.Count})");
+                        sb.AppendLine($"{indent}                {{");
+                        sb.AppendLine($"{indent}                    this.{h.MethodName}(");
+                        for (int i = 0; i < h.Parameters.Count; i++)
+                        {
+                            var p = h.Parameters[i];
+                            var comma = (i < h.Parameters.Count - 1) ? "," : "";
+                            sb.AppendLine($"{indent}                        global::O3DE.Reflection.EBusHandlerRegistry.UnmarshalArg<{p.TypeName}>(__args[{i}]){comma}");
+                        }
+                        sb.AppendLine($"{indent}                    );");
+                        sb.AppendLine($"{indent}                }}");
+                        sb.AppendLine($"{indent}                else");
+                        sb.AppendLine($"{indent}                {{");
+                        sb.AppendLine($"{indent}                    global::O3DE.Debug.LogWarning($\"[EBus] {h.EventName}: expected {h.Parameters.Count} args but got {{(__args.ValueKind == System.Text.Json.JsonValueKind.Array ? __args.GetArrayLength() : 0)}}; skipping handler\");");
+                        sb.AppendLine($"{indent}                }}");
+                    }
                     sb.AppendLine($"{indent}                return \"{{\\\"ok\\\":true}}\";");
                 }
                 sb.AppendLine($"{indent}            default: return null;");
