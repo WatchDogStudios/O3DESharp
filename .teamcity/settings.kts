@@ -62,7 +62,11 @@ project {
 object O3DESharpVcs : GitVcsRoot({
     name = "O3DESharp (GitHub)"
     url = "https://github.com/WatchDogStudios/O3DESharp.git"
-    branch = "refs/heads/development"
+    // 'main' is the long-lived release branch (development merges
+    // in via PR). The branchSpec below picks up every branch and
+    // every PR head, so triggers fire on PR pushes against both
+    // main and development.
+    branch = "refs/heads/main"
     branchSpec = """
         +:refs/heads/*
         +:refs/pull/(*)/head

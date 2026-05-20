@@ -3,16 +3,20 @@
   Maven POM for the TeamCity Kotlin DSL.
 
   TeamCity (Cloud or on-prem) compiles .teamcity/settings.kts using
-  the Kotlin compiler shipped with this POM's dependencies. We don't
-  build this from a developer machine - the TeamCity server pulls
-  it down and runs it on every push to a branch that's wired to the
-  project's "Versioned Settings" feature.
+  the Kotlin compiler and the artifacts declared below. The
+  *-latest artifact names + the SNAPSHOT version are the JetBrains
+  convention for "match whatever server version we're running on";
+  pinning to a specific TC version (e.g. configs-dsl-kotlin:2024.03)
+  resolves a stale artifact that's missing classes like
+  jetbrains.buildServer.configs.kotlin.VcsRoot - hence the
+  "Unresolved reference" cascade we hit on the first import.
 
-  Pin to the TeamCity Cloud current API version. JetBrains rolls
-  this forward roughly quarterly; bumping is just a matter of
-  changing the teamcity.dsl.version property after a Cloud upgrade
-  notice. The settings.kts is forward-compatible across minor
-  versions.
+  Locally verify the DSL with:
+      cd .teamcity
+      mvn -q test-compile
+  Requires Maven + JDK 17. The build prints compile errors with
+  file:line numbers; silent output means the file is at least
+  syntactically valid against the current TC Cloud version.
 -->
 <project xmlns="http://maven.apache.org/POM/4.0.0"
          xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
@@ -30,13 +34,23 @@
         <maven.compiler.target>17</maven.compiler.target>
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
         <kotlin.compiler.incremental>true</kotlin.compiler.incremental>
-        <teamcity.dsl.version>2024.03</teamcity.dsl.version>
+        <!--
+          SNAPSHOT against the -latest artifacts: TeamCity Cloud
+          serves whichever version of the DSL classes its server is
+          currently running. This is the recommended pattern for
+          Cloud (where the server version is JetBrains-managed and
+          may roll forward without notice).
+        -->
+        <teamcity.dsl.version>SNAPSHOT</teamcity.dsl.version>
     </properties>
 
     <repositories>
         <repository>
             <id>jetbrains-all</id>
             <url>https://download.jetbrains.com/teamcity-repository</url>
+            <snapshots>
+                <enabled>true</enabled>
+            </snapshots>
         </repository>
         <repository>
             <id>teamcity-server</id>
@@ -79,15 +93,31 @@
     </build>
 
     <dependencies>
+        <!--
+          configs-dsl-kotlin-latest provides the core DSL types
+          (VcsRoot, BuildType, BuildFeature, CompoundParam, etc).
+          The -latest suffix is critical: configs-dsl-kotlin (no
+          suffix) pinned to a specific version may resolve a
+          partial classpath that's missing those supertypes,
+          producing exactly the cascade of "Unresolved reference"
+          errors we saw on the first sync attempt.
+        -->
         <dependency>
             <groupId>org.jetbrains.teamcity</groupId>
-            <artifactId>configs-dsl-kotlin</artifactId>
+            <artifactId>configs-dsl-kotlin-latest</artifactId>
             <version>${teamcity.dsl.version}</version>
             <scope>compile</scope>
         </dependency>
+        <!--
+          configs-dsl-kotlin-plugins-latest is a POM aggregator that
+          pulls in every plugin DSL (dotnet, git, github, etc) at
+          the server's current version. Without this, the dotnet*
+          build step types and the GitHub commit-status publisher
+          feature don't resolve.
+        -->
         <dependency>
             <groupId>org.jetbrains.teamcity</groupId>
-            <artifactId>configs-dsl-kotlin-plugins</artifactId>
+            <artifactId>configs-dsl-kotlin-plugins-latest</artifactId>
             <version>${teamcity.dsl.version}</version>
             <type>pom</type>
             <scope>compile</scope>
