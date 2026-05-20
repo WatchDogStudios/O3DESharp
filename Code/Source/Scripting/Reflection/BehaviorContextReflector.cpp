@@ -230,7 +230,8 @@ namespace O3DESharp
             reflectedClass.description,
             reflectedClass.category,
             reflectedClass.isDeprecated,
-            deprecationMessage);
+            deprecationMessage,
+            reflectedClass.sourceGemName);
 
         // Reflect base classes
         for (const auto& baseTypeId : behaviorClass->m_baseClasses)
@@ -320,7 +321,8 @@ namespace O3DESharp
             reflectedEBus.description,
             reflectedEBus.category,
             isDeprecated,
-            deprecationMessage);
+            deprecationMessage,
+            reflectedEBus.sourceGemName);
 
         // Get the address type if this is an addressed bus
         if (behaviorEBus->m_idParam.m_typeId != AZ::Uuid::CreateNull())
@@ -642,10 +644,24 @@ namespace O3DESharp
         bool& outIsDeprecated,
         AZStd::string& outDeprecationMessage) const
     {
+        AZStd::string moduleNameDiscard;
+        ExtractScriptAttributes(attributes, outDescription, outCategory,
+            outIsDeprecated, outDeprecationMessage, moduleNameDiscard);
+    }
+
+    void BehaviorContextReflector::ExtractScriptAttributes(
+        const AZ::AttributeArray& attributes,
+        AZStd::string& outDescription,
+        AZStd::string& outCategory,
+        bool& outIsDeprecated,
+        AZStd::string& outDeprecationMessage,
+        AZStd::string& outModuleName) const
+    {
         outDescription.clear();
         outCategory.clear();
         outIsDeprecated = false;
         outDeprecationMessage.clear();
+        outModuleName.clear();
 
         for (const auto& attributePair : attributes)
         {
@@ -668,8 +684,28 @@ namespace O3DESharp
                 AZ::AttributeReader reader(nullptr, attribute);
                 reader.Read<bool>(outIsDeprecated);
             }
-            // Note: There may be additional attributes for description, deprecation message, etc.
-            // that can be extracted based on the specific O3DE version
+            else if (attributeId == AZ::Script::Attributes::Module)
+            {
+                // The conventional gem-name carrier. Gem authors set this via
+                //   ->Attribute(AZ::Script::Attributes::Module, "MyGemName")
+                // when reflecting types into BehaviorContext. When present
+                // it's the canonical "which gem owns this type" answer.
+                AZ::AttributeReader reader(nullptr, attribute);
+                reader.Read<AZStd::string>(outModuleName);
+            }
+        }
+
+        // Fallback: if Module attribute wasn't set, take the first
+        // path-segment of Category. Many gem reflections use a category
+        // pattern like "Atom/Material/PassRequest" - the leading segment
+        // is the gem name. Better than empty (which makes the generator
+        // bucket everything under "Core").
+        if (outModuleName.empty() && !outCategory.empty())
+        {
+            const auto slashPos = outCategory.find('/');
+            outModuleName = (slashPos == AZStd::string::npos)
+                ? outCategory
+                : AZStd::string(outCategory.begin(), outCategory.begin() + slashPos);
         }
     }
 

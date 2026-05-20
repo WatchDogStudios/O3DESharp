@@ -12,12 +12,16 @@
 #include <AzCore/Serialization/EditContext.h>
 #include <AzCore/IO/FileIO.h>
 #include <AzCore/IO/Path/Path.h>
+#include <AzCore/IO/SystemFile.h>
 #include <AzCore/Settings/SettingsRegistryMergeUtils.h>
 #include <AzCore/JSON/rapidjson.h>
 #include <AzCore/JSON/document.h>
+#include <AzCore/Interface/Interface.h>
 #include <AzFramework/API/ApplicationAPI.h>
-#include <AzToolsFramework/API/EditorPythonRunnerRequestsBus.h>
 #include <AzToolsFramework/API/ToolsApplicationAPI.h>
+
+#include <Scripting/CoralHostManager.h>
+#include <Tools/CSharpEditorToolsBus.h>
 
 namespace O3DESharp
 {
@@ -36,23 +40,62 @@ namespace O3DESharp
             }
 
             serializeContext->Class<EditorCSharpScriptConfig, AZ::ComponentConfig>()
-                ->Version(1)
+                ->Version(3) // bumped: m_validationStatus now serialized for the inspector readout
                 ->Field("ScriptClassName", &EditorCSharpScriptConfig::m_scriptClassName)
                 ->Field("AssemblyPath", &EditorCSharpScriptConfig::m_assemblyPath)
-                // Note: m_validationStatus and m_isValid are not serialized - they are runtime state
+                ->Field("ExposedProperties", &EditorCSharpScriptConfig::m_exposedPropertyValues)
+                // m_validationStatus IS serialized: O3DE's EditContext requires every
+                // DataElement to point at a serialized field, otherwise it asserts
+                // "Class element for editor data element reflection 'Status' was NOT
+                // found in the serialize context!" at module load. The cost of
+                // serializing a short status string per entity is tiny and
+                // ValidateScript() overwrites it on every Activate so any staleness
+                // from a saved prefab is invisible in practice.
+                // m_isValid stays unserialized: it's not referenced from EditContext.
+                ->Field("ValidationStatus", &EditorCSharpScriptConfig::m_validationStatus)
                 ;
 
             if (AZ::EditContext* editContext = serializeContext->GetEditContext())
             {
-                // Define the config fields here - they will be shown via ShowChildrenOnly
+                // Define the config fields here - they will be shown via ShowChildrenOnly.
+                // The Script Class field uses the AZ_CRC_CE("CSharpScriptClass") UI handler
+                // (CSharpScriptClassPropertyHandler, registered by the editor system
+                // component). That gives the user a combo box backed by the Python
+                // CSharpEditorToolsBus handler instead of a plain text edit.
                 editContext->Class<EditorCSharpScriptConfig>("C# Script Configuration", "Configuration for a C# script component")
                     ->ClassElement(AZ::Edit::ClassElements::EditorData, "")
                         ->Attribute(AZ::Edit::Attributes::AutoExpand, true)
-                    ->DataElement(AZ::Edit::UIHandlers::Default, &EditorCSharpScriptConfig::m_scriptClassName,
+                    ->DataElement(AZ_CRC_CE("CSharpScriptClass"), &EditorCSharpScriptConfig::m_scriptClassName,
                         "Script Class", "The fully qualified C# class name (e.g., MyGame.PlayerController)")
                     ->DataElement(AZ::Edit::UIHandlers::Default, &EditorCSharpScriptConfig::m_assemblyPath,
                         "Assembly Path", "Optional: Path to the assembly containing the script (leave empty for default)")
+                    // Read-only feedback line so users immediately see why a typed class
+                    // name is unrecognised, instead of only finding out at runtime.
+                    ->DataElement(AZ::Edit::UIHandlers::Default, &EditorCSharpScriptConfig::m_validationStatus,
+                        "Status", "Result of validating the Script Class field against the loaded assemblies.")
+                        ->Attribute(AZ::Edit::Attributes::ReadOnly, true)
+                    // [ExposedProperty] values. Phase 14 switched the UI handler
+                    // from Default (a generic key/value map editor) to the
+                    // CSharpExposedPropertiesHandler, which queries the script's
+                    // schema via O3DESharpRequests::GetExposedPropertySchemaJson
+                    // and renders per-field typed widgets (QCheckBox / QSpinBox /
+                    // QDoubleSpinBox / QLineEdit). The ScriptClassNameAttr
+                    // attribute plumbs the sibling m_scriptClassName field into
+                    // the handler so it knows which schema to query.
+                    ->DataElement(AZ_CRC_CE("CSharpExposedProperties"), &EditorCSharpScriptConfig::m_exposedPropertyValues,
+                        "Exposed Properties",
+                        "Values for [ExposedProperty]-decorated fields on the selected script. "
+                        "Applied to the managed instance before OnCreate, and pushed live to "
+                        "the runtime instance when edited during Game Mode.")
+                        ->Attribute(AZ::Edit::Attributes::AutoExpand, true)
+                        ->Attribute(AZ_CRC_CE("ScriptClassNameAttr"), &EditorCSharpScriptConfig::m_scriptClassName)
                     ;
+                    // (Entity-id discovery for the live-push broadcast is
+                    // done from the handler's WriteGUIValuesIntoProperty
+                    // via an InstanceDataNode walk - the EditContext
+                    // attribute would need the callable to live on the
+                    // same class as the field, which here is the config
+                    // not the component.)
             }
         }
     }
@@ -81,16 +124,16 @@ namespace O3DESharp
                 editContext->Class<EditorCSharpScriptComponent>("C# Script", "Attaches a C# script to this entity")
                     ->ClassElement(AZ::Edit::ClassElements::EditorData, "")
                         ->Attribute(AZ::Edit::Attributes::Category, "Scripting")
-                        ->Attribute(AZ::Edit::Attributes::Icon, "Icons/Components/Script.svg")
-                        ->Attribute(AZ::Edit::Attributes::ViewportIcon, "Icons/Components/Viewport/Script.svg")
+                        ->Attribute(AZ::Edit::Attributes::Icon, "Icons/Components/csharp.svg")
+                        ->Attribute(AZ::Edit::Attributes::ViewportIcon, "Icons/Components/Viewport/csharp.svg")
                         ->Attribute(AZ::Edit::Attributes::AppearsInAddComponentMenu, AZ_CRC_CE("Game"))
                         ->Attribute(AZ::Edit::Attributes::AutoExpand, true)
-                    // TODO(Mikael A.): Will need to be filled out once we work with sig-docs-community. Talk to JT [SCB_GameDesign] in the O3DF server.
                         ->Attribute(AZ::Edit::Attributes::HelpPageURL, "")
+
                     // Script Selection group with embedded config
                     ->ClassElement(AZ::Edit::ClassElements::Group, "Script Selection")
                         ->Attribute(AZ::Edit::Attributes::AutoExpand, true)
-                    
+
                     ->DataElement(AZ::Edit::UIHandlers::Default, &EditorCSharpScriptComponent::m_config, "Configuration", "")
                         ->Attribute(AZ::Edit::Attributes::Visibility, AZ::Edit::PropertyVisibility::ShowChildrenOnly)
                         ->Attribute(AZ::Edit::Attributes::ChangeNotify, &EditorCSharpScriptComponent::OnScriptClassNameChanged)
@@ -98,15 +141,15 @@ namespace O3DESharp
                     // Action buttons
                     ->ClassElement(AZ::Edit::ClassElements::Group, "Actions")
                         ->Attribute(AZ::Edit::Attributes::AutoExpand, true)
-                    
+
                     ->UIElement(AZ::Edit::UIHandlers::Button, "Browse...", "Browse for existing C# scripts")
                         ->Attribute(AZ::Edit::Attributes::ButtonText, "Browse Scripts...")
                         ->Attribute(AZ::Edit::Attributes::ChangeNotify, &EditorCSharpScriptComponent::OnBrowseScript)
-                    
+
                     ->UIElement(AZ::Edit::UIHandlers::Button, "Create New", "Create a new C# script file")
                         ->Attribute(AZ::Edit::Attributes::ButtonText, "Create New Script...")
                         ->Attribute(AZ::Edit::Attributes::ChangeNotify, &EditorCSharpScriptComponent::OnCreateScript)
-                    
+
                     ->UIElement(AZ::Edit::UIHandlers::Button, "Edit", "Open script in default IDE")
                         ->Attribute(AZ::Edit::Attributes::ButtonText, "Edit Script")
                         ->Attribute(AZ::Edit::Attributes::ChangeNotify, &EditorCSharpScriptComponent::OnEditScript)
@@ -140,6 +183,7 @@ namespace O3DESharp
     {
         m_config.m_scriptClassName = config.m_scriptClassName;
         m_config.m_assemblyPath = config.m_assemblyPath;
+        m_config.m_exposedPropertyValues = config.m_exposedPropertyValues;
         ValidateScript();
     }
 
@@ -148,6 +192,7 @@ namespace O3DESharp
         CSharpScriptComponentConfig config;
         config.m_scriptClassName = m_config.m_scriptClassName;
         config.m_assemblyPath = m_config.m_assemblyPath;
+        config.m_exposedPropertyValues = m_config.m_exposedPropertyValues;
         return config;
     }
 
@@ -168,11 +213,30 @@ namespace O3DESharp
             return;
         }
 
-        // TODO: When the O3DESharp system is initialized, we could validate
-        // that the class actually exists in the assembly. For now, we mark
-        // it as "Ready" if the format looks correct.
-        m_config.m_validationStatus = "Ready";
-        m_config.m_isValid = true;
+        // If the Coral host is up, ask it whether the class actually exists in any
+        // loaded user assembly. This is the only way to catch typos against the
+        // live assemblies short of running the game.
+        if (ClassExistsInAssembly(m_config.m_scriptClassName, m_config.m_assemblyPath))
+        {
+            m_config.m_validationStatus = "OK - class found in loaded assemblies";
+            m_config.m_isValid = true;
+        }
+        else
+        {
+            // Coral host not initialized yet, or the class isn't present in any
+            // loaded user assembly. Report the latter; the former only happens
+            // in early Activate / before the runtime gem comes up.
+            if (auto* coralHost = AZ::Interface<ICoralHostManager>::Get())
+            {
+                AZ_UNUSED(coralHost);
+                m_config.m_validationStatus = "Error: class not found in any loaded assembly";
+            }
+            else
+            {
+                m_config.m_validationStatus = "Coral host not initialized yet";
+            }
+            m_config.m_isValid = false;
+        }
     }
 
     AZ::Crc32 EditorCSharpScriptComponent::OnScriptClassNameChanged()
@@ -183,66 +247,61 @@ namespace O3DESharp
 
     AZ::Crc32 EditorCSharpScriptComponent::OnBrowseScript()
     {
-        // Call Python script to show the script browser dialog
-        AzToolsFramework::EditorPythonRunnerRequestBus::Broadcast(
-            &AzToolsFramework::EditorPythonRunnerRequestBus::Events::ExecuteByString,
-            R"(
-import sys
-import os
-import azlmbr.paths
+        // Go through the CSharpEditorToolsBus instead of inline Python. The bus
+        // dispatches to OpenScriptPicker() on the connected Python handler,
+        // which pops the dialog AND returns the selected class - so we can
+        // assign it directly to the config field. The previous inline-Python
+        // implementation opened the dialog but only printed the result, never
+        // updating the component, which is why "Browse Scripts..." appeared to
+        // do nothing.
+        AZ_TracePrintf("O3DESharp", "OnBrowseScript: broadcasting OpenScriptPicker (current='%s')",
+            m_config.m_scriptClassName.c_str());
 
-# Add O3DESharp Editor/Scripts to Python path if not already there
-o3desharp_scripts_path = os.path.join(azlmbr.paths.engroot, 'Gems', 'O3DESharp', 'Editor', 'Scripts')
-if o3desharp_scripts_path not in sys.path:
-    sys.path.insert(0, o3desharp_scripts_path)
+        AZStd::string selectedClass;
+        CSharpEditorToolsBus::BroadcastResult(
+            selectedClass,
+            &CSharpEditorToolsBus::Events::OpenScriptPicker,
+            m_config.m_scriptClassName);
 
-try:
-    import csharp_editor_tools
-    dialog = csharp_editor_tools.ScriptBrowserDialog()
-    if dialog.exec_():
-        selected_class = dialog.get_selected_class()
-        if selected_class:
-            # For now just log it - in a full implementation, we'd need
-            # a way to pass this back to the C++ component
-            print(f"Selected script class: {selected_class}")
-except ImportError as e:
-    print(f"Could not load C# editor tools: {e}")
-)",
-            false /* is file path */
-        );
+        AZ_TracePrintf("O3DESharp", "OnBrowseScript: BroadcastResult returned '%s'",
+            selectedClass.c_str());
 
-        return AZ::Edit::PropertyRefreshLevels::EntireTree;
+        if (!selectedClass.empty())
+        {
+            m_config.m_scriptClassName = selectedClass;
+            ValidateScript();
+            return AZ::Edit::PropertyRefreshLevels::EntireTree;
+        }
+
+        // Empty result = user cancelled or the Python EBus handler isn't
+        // connected. Warn so the user can tell those two apart.
+        AZ_Warning("O3DESharp", false,
+            "OnBrowseScript: OpenScriptPicker returned empty. Either the user cancelled "
+            "or the Python CSharpEditorToolsBus handler is not connected. Check the "
+            "console for '[O3DESharp] CSharpEditorToolsBus handler connected' on editor "
+            "startup; if missing, csharp_editor_bootstrap did not import the tools module.");
+        return AZ::Edit::PropertyRefreshLevels::None;
     }
 
     AZ::Crc32 EditorCSharpScriptComponent::OnCreateScript()
     {
-        // Call Python script to show the create script dialog
-        AzToolsFramework::EditorPythonRunnerRequestBus::Broadcast(
-            &AzToolsFramework::EditorPythonRunnerRequestBus::Events::ExecuteByString,
-            R"(
-import sys
-import os
-import azlmbr.paths
+        // Same migration as OnBrowseScript: route through the EBus so the
+        // created class name flows back into m_config.m_scriptClassName.
+        AZStd::string createdClass;
+        CSharpEditorToolsBus::BroadcastResult(
+            createdClass,
+            &CSharpEditorToolsBus::Events::CreateNewScript,
+            AZStd::string{}, /* defaultName */
+            AZStd::string{}  /* defaultNamespace */);
 
-# Add O3DESharp Editor/Scripts to Python path if not already there
-o3desharp_scripts_path = os.path.join(azlmbr.paths.engroot, 'Gems', 'O3DESharp', 'Editor', 'Scripts')
-if o3desharp_scripts_path not in sys.path:
-    sys.path.insert(0, o3desharp_scripts_path)
+        if (!createdClass.empty())
+        {
+            m_config.m_scriptClassName = createdClass;
+            ValidateScript();
+            return AZ::Edit::PropertyRefreshLevels::EntireTree;
+        }
 
-try:
-    import csharp_editor_tools
-    dialog = csharp_editor_tools.CreateScriptDialog()
-    if dialog.exec_():
-        class_name = dialog.get_created_class_name()
-        if class_name:
-            print(f"Created new script class: {class_name}")
-except ImportError as e:
-    print(f"Could not load C# editor tools: {e}")
-)",
-            false /* is file path */
-        );
-
-        return AZ::Edit::PropertyRefreshLevels::EntireTree;
+        return AZ::Edit::PropertyRefreshLevels::None;
     }
 
     AZ::Crc32 EditorCSharpScriptComponent::OnEditScript()
@@ -253,50 +312,31 @@ except ImportError as e:
             return AZ::Edit::PropertyRefreshLevels::None;
         }
 
-        // Call Python script to open the script in the IDE
-        AZStd::string pythonScript = AZStd::string::format(
-            R"(
-import sys
-import os
-import subprocess
-import azlmbr.paths
+        // Dispatch to the Python-side CSharpEditorToolsBus::OpenScriptInEditor.
+        // That handler uses the cached class index to do an exact full-name
+        // match against the pre-discovered file paths (O(N)), then launches the
+        // OS-default editor for that path. Previously this method generated and
+        // executed an inline Python script that:
+        //   (a) walked every project and every script (O(projects * scripts)),
+        //   (b) did a substring match on file contents (false positives), and
+        //   (c) string-formatted m_scriptClassName directly into Python source
+        //       (Python-injection risk if a class name contained a quote).
+        // Going through the bus removes all three problems.
+        bool ok = false;
+        CSharpEditorToolsBus::BroadcastResult(
+            ok,
+            &CSharpEditorToolsBus::Events::OpenScriptInEditor,
+            m_config.m_scriptClassName);
 
-# Add O3DESharp Editor/Scripts to Python path if not already there
-o3desharp_scripts_path = os.path.join(azlmbr.paths.engroot, 'Gems', 'O3DESharp', 'Editor', 'Scripts')
-if o3desharp_scripts_path not in sys.path:
-    sys.path.insert(0, o3desharp_scripts_path)
-
-try:
-    import csharp_project_manager
-    
-    manager = csharp_project_manager.CSharpProjectManager()
-    class_name = "%s"
-    
-    # Find the script file based on class name
-    for project_path in manager.list_projects():
-        for script_path in manager.list_scripts(project_path):
-            # Check if this script contains our class
-            with open(script_path, 'r') as f:
-                content = f.read()
-                if class_name in content:
-                    # Open in default editor
-                    if os.name == 'nt':
-                        os.startfile(script_path)
-                    else:
-                        subprocess.run(['xdg-open', script_path])
-                    print(f"Opened script: {script_path}")
-                    break
-except Exception as e:
-    print(f"Could not open script: {e}")
-)",
-            m_config.m_scriptClassName.c_str()
-        );
-
-        AzToolsFramework::EditorPythonRunnerRequestBus::Broadcast(
-            &AzToolsFramework::EditorPythonRunnerRequestBus::Events::ExecuteByString,
-            pythonScript.c_str(),
-            false /* is file path */
-        );
+        if (!ok)
+        {
+            AZ_Warning(
+                "O3DESharp",
+                false,
+                "Could not open script for class '%s'. Check that the class name is "
+                "fully qualified and that the matching .cs file is in a discovered C# project.",
+                m_config.m_scriptClassName.c_str());
+        }
 
         return AZ::Edit::PropertyRefreshLevels::None;
     }
@@ -346,107 +386,22 @@ except Exception as e:
     }
 
     bool EditorCSharpScriptComponent::ClassExistsInAssembly(
-        [[maybe_unused]] const AZStd::string& className, 
+        const AZStd::string& className,
         [[maybe_unused]] const AZStd::string& assemblyPath) const
     {
-        // TODO: Implement actual assembly inspection using Coral
-        // For now, return true to allow runtime validation
-        return true;
-    }
-
-    AZStd::vector<AZStd::string> EditorCSharpScriptComponent::GetAvailableScriptClasses() const
-    {
-        AZStd::vector<AZStd::string> scriptClasses;
-        
-        // Add an empty option at the beginning for "no selection"
-        scriptClasses.push_back("");
-        
-        // Use Python to scan for available C# script classes
-        // We capture the result via a static variable since Python execution is synchronous
-        static AZStd::vector<AZStd::string> s_cachedScriptClasses;
-        static bool s_cacheValid = false;
-        
-        // Execute Python to get the list of script classes
-        AzToolsFramework::EditorPythonRunnerRequestBus::Broadcast(
-            &AzToolsFramework::EditorPythonRunnerRequestBus::Events::ExecuteByString,
-            R"(
-import sys
-import os
-import azlmbr.paths
-import azlmbr.bus as bus
-
-# Add O3DESharp Editor/Scripts to Python path if not already there
-o3desharp_scripts_path = os.path.join(azlmbr.paths.engroot, 'Gems', 'O3DESharp', 'Editor', 'Scripts')
-if o3desharp_scripts_path not in sys.path:
-    sys.path.insert(0, o3desharp_scripts_path)
-
-try:
-    import csharp_project_manager
-    manager = csharp_project_manager.get_project_manager()
-    classes = manager.get_available_script_classes()
-    
-    # Store the result in a file that C++ can read
-    import json
-    cache_file = os.path.join(azlmbr.paths.projectroot, 'user', '.csharp_classes_cache.json')
-    os.makedirs(os.path.dirname(cache_file), exist_ok=True)
-    with open(cache_file, 'w') as f:
-        json.dump(classes, f)
-except Exception as e:
-    print(f"Error getting script classes: {e}")
-)",
-            false
-        );
-        
-        // Read the cached result from the file
-        AZ::IO::Path projectPath;
-        if (auto* settingsRegistry = AZ::SettingsRegistry::Get())
+        // assemblyPath is intentionally ignored here: CoralHostManager owns the unified
+        // load context and any class name lookup is satisfied by GetUserType iterating
+        // every currently-loaded user assembly. Per-assembly disambiguation can be
+        // added later if scripts ever live in non-default assemblies.
+        auto* coralHost = AZ::Interface<ICoralHostManager>::Get();
+        if (coralHost == nullptr)
         {
-            settingsRegistry->Get(projectPath.Native(), AZ::SettingsRegistryMergeUtils::FilePathKey_ProjectPath);
+            // Host not initialized yet - we cannot validate. Defer the verdict to the
+            // ValidateScript caller, which surfaces this as "Coral host not initialized".
+            return false;
         }
-        
-        AZ::IO::Path cachePath = projectPath / "user" / ".csharp_classes_cache.json";
-        
-        if (AZ::IO::FileIOBase* fileIO = AZ::IO::FileIOBase::GetInstance())
-        {
-            if (fileIO->Exists(cachePath.c_str()))
-            {
-                AZ::IO::HandleType fileHandle;
-                if (fileIO->Open(cachePath.c_str(), AZ::IO::OpenMode::ModeRead, fileHandle) == AZ::IO::ResultCode::Success)
-                {
-                    AZ::u64 fileSize = 0;
-                    fileIO->Size(fileHandle, fileSize);
-                    
-                    if (fileSize > 0 && fileSize < 1024 * 1024) // Sanity check: max 1MB
-                    {
-                        AZStd::vector<char> buffer(fileSize + 1);
-                        fileIO->Read(fileHandle, buffer.data(), fileSize);
-                        buffer[fileSize] = '\0';
-                        fileIO->Close(fileHandle);
-                        
-                        // Parse JSON array
-                        rapidjson::Document doc;
-                        doc.Parse(buffer.data());
-                        
-                        if (doc.IsArray())
-                        {
-                            for (const auto& item : doc.GetArray())
-                            {
-                                if (item.IsString())
-                                {
-                                    scriptClasses.push_back(item.GetString());
-                                }
-                            }
-                        }
-                    }
-                    else
-                    {
-                        fileIO->Close(fileHandle);
-                    }
-                }
-            }
-        }
-        
-        return scriptClasses;
+
+        return coralHost->GetUserType(className) != nullptr;
     }
 
     void EditorCSharpScriptComponent::Init()
@@ -465,10 +420,13 @@ except Exception as e:
 
     void EditorCSharpScriptComponent::BuildGameEntity(AZ::Entity* gameEntity)
     {
-        // Create the runtime component with our configuration
+        // Create the runtime component with our configuration. Transfer the
+        // exposed-property map so the runtime component can hand values to
+        // the managed instance on Activate.
         CSharpScriptComponentConfig runtimeConfig;
         runtimeConfig.m_scriptClassName = m_config.m_scriptClassName;
         runtimeConfig.m_assemblyPath = m_config.m_assemblyPath;
+        runtimeConfig.m_exposedPropertyValues = m_config.m_exposedPropertyValues;
 
         auto* runtimeComponent = gameEntity->CreateComponent<CSharpScriptComponent>(runtimeConfig);
         AZ_UNUSED(runtimeComponent);

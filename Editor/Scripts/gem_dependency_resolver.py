@@ -161,13 +161,14 @@ class GemDependencyResolver:
     - Generate per-gem binding configurations
     """
 
-    def __init__(self):
+    def __init__(self, engine_path_hint: Optional[Path] = None):
         self._gems: Dict[str, GemDescriptor] = {}
         self._sorted_gems: List[str] = []
         self._class_mappings: Dict[str, str] = {}
         self._mapping_config = GemMappingConfig()
         self._normalized_name_lookup: Dict[str, str] = {}
         self._graph_built = False
+        self._engine_path_hint = engine_path_hint
 
         # Initialize with default mappings
         self._mapping_config.prefix_mappings = dict(DEFAULT_PREFIX_MAPPINGS)
@@ -233,10 +234,18 @@ class GemDependencyResolver:
         ]
         if engine_path:
             search_paths.append(engine_path / "Gems")
+            logger.info(f"[GemDiscovery] Engine root resolved: {engine_path}")
+        else:
+            logger.warning(
+                "[GemDiscovery] Could not resolve engine path. "
+                "Set O3DE_ENGINE_PATH or register the engine in ~/.o3de/o3de_manifest.json"
+            )
 
         # Also check external gem directories from o3de_manifest.json
         external_gem_paths = self._get_external_gem_paths()
         search_paths.extend(external_gem_paths)
+
+        logger.info(f"[GemDiscovery] Search paths: {[str(p) for p in search_paths]}")
 
         # Discover each active gem
         for gem_name in result.active_gem_names:
@@ -600,44 +609,118 @@ class GemDependencyResolver:
     # ============================================================
 
     def _find_engine_path(self, project_path: Path) -> Optional[Path]:
-        """Find the engine path for a project."""
-        # Check for engine.json in parent directories
-        current = project_path.parent
-        for _ in range(5):  # Limit search depth
+        """
+        Find the engine root for a project.
+
+        Resolution order:
+        1. ``engine.json`` in ``project_path`` itself or parent directories (source-engine build)
+        2. ``engine`` field in ``project.json`` matched against ``~/.o3de/o3de_manifest.json``
+        3. ``engines_path`` entries in the manifest that contain an ``engine.json``
+        4. ``O3DE_ENGINE_PATH`` environment variable
+        """
+        # 1. Walk up from the project looking for engine.json (source-engine layout)
+        current = project_path
+        for _ in range(6):  # include project_path itself + 5 parents
             engine_json = current / "engine.json"
             if engine_json.exists():
                 return current
-            current = current.parent
-            if current == current.parent:
+            parent = current.parent
+            if parent == current:
                 break
+            current = parent
 
-        # Check environment variable
+        # 2 & 3. Resolve via o3de_manifest.json
+        manifest = self._load_o3de_manifest()
+        if manifest:
+            # Read the engine name from project.json (O3DE writes this field)
+            project_json_path = project_path / "project.json"
+            target_engine_name: Optional[str] = None
+            if project_json_path.exists():
+                try:
+                    with open(project_json_path, "r", encoding="utf-8") as f:
+                        pdata = json.load(f)
+                    target_engine_name = pdata.get("engine")
+                except Exception:
+                    pass
+
+            # Check registered engines (list of paths that each contain engine.json)
+            engines_list = manifest.get("engines", [])
+            for entry in engines_list:
+                engine_dir = Path(entry) if isinstance(entry, str) else None
+                if engine_dir is None:
+                    continue
+                ej = engine_dir / "engine.json"
+                if ej.exists():
+                    if target_engine_name is None:
+                        # No preference — return first valid engine
+                        return engine_dir
+                    try:
+                        with open(ej, "r", encoding="utf-8") as f:
+                            edata = json.load(f)
+                        if edata.get("engine_name") == target_engine_name:
+                            return engine_dir
+                    except Exception:
+                        pass
+
+            # Check engines_path entries (directories that *contain* engine folders)
+            for engines_root in manifest.get("engines_path", []):
+                root = Path(engines_root)
+                if not root.is_dir():
+                    continue
+                for child in root.iterdir():
+                    ej = child / "engine.json"
+                    if ej.exists():
+                        if target_engine_name is None:
+                            return child
+                        try:
+                            with open(ej, "r", encoding="utf-8") as f:
+                                edata = json.load(f)
+                            if edata.get("engine_name") == target_engine_name:
+                                return child
+                        except Exception:
+                            pass
+
+        # 4. Fallback: environment variable
         engine_path = os.environ.get("O3DE_ENGINE_PATH")
         if engine_path:
             return Path(engine_path)
 
+        # 5. Fallback: engine_path_hint (e.g. derived from this script's location)
+        if self._engine_path_hint and (self._engine_path_hint / "engine.json").exists():
+            return self._engine_path_hint
+
+        return None
+
+    @staticmethod
+    def _load_o3de_manifest() -> Optional[Dict]:
+        """Load ``~/.o3de/o3de_manifest.json`` if it exists."""
+        manifest_path = Path.home() / ".o3de" / "o3de_manifest.json"
+        if manifest_path.exists():
+            try:
+                with open(manifest_path, "r", encoding="utf-8") as f:
+                    return json.load(f)
+            except Exception as e:
+                logger.warning(f"Failed to read o3de_manifest.json: {e}")
         return None
 
     def _get_external_gem_paths(self) -> List[Path]:
         """Get external gem paths from o3de_manifest.json."""
         paths = []
 
-        # Check user home directory for o3de manifest
-        home = Path.home()
-        manifest_path = home / ".o3de" / "o3de_manifest.json"
+        manifest = self._load_o3de_manifest()
+        if manifest:
+            # external_subdirectories — individual gem directories
+            external_subdirs = manifest.get("external_subdirectories", [])
+            for subdir in external_subdirs:
+                path = Path(subdir)
+                if path.exists():
+                    paths.append(path)
 
-        if manifest_path.exists():
-            try:
-                with open(manifest_path, "r", encoding="utf-8") as f:
-                    manifest = json.load(f)
-
-                external_subdirs = manifest.get("external_subdirectories", [])
-                for subdir in external_subdirs:
-                    path = Path(subdir)
-                    if path.exists():
-                        paths.append(path)
-            except Exception as e:
-                logger.warning(f"Failed to read o3de_manifest.json: {e}")
+            # gems_path — directories that *contain* gem folders
+            for gems_root in manifest.get("gems_path", []):
+                root = Path(gems_root)
+                if root.is_dir():
+                    paths.append(root)
 
         return paths
 

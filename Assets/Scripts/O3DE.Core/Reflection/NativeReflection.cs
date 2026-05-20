@@ -48,6 +48,26 @@ namespace O3DE.Reflection
         internal static delegate* unmanaged<NativeString, NativeString, NativeString, NativeString> Reflection_BroadcastEBusEvent;
         internal static delegate* unmanaged<NativeString, NativeString, long, NativeString, NativeString> Reflection_SendEBusEvent;
 
+        // EBus handler authoring (Phase 18-E).
+        //
+        // Reflection_RegisterEBusHandler: tells the C++ side to spin up
+        // a BehaviorEBusHandler bound to the supplied managed token.
+        // When the bus fires an event for this handler, the C++ side
+        // calls back into managed via EBusHandlerRegistry.DispatchEvent.
+        //   args:   busName (string), address (ulong; 0 for broadcast),
+        //           managedToken (long; opaque key the C++ side passes
+        //           back when firing)
+        //   return: a non-zero confirmation handle on success, 0 on
+        //           failure (bus not reflected, address type mismatch,
+        //           etc.). The managed registry uses this to decide
+        //           whether to keep its entry around.
+        internal static delegate* unmanaged<NativeString, ulong, long, long> Reflection_RegisterEBusHandler;
+
+        // Reflection_UnregisterEBusHandler: tears down the
+        // BehaviorEBusHandler associated with the supplied managed
+        // token. No-op on the C++ side if the token isn't known.
+        internal static delegate* unmanaged<long, void> Reflection_UnregisterEBusHandler;
+
         // Object lifecycle
         internal static delegate* unmanaged<NativeString, NativeString, long> Reflection_CreateInstance;
         internal static delegate* unmanaged<NativeString, long, void> Reflection_DestroyInstance;
@@ -204,10 +224,15 @@ namespace O3DE.Reflection
         /// <returns>The result as a dynamic object, or null for void methods</returns>
         public static object? InvokeStaticMethod(string className, string methodName, params object[] args)
         {
-            string argsJson = SerializeArguments(args);
-            string resultJson;
-            unsafe { resultJson = ReflectionInternalCalls.Reflection_InvokeStaticMethod(className, methodName, argsJson); }
-            return DeserializeResult(resultJson);
+            // The native dispatcher (GenericDispatcher::Reflection_InvokeStaticMethod)
+            // currently returns {"error":"Not fully implemented"} unconditionally.
+            // Throwing here makes the gap obvious instead of letting callers parse a
+            // success-shaped JSON envelope that never arrives.
+            throw new NotImplementedException(
+                "NativeReflection.InvokeStaticMethod is not yet implemented in the native " +
+                "dispatcher (see Code/Source/Scripting/Reflection/GenericDispatcher.cpp). " +
+                "Use direct API methods (e.g. Entity / Transform / Physics) for now, or " +
+                "extend the dispatcher to parse argsJson and call BehaviorMethod::Call.");
         }
 
         /// <summary>
@@ -219,22 +244,10 @@ namespace O3DE.Reflection
         /// <returns>The result as a dynamic object, or null for void methods</returns>
         public static object? InvokeInstanceMethod(NativeObject instance, string methodName, params object[] args)
         {
-            if (instance == null || !instance.IsValid)
-            {
-                throw new ArgumentException("Invalid native object instance");
-            }
-
-            string argsJson = SerializeArguments(args);
-            string resultJson;
-            unsafe
-            {
-                resultJson = ReflectionInternalCalls.Reflection_InvokeInstanceMethod(
-                    instance.TypeName,
-                    methodName,
-                    instance.Handle,
-                    argsJson);
-            }
-            return DeserializeResult(resultJson);
+            // Native dispatcher stub returns "Not fully implemented". See InvokeStaticMethod above.
+            throw new NotImplementedException(
+                "NativeReflection.InvokeInstanceMethod is not yet implemented in the native dispatcher. " +
+                "Use direct API methods for now.");
         }
 
         /// <summary>
@@ -245,10 +258,10 @@ namespace O3DE.Reflection
         /// <returns>The result as a dynamic object, or null for void methods</returns>
         public static object? InvokeGlobalMethod(string methodName, params object[] args)
         {
-            string argsJson = SerializeArguments(args);
-            string resultJson;
-            unsafe { resultJson = ReflectionInternalCalls.Reflection_InvokeGlobalMethod(methodName, argsJson); }
-            return DeserializeResult(resultJson);
+            // Native dispatcher stub returns "Not fully implemented". See InvokeStaticMethod above.
+            throw new NotImplementedException(
+                "NativeReflection.InvokeGlobalMethod is not yet implemented in the native dispatcher. " +
+                "Use direct API methods for now.");
         }
 
         #endregion
@@ -264,27 +277,10 @@ namespace O3DE.Reflection
         /// <returns>The property value</returns>
         public static T? GetProperty<T>(NativeObject instance, string propertyName)
         {
-            if (instance == null || !instance.IsValid)
-            {
-                throw new ArgumentException("Invalid native object instance");
-            }
-
-            string resultJson;
-            unsafe
-            {
-                resultJson = ReflectionInternalCalls.Reflection_GetProperty(
-                    instance.TypeName,
-                    propertyName,
-                    instance.Handle);
-            }
-
-            object? result = DeserializeResult(resultJson);
-            if (result == null)
-            {
-                return default;
-            }
-
-            return (T)Convert.ChangeType(result, typeof(T));
+            // Native dispatcher stub. See InvokeStaticMethod above.
+            throw new NotImplementedException(
+                "NativeReflection.GetProperty is not yet implemented in the native dispatcher. " +
+                "Use direct API methods for now.");
         }
 
         /// <summary>
@@ -295,26 +291,10 @@ namespace O3DE.Reflection
         /// <param name="value">The value to set</param>
         public static void SetProperty(NativeObject instance, string propertyName, object value)
         {
-            if (instance == null || !instance.IsValid)
-            {
-                throw new ArgumentException("Invalid native object instance");
-            }
-
-            string valueJson = SerializeValue(value);
-            bool success;
-            unsafe
-            {
-                success = ReflectionInternalCalls.Reflection_SetProperty(
-                    instance.TypeName,
-                    propertyName,
-                    instance.Handle,
-                    valueJson);
-            }
-
-            if (!success)
-            {
-                throw new InvalidOperationException($"Failed to set property {instance.TypeName}.{propertyName}");
-            }
+            // Native dispatcher stub. See InvokeStaticMethod above.
+            throw new NotImplementedException(
+                "NativeReflection.SetProperty is not yet implemented in the native dispatcher. " +
+                "Use direct API methods for now.");
         }
 
         /// <summary>
@@ -325,14 +305,9 @@ namespace O3DE.Reflection
         /// <returns>The property value</returns>
         public static T? GetGlobalProperty<T>(string propertyName)
         {
-            string resultJson;
-            unsafe { resultJson = ReflectionInternalCalls.Reflection_GetGlobalProperty(propertyName); }
-            object? result = DeserializeResult(resultJson);
-            if (result == null)
-            {
-                return default;
-            }
-            return (T)Convert.ChangeType(result, typeof(T));
+            // Native dispatcher stub. See InvokeStaticMethod above.
+            throw new NotImplementedException(
+                "NativeReflection.GetGlobalProperty is not yet implemented in the native dispatcher.");
         }
 
         /// <summary>
@@ -342,14 +317,9 @@ namespace O3DE.Reflection
         /// <param name="value">The value to set</param>
         public static void SetGlobalProperty(string propertyName, object value)
         {
-            string valueJson = SerializeValue(value);
-            bool success;
-            unsafe { success = ReflectionInternalCalls.Reflection_SetGlobalProperty(propertyName, valueJson); }
-
-            if (!success)
-            {
-                throw new InvalidOperationException($"Failed to set global property {propertyName}");
-            }
+            // Native dispatcher stub. See InvokeStaticMethod above.
+            throw new NotImplementedException(
+                "NativeReflection.SetGlobalProperty is not yet implemented in the native dispatcher.");
         }
 
         #endregion
@@ -369,6 +339,38 @@ namespace O3DE.Reflection
             string resultJson;
             unsafe { resultJson = ReflectionInternalCalls.Reflection_BroadcastEBusEvent(busName, eventName, argsJson); }
             return DeserializeResult(resultJson);
+        }
+
+        /// <summary>
+        /// Phase 18-A typed variant: broadcasts the event AND coerces the
+        /// dispatcher's return value into T. Throws InvalidCastException
+        /// when the native side returned an incompatible type (rather
+        /// than the silent null the untyped overload returns), so callers
+        /// catch shape mismatches at the call site.
+        /// </summary>
+        public static T? BroadcastResultEBusEvent<T>(string busName, string eventName, params object[] args)
+        {
+            object? raw = BroadcastEBusEvent(busName, eventName, args);
+            if (raw is null) { return default; }
+            if (raw is T typed) { return typed; }
+            throw new InvalidCastException(
+                $"BroadcastResultEBusEvent<{typeof(T).Name}>('{busName}', '{eventName}') " +
+                $"returned a {raw.GetType().Name}; expected {typeof(T).Name}.");
+        }
+
+        /// <summary>
+        /// Phase 18-A typed variant of the addressed send. Same shape as
+        /// BroadcastResultEBusEvent but routes to handlers connected at
+        /// the supplied bus id.
+        /// </summary>
+        public static T? SendResultEBusEvent<T>(string busName, string eventName, ulong busId, params object[] args)
+        {
+            object? raw = SendEBusEvent(busName, eventName, busId, args);
+            if (raw is null) { return default; }
+            if (raw is T typed) { return typed; }
+            throw new InvalidCastException(
+                $"SendResultEBusEvent<{typeof(T).Name}>('{busName}', '{eventName}', busId={busId}) " +
+                $"returned a {raw.GetType().Name}; expected {typeof(T).Name}.");
         }
 
         /// <summary>
@@ -471,6 +473,20 @@ namespace O3DE.Reflection
             return result;
         }
 
+        /// <summary>
+        /// Serialize a list of arguments into the JSON array shape the
+        /// Phase 18-A C++ marshaler expects. Each arg becomes a bare
+        /// JSON value (number, string, array of numbers, etc.) rather
+        /// than a {type, value} envelope - the C++ side knows the
+        /// target type from the BehaviorMethod's parameter description,
+        /// so the type tag is redundant.
+        ///
+        /// Pre-Phase-18 the serializer wrapped every value to work
+        /// around the broken stub dispatch that ignored types entirely.
+        /// With the real marshaler in
+        /// O3DESharp::Marshaling::JsonValueToBehaviorParameter we can
+        /// drop the envelope.
+        /// </summary>
         private static string SerializeArguments(object[] args)
         {
             if (args == null || args.Length == 0)
@@ -478,7 +494,7 @@ namespace O3DE.Reflection
                 return "[]";
             }
 
-            var elements = new List<object>();
+            var elements = new List<object?>();
             foreach (var arg in args)
             {
                 elements.Add(SerializeArgumentToObject(arg));
@@ -487,26 +503,34 @@ namespace O3DE.Reflection
             return JsonSerializer.Serialize(elements);
         }
 
-        private static object SerializeArgumentToObject(object arg)
+        private static object? SerializeArgumentToObject(object arg)
         {
-            if (arg == null)
-            {
-                return new { type = "null" };
-            }
-
+            if (arg is null) { return null; }
             return arg switch
             {
-                bool b => new { type = "bool", value = b },
-                int i => new { type = "int32", value = i },
-                long l => new { type = "int64", value = l },
-                float f => new { type = "float", value = f },
-                double d => new { type = "double", value = d },
-                string s => new { type = "string", value = s },
-                Vector3 v => new { type = "vector3", x = v.X, y = v.Y, z = v.Z },
-                Quaternion q => new { type = "quaternion", x = q.X, y = q.Y, z = q.Z, w = q.W },
-                Entity e => new { type = "entityid", value = e.Id },
-                NativeObject no => new { type = "object", handle = no.Handle, typeName = no.TypeName },
-                _ => new { type = "unknown", value = arg.ToString() }
+                bool b      => b,
+                sbyte sb    => (int)sb,
+                byte bv     => (int)bv,
+                short sv    => (int)sv,
+                ushort usv  => (int)usv,
+                int i       => i,
+                uint ui     => (long)ui,
+                long l      => l,
+                ulong ul    => ul,
+                float f     => f,
+                double d    => d,
+                string s    => s,
+                // Math types serialize as JSON arrays; C++ side maps the
+                // 3- vs 4-element array shape to Vector3 / Vector4 /
+                // Quaternion / Color based on the target parameter type.
+                Vector3 v   => new[] { v.X, v.Y, v.Z },
+                Quaternion q => new[] { q.X, q.Y, q.Z, q.W },
+                // Entity wrapper exposes its underlying EntityId u64,
+                // which the C++ side reads back via JsonValueToBehaviorParameter
+                // when the target parameter is AZ::EntityId.
+                Entity e    => e.Id,
+                NativeObject no => no.Handle,
+                _           => arg.ToString()
             };
         }
 
@@ -515,6 +539,17 @@ namespace O3DE.Reflection
             return JsonSerializer.Serialize(SerializeArgumentToObject(value));
         }
 
+        /// <summary>
+        /// Deserialize the JSON result envelope produced by Phase 18-A's
+        /// GenericDispatcher::DispatchEBusEvent and friends. The envelope
+        /// shapes are:
+        ///   {"error": "..."}     - native dispatch reported an error
+        ///   {"ok": true}         - void-returning event succeeded
+        ///   {"result": <value>}  - non-void result; value is bare JSON
+        /// Values follow the §4 marshaling table: bool / number / string
+        /// / array-of-numbers (Vec3 / Quat / Color). Caller is responsible
+        /// for casting the returned object to the expected type.
+        /// </summary>
         private static object? DeserializeResult(string json)
         {
             if (string.IsNullOrEmpty(json))
@@ -527,7 +562,6 @@ namespace O3DE.Reflection
                 using JsonDocument doc = JsonDocument.Parse(json);
                 JsonElement root = doc.RootElement;
 
-                // Check for error
                 if (root.TryGetProperty("error", out JsonElement errorElement))
                 {
                     string? errorMessage = errorElement.GetString();
@@ -535,52 +569,73 @@ namespace O3DE.Reflection
                     return null;
                 }
 
-                // Check for typed result
-                if (root.TryGetProperty("type", out JsonElement typeElement))
+                if (root.TryGetProperty("ok", out _))
                 {
-                    string? type = typeElement.GetString();
-
-                    return type switch
-                    {
-                        "void" => null,
-                        "bool" => root.GetProperty("value").GetBoolean(),
-                        "int32" => root.GetProperty("value").GetInt32(),
-                        "int64" => root.GetProperty("value").GetInt64(),
-                        "float" => root.GetProperty("value").GetSingle(),
-                        "double" => root.GetProperty("value").GetDouble(),
-                        "string" => root.GetProperty("value").GetString(),
-                        "vector3" => new Vector3(
-                            root.GetProperty("x").GetSingle(),
-                            root.GetProperty("y").GetSingle(),
-                            root.GetProperty("z").GetSingle()),
-                        "quaternion" => new Quaternion(
-                            root.GetProperty("x").GetSingle(),
-                            root.GetProperty("y").GetSingle(),
-                            root.GetProperty("z").GetSingle(),
-                            root.GetProperty("w").GetSingle()),
-                        "entityid" => new Entity((ulong)root.GetProperty("value").GetInt64()),
-                        "object" => new NativeObject(
-                            root.GetProperty("typeName").GetString() ?? "Unknown",
-                            root.GetProperty("handle").GetInt64()),
-                        _ => null
-                    };
+                    return null; // void return
                 }
 
-                // Try to return primitive value directly
-                return root.ValueKind switch
+                if (root.TryGetProperty("result", out JsonElement resultElement))
                 {
-                    JsonValueKind.True => true,
-                    JsonValueKind.False => false,
-                    JsonValueKind.Number => root.TryGetInt64(out long l) ? l : root.GetDouble(),
-                    JsonValueKind.String => root.GetString(),
-                    _ => null
-                };
+                    return UnpackBareJsonValue(resultElement);
+                }
+
+                // Older callers (or future ones that bypass the envelope)
+                // can still pass bare values - unpack directly.
+                return UnpackBareJsonValue(root);
             }
             catch (JsonException ex)
             {
                 Debug.LogError($"Failed to deserialize result: {ex.Message}");
                 return null;
             }
+        }
+
+        /// <summary>
+        /// Map a bare JSON value back into a managed object that matches
+        /// §4's marshaling table. Math types come back as float arrays
+        /// (3 or 4 elements); reconstruct the wrapper based on length.
+        /// </summary>
+        private static object? UnpackBareJsonValue(JsonElement value)
+        {
+            return value.ValueKind switch
+            {
+                JsonValueKind.True   => true,
+                JsonValueKind.False  => false,
+                JsonValueKind.String => value.GetString(),
+                JsonValueKind.Number => value.TryGetInt64(out long l) ? l : value.GetDouble(),
+                JsonValueKind.Array  => UnpackJsonArray(value),
+                JsonValueKind.Null   => null,
+                _ => null
+            };
+        }
+
+        private static object? UnpackJsonArray(JsonElement array)
+        {
+            int len = array.GetArrayLength();
+            if (len == 3 || len == 4)
+            {
+                float[] floats = new float[len];
+                int i = 0;
+                bool allNumbers = true;
+                foreach (var elt in array.EnumerateArray())
+                {
+                    if (elt.ValueKind != JsonValueKind.Number) { allNumbers = false; break; }
+                    floats[i++] = elt.GetSingle();
+                }
+                if (allNumbers)
+                {
+                    if (len == 3) return new Vector3(floats[0], floats[1], floats[2]);
+                    if (len == 4) return new Quaternion(floats[0], floats[1], floats[2], floats[3]);
+                }
+            }
+            // Generic array - hand back as List<object?>; users with
+            // typed expectations should use BroadcastResultEBusEvent<T>.
+            var list = new List<object?>(len);
+            foreach (var elt in array.EnumerateArray())
+            {
+                list.Add(UnpackBareJsonValue(elt));
+            }
+            return list;
         }
 
         #endregion

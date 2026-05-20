@@ -1,0 +1,56 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    Smoke-test consumer for the O3DESharp Roslyn source generator.
+
+    Purpose: drive the [EBus] / [EBusHandler] generator pipeline end-to-
+    end without needing the full engine build, so we can validate the
+    EMITTED code shape against expected output. The .g.cs files end up
+    in obj/<config>/<tfm>/generated/O3DESharp.SourceGenerators/ ; CI
+    can grep them for the expected unmarshal calls.
+
+    This project is INTENTIONALLY isolated from the engine slnx - it's
+    here only to give the generator something to chew on. It is NOT
+    a member of the engine solution, and `dotnet build` from this
+    directory is the only way it gets exercised.
+  -->
+
+  <PropertyGroup>
+    <TargetFramework>net9.0</TargetFramework>
+    <ImplicitUsings>disable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <LangVersion>latest</LangVersion>
+    <OutputType>Library</OutputType>
+    <AssemblyName>O3DESharp.SourceGenerators.Smoke</AssemblyName>
+    <RootNamespace>O3DESharp.SourceGenerators.Smoke</RootNamespace>
+
+    <!-- Emit the generated source files to a discoverable path so
+         a human can diff the actual emit against expectations without
+         spelunking the obj tree. The matching Compile Remove below
+         keeps the persisted files from being re-fed into compilation
+         (the analyzer already streams the .g.cs into the build; if
+         the SDK ALSO picked them up by its default "compile all .cs"
+         rule we'd get CS0111 duplicate-definition errors). -->
+    <EmitCompilerGeneratedFiles>true</EmitCompilerGeneratedFiles>
+    <CompilerGeneratedFilesOutputPath>$(MSBuildThisFileDirectory)generated</CompilerGeneratedFilesOutputPath>
+
+    <Configurations>Debug;Profile;Release</Configurations>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- Exclude the persisted generator output dir from default
+         Compile globs. See comment on EmitCompilerGeneratedFiles. -->
+    <Compile Remove="generated/**/*.cs" />
+    <None Include="generated/**/*.cs" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\..\Assets\Scripts\O3DE.Core\O3DE.Core.csproj">
+      <Private>false</Private>
+    </ProjectReference>
+    <ProjectReference Include="..\SourceGenerators\O3DESharp.SourceGenerators.csproj"
+                      OutputItemType="Analyzer"
+                      ReferenceOutputAssembly="false" />
+  </ItemGroup>
+
+</Project>

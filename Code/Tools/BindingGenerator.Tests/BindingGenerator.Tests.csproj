@@ -1,0 +1,61 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <IsPackable>false</IsPackable>
+    <IsTestProject>true</IsTestProject>
+    <RootNamespace>O3DESharp.BindingGenerator.Tests</RootNamespace>
+  </PropertyGroup>
+
+  <!--
+    Debug-mode build settings tuned for managed-debugger attach when
+    debugging the test runner. Matches the gem-wide convention from
+    O3DE.Core.csproj - DebugType=full + loose-on-disk assemblies.
+  -->
+  <PropertyGroup Condition="'$(Configuration)' == 'Debug'">
+    <Optimize>false</Optimize>
+    <DebugSymbols>true</DebugSymbols>
+    <DebugType>full</DebugType>
+    <!-- Force assemblies to stay loose on disk for the debugger -->
+    <PublishSingleFile>false</PublishSingleFile>
+    <EnableCompressionInSingleFile>false</EnableCompressionInSingleFile>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="coverlet.collector" Version="6.0.0">
+      <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
+      <PrivateAssets>all</PrivateAssets>
+    </PackageReference>
+    <PackageReference Include="FluentAssertions" Version="6.12.0" />
+    <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.8.0" />
+    <PackageReference Include="xunit" Version="2.6.2" />
+    <PackageReference Include="xunit.runner.visualstudio" Version="2.5.4">
+      <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
+      <PrivateAssets>all</PrivateAssets>
+    </PackageReference>
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\BindingGenerator\O3DESharp.BindingGenerator\O3DESharp.BindingGenerator.csproj" />
+  </ItemGroup>
+
+  <!--
+    Compile in the O3DE.Core ExposedProperty source so we can unit-test the
+    helper APIs without spinning up the full Coral runtime. The real
+    O3DE.Core.dll cannot be referenced directly here because it depends on
+    InternalCalls function-pointer fields that are only populated when Coral
+    loads the assembly. A tiny Debug stub (Stubs/DebugStub.cs in this project)
+    satisfies the one reference ExposedProperty.cs has on Debug.LogError.
+  -->
+  <ItemGroup>
+    <Compile Include="..\..\..\Assets\Scripts\O3DE.Core\ExposedProperty.cs" Link="O3DE.Core\ExposedProperty.cs" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Using Include="Xunit" />
+    <Using Include="FluentAssertions" />
+  </ItemGroup>
+
+</Project>

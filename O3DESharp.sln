@@ -1,0 +1,54 @@
+Microsoft Visual Studio Solution File, Format Version 12.00
+# Visual Studio Version 17
+VisualStudioVersion = 17.5.2.0
+MinimumVisualStudioVersion = 10.0.40219.1
+Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "Assets", "Assets", "{F9C182FD-9162-FD69-8F9D-F6E4642E19CF}"
+EndProject
+Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "Code", "Code", "{314C6247-30EA-3492-19B6-DF847E3B326F}"
+EndProject
+Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "Scripts", "Scripts", "{FFA1169A-26DF-0A8A-0AC2-DBE3A54F0F65}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "O3DE.Core", "Assets\Scripts\O3DE.Core\O3DE.Core.csproj", "{1F4FBB80-321E-1C5A-93DC-B45FE163C6C6}"
+EndProject
+Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "Tools", "Tools", "{C10F94A1-9ADB-A086-F1A9-9C7AFF218AF3}"
+EndProject
+Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "BindingGenerator", "BindingGenerator", "{1CFF9C76-BB1C-3DB3-5B47-CFF48CD4C28C}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "O3DESharp.BindingGenerator", "Code\Tools\BindingGenerator\O3DESharp.BindingGenerator\O3DESharp.BindingGenerator.csproj", "{6AF683AE-6D5D-1FA7-5DF8-0EAABCF0CBC4}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "O3DESharp.BindingGenerator.Tasks", "Code\Tools\BindingGenerator\O3DESharp.BindingGenerator.Tasks\O3DESharp.BindingGenerator.Tasks.csproj", "{A1B2C3D4-E5F6-7890-ABCD-EF1234567890}"
+EndProject
+Global
+	GlobalSection(SolutionConfigurationPlatforms) = preSolution
+		Debug|Any CPU = Debug|Any CPU
+		Release|Any CPU = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(ProjectConfigurationPlatforms) = postSolution
+		{1F4FBB80-321E-1C5A-93DC-B45FE163C6C6}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{1F4FBB80-321E-1C5A-93DC-B45FE163C6C6}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{1F4FBB80-321E-1C5A-93DC-B45FE163C6C6}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{1F4FBB80-321E-1C5A-93DC-B45FE163C6C6}.Release|Any CPU.Build.0 = Release|Any CPU
+		{6AF683AE-6D5D-1FA7-5DF8-0EAABCF0CBC4}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{6AF683AE-6D5D-1FA7-5DF8-0EAABCF0CBC4}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{6AF683AE-6D5D-1FA7-5DF8-0EAABCF0CBC4}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{6AF683AE-6D5D-1FA7-5DF8-0EAABCF0CBC4}.Release|Any CPU.Build.0 = Release|Any CPU
+		{A1B2C3D4-E5F6-7890-ABCD-EF1234567890}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{A1B2C3D4-E5F6-7890-ABCD-EF1234567890}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{A1B2C3D4-E5F6-7890-ABCD-EF1234567890}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{A1B2C3D4-E5F6-7890-ABCD-EF1234567890}.Release|Any CPU.Build.0 = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(SolutionProperties) = preSolution
+		HideSolutionNode = FALSE
+	EndGlobalSection
+	GlobalSection(NestedProjects) = preSolution
+		{FFA1169A-26DF-0A8A-0AC2-DBE3A54F0F65} = {F9C182FD-9162-FD69-8F9D-F6E4642E19CF}
+		{1F4FBB80-321E-1C5A-93DC-B45FE163C6C6} = {FFA1169A-26DF-0A8A-0AC2-DBE3A54F0F65}
+		{C10F94A1-9ADB-A086-F1A9-9C7AFF218AF3} = {314C6247-30EA-3492-19B6-DF847E3B326F}
+		{1CFF9C76-BB1C-3DB3-5B47-CFF48CD4C28C} = {C10F94A1-9ADB-A086-F1A9-9C7AFF218AF3}
+		{6AF683AE-6D5D-1FA7-5DF8-0EAABCF0CBC4} = {1CFF9C76-BB1C-3DB3-5B47-CFF48CD4C28C}
+		{A1B2C3D4-E5F6-7890-ABCD-EF1234567890} = {1CFF9C76-BB1C-3DB3-5B47-CFF48CD4C28C}
+	EndGlobalSection
+	GlobalSection(ExtensibilityGlobals) = postSolution
+		SolutionGuid = {00C1BEDF-F570-4CCA-986C-79350B909674}
+	EndGlobalSection
+EndGlobal

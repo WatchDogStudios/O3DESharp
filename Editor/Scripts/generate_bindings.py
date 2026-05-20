@@ -5,51 +5,57 @@
 # SPDX-License-Identifier: Apache-2.0 OR MIT
 #
 """
-O3DESharp C# Binding Generation Script
+O3DESharp C# Binding Generation Script - ClangSharp Orchestrator
 
-This is the main entry point for generating C# bindings from O3DE's BehaviorContext.
-It can be run from the command line or invoked from the O3DE Editor.
+This script orchestrates the ClangSharp-based binding generator tool.
+It replaces the deprecated Python-based BehaviorContext generator.
 
 The binding generation workflow:
-1. Export reflection data from C++ BehaviorContext to JSON (via Editor or standalone tool)
-2. Discover gems from the project
-3. Generate C# wrapper classes organized by gem
+1. Invoke ClangSharp tool to parse C++ headers
+2. Generate C# wrapper classes organized by gem
+3. Generate C++ Coral registration code
 4. Generate solution/project files
 
 Usage:
     # Generate bindings for a project
-    python generate_bindings.py --project /path/to/project --reflection-data reflection.json
+    python generate_bindings.py --project /path/to/project
 
     # Generate bindings for specific gems
-    python generate_bindings.py --project /path/to/project --reflection-data reflection.json --gems PhysX Atom
+    python generate_bindings.py --project /path/to/project --gems PhysX Atom
 
-    # Generate core bindings only
-    python generate_bindings.py --reflection-data reflection.json --core-only
+    # Force regeneration (bypass incremental build)
+    python generate_bindings.py --project /path/to/project --force-regenerate
 
     # Use from O3DE Editor Python console
     import generate_bindings
-    generate_bindings.generate_all_bindings("/path/to/output")
+    generate_bindings.generate_bindings_for_project("/path/to/project")
 """
 
 import argparse
-import json
 import logging
 import os
+import subprocess
 import sys
+from collections import defaultdict
 from pathlib import Path
-from typing import List, Optional
+from typing import Dict, List, Optional
 
 # Add this directory to the path for local imports
 script_dir = Path(__file__).parent
 if str(script_dir) not in sys.path:
     sys.path.insert(0, str(script_dir))
 
+# Auto-detect engine root from this script's location:
+#   <engine>/Gems/O3DESharp/Editor/Scripts/generate_bindings.py
+_SCRIPT_ENGINE_ROOT: Optional[Path] = None
+_candidate = script_dir.parent.parent.parent.parent  # 4 levels up
+if (_candidate / "engine.json").exists():
+    _SCRIPT_ENGINE_ROOT = _candidate
+
 from csharp_binding_generator import (
     BindingGeneratorConfig,
     BindingGeneratorResult,
-    CSharpBindingGenerator,
-    ReflectionData,
-    load_reflection_data_from_json,
+    ClangSharpInvoker,
 )
 from gem_dependency_resolver import GemDependencyResolver, GemResolutionResult
 
@@ -57,434 +63,314 @@ from gem_dependency_resolver import GemDependencyResolver, GemResolutionResult
 logger = logging.getLogger("O3DESharp.GenerateBindings")
 
 
-class BindingGenerationOrchestrator:
-    """
-    Orchestrates the complete binding generation workflow.
-
-    This class coordinates between the reflection data, gem resolver,
-    and C# generator to produce organized bindings.
-    """
-
-    def __init__(self):
-        self.config = BindingGeneratorConfig()
-        self.gem_resolver = GemDependencyResolver()
-        self.generator = CSharpBindingGenerator()
-        self.reflection_data: Optional[ReflectionData] = None
-
-    def configure(
-        self,
-        output_directory: str = "Generated/CSharp",
-        root_namespace: str = "O3DE.Generated",
-        generate_core: bool = True,
-        generate_gems: bool = True,
-        separate_gem_directories: bool = True,
-        generate_per_gem_projects: bool = False,
-        include_gems: Optional[List[str]] = None,
-        exclude_gems: Optional[List[str]] = None,
-        target_framework: str = "net8.0",
-    ) -> None:
-        """
-        Configure the binding generation.
-
-        Args:
-            output_directory: Root output directory for generated files
-            root_namespace: Root C# namespace for generated code
-            generate_core: Whether to generate core O3DE bindings
-            generate_gems: Whether to generate per-gem bindings
-            separate_gem_directories: Create separate directories per gem
-            generate_per_gem_projects: Generate separate .csproj per gem
-            include_gems: List of gems to include (None = all active)
-            exclude_gems: List of gems to exclude
-            target_framework: Target .NET framework version
-        """
-        self.config.output_directory = output_directory
-        self.config.root_namespace = root_namespace
-        self.config.generate_core_bindings = generate_core
-        self.config.generate_gem_bindings = generate_gems
-        self.config.separate_gem_directories = separate_gem_directories
-        self.config.generate_per_gem_projects = generate_per_gem_projects
-        self.config.include_gems = include_gems or []
-        self.config.exclude_gems = exclude_gems or []
-        self.config.target_framework = target_framework
-
-    def load_reflection_data(self, json_path: str) -> bool:
-        """
-        Load reflection data from a JSON file.
-
-        Args:
-            json_path: Path to the reflection data JSON file
-
-        Returns:
-            True if successful
-        """
-        try:
-            self.reflection_data = load_reflection_data_from_json(json_path)
-            logger.info(
-                f"Loaded reflection data: {len(self.reflection_data.classes)} classes, "
-                f"{len(self.reflection_data.ebuses)} EBuses"
-            )
-            return True
-        except Exception as e:
-            logger.error(f"Failed to load reflection data: {e}")
-            return False
-
-    def discover_gems_from_project(self, project_path: str) -> GemResolutionResult:
-        """
-        Discover gems from an O3DE project.
-
-        Args:
-            project_path: Path to the project root
-
-        Returns:
-            GemResolutionResult with discovered gems
-        """
-        result = self.gem_resolver.discover_gems_from_project(project_path)
-        if result.success:
-            logger.info(f"Discovered {len(result.active_gem_names)} active gems")
-        else:
-            logger.error(f"Failed to discover gems: {result.error_message}")
-        return result
-
-    def discover_gems_from_engine(self, engine_path: str) -> GemResolutionResult:
-        """
-        Discover gems from an O3DE engine installation.
-
-        Args:
-            engine_path: Path to the engine root
-
-        Returns:
-            GemResolutionResult with discovered gems
-        """
-        result = self.gem_resolver.discover_gems_from_engine(engine_path)
-        if result.success:
-            logger.info(f"Discovered {len(result.active_gem_names)} gems from engine")
-        else:
-            logger.error(f"Failed to discover gems: {result.error_message}")
-        return result
-
-    def generate(self) -> BindingGeneratorResult:
-        """
-        Generate bindings using the current configuration and loaded data.
-
-        Returns:
-            BindingGeneratorResult with statistics
-        """
-        if self.reflection_data is None:
-            logger.error("No reflection data loaded. Call load_reflection_data first.")
-            return BindingGeneratorResult(
-                success=False, error_message="No reflection data loaded"
-            )
-
-        # Update generator config
-        self.generator.config = self.config
-
-        # Generate bindings
-        gem_resolver = self.gem_resolver if self.config.generate_gem_bindings else None
-        result = self.generator.generate_from_reflection_data(
-            self.reflection_data, gem_resolver
-        )
-
-        if result.success:
-            logger.info(
-                f"Generated {result.classes_generated} classes, "
-                f"{result.ebuses_generated} EBuses"
-            )
-        else:
-            logger.error(f"Generation failed: {result.error_message}")
-
-        return result
-
-    def generate_for_gem(self, gem_name: str) -> BindingGeneratorResult:
-        """
-        Generate bindings for a specific gem and its dependencies.
-
-        Args:
-            gem_name: Name of the gem to generate bindings for
-
-        Returns:
-            BindingGeneratorResult with statistics
-        """
-        if self.reflection_data is None:
-            logger.error("No reflection data loaded. Call load_reflection_data first.")
-            return BindingGeneratorResult(
-                success=False, error_message="No reflection data loaded"
-            )
-
-        self.generator.config = self.config
-        result = self.generator.generate_for_gem(
-            self.reflection_data, self.gem_resolver, gem_name
-        )
-
-        if result.success:
-            logger.info(
-                f"Generated bindings for {gem_name}: "
-                f"{result.classes_generated} classes, {result.ebuses_generated} EBuses"
-            )
-        else:
-            logger.error(f"Generation failed: {result.error_message}")
-
-        return result
-
-    def write_files(self) -> int:
-        """
-        Write all generated files to disk.
-
-        Returns:
-            Number of files written
-        """
-        return self.generator.write_files()
-
-    def get_generated_files(self) -> List[str]:
-        """Get list of generated file paths."""
-        return [f.relative_path for f in self.generator.get_generated_files()]
-
-
 # ============================================================
-# Convenience Functions for Editor Integration
+# Convenience Functions for __init__.py exports
 # ============================================================
 
 
 def generate_all_bindings(
-    output_directory: str,
-    reflection_data_path: Optional[str] = None,
-    project_path: Optional[str] = None,
+    project_path: str,
+    output_directory: str = None,
+    force_regenerate: bool = False,
+    engine_path: Optional[str] = None,
 ) -> BindingGeneratorResult:
     """
-    Generate all C# bindings (core + gems).
+    Generate all C# bindings for a project.
+
+    Args:
+        project_path: Path to the O3DE project root
+        output_directory: Optional output directory
+        force_regenerate: Bypass incremental build cache
+        engine_path: Optional explicit engine root path
+
+    Returns:
+        BindingGeneratorResult with generation statistics
+    """
+    config = BindingGeneratorConfig()
+    if output_directory:
+        config.output_directory = output_directory
+    else:
+        config.output_directory = str(Path(project_path) / "Generated" / "CSharp")
+    config.incremental_build = not force_regenerate
+
+    return generate_bindings_for_project(project_path, config, force_regenerate,
+                                         engine_path=engine_path)
+
+
+def generate_gem_bindings(
+    project_path: str,
+    gem_names: List[str],
+    output_directory: str = None,
+    force_regenerate: bool = False
+) -> BindingGeneratorResult:
+    """
+    Generate C# bindings for specific gems.
+    
+    Args:
+        project_path: Path to the O3DE project root
+        gem_names: List of gem names to generate bindings for
+        output_directory: Optional output directory
+        force_regenerate: Bypass incremental build cache
+        
+    Returns:
+        BindingGeneratorResult with generation statistics
+    """
+    config = BindingGeneratorConfig()
+    config.include_gems = gem_names
+    if output_directory:
+        config.output_directory = output_directory
+    else:
+        config.output_directory = str(Path(project_path) / "Generated" / "CSharp")
+    config.incremental_build = not force_regenerate
+    
+    return generate_bindings_for_project(project_path, config, force_regenerate)
+
+
+def generate_core_bindings(
+    project_path: str,
+    output_directory: str = None,
+    force_regenerate: bool = False
+) -> BindingGeneratorResult:
+    """
+    Generate core O3DE bindings (no gems).
+    
+    Args:
+        project_path: Path to the O3DE project root
+        output_directory: Optional output directory
+        force_regenerate: Bypass incremental build cache
+        
+    Returns:
+        BindingGeneratorResult with generation statistics
+    """
+    config = BindingGeneratorConfig()
+    config.generate_core = True
+    config.generate_gems = False
+    if output_directory:
+        config.output_directory = output_directory
+    else:
+        config.output_directory = str(Path(project_path) / "Generated" / "CSharp")
+    config.incremental_build = not force_regenerate
+    
+    return generate_bindings_for_project(project_path, config, force_regenerate)
+
+
+# ============================================================
+# Main Orchestration Functions
+# ============================================================
+
+
+def generate_bindings_for_project(
+    project_path: str,
+    config: Optional[BindingGeneratorConfig] = None,
+    force_regenerate: bool = False,
+    engine_path: Optional[str] = None,
+) -> BindingGeneratorResult:
+    """
+    Generate C# bindings for an O3DE project using the ClangSharp tool.
 
     This is the main function to call from the O3DE Editor or scripts.
 
     Args:
-        output_directory: Where to write generated files
-        reflection_data_path: Path to reflection data JSON (optional if using live reflection)
-        project_path: Path to the project for gem discovery (optional)
+        project_path: Path to the O3DE project root
+        config: Binding generation configuration (uses defaults if None)
+        force_regenerate: If True, bypass incremental build cache
+        engine_path: Optional explicit engine root path
 
     Returns:
-        BindingGeneratorResult with statistics
+        BindingGeneratorResult with generation statistics
     """
-    orchestrator = BindingGenerationOrchestrator()
-    orchestrator.configure(output_directory=output_directory)
+    logger.info(f"Generating C# bindings for project: {project_path}")
 
-    # Load reflection data
-    if reflection_data_path:
-        if not orchestrator.load_reflection_data(reflection_data_path):
-            return BindingGeneratorResult(
-                success=False, error_message="Failed to load reflection data"
-            )
-    else:
-        # Try to get reflection data from the editor
-        reflection_data = _get_live_reflection_data()
-        if reflection_data:
-            orchestrator.reflection_data = reflection_data
-        else:
-            return BindingGeneratorResult(
-                success=False,
-                error_message="No reflection data available. Provide a JSON path or run in Editor.",
-            )
+    # Create config with defaults if not provided
+    if config is None:
+        config = BindingGeneratorConfig()
+        config.output_directory = str(Path(project_path) / "Generated" / "CSharp")
+        config.incremental_build = not force_regenerate
 
-    # Discover gems if project path provided
-    if project_path:
-        gem_result = orchestrator.discover_gems_from_project(project_path)
-        if not gem_result.success:
-            logger.warning(f"Gem discovery failed: {gem_result.error_message}")
+    # Resolve engine path: explicit > auto-detected from script location
+    resolved_engine = engine_path or (str(_SCRIPT_ENGINE_ROOT) if _SCRIPT_ENGINE_ROOT else None)
 
-    # Generate and write
-    result = orchestrator.generate()
-    if result.success:
-        files_written = orchestrator.write_files()
-        result.files_written = files_written
-        logger.info(f"Wrote {files_written} files to {output_directory}")
-
-    return result
-
-
-def generate_gem_bindings(
-    gem_name: str,
-    output_directory: str,
-    reflection_data_path: Optional[str] = None,
-    project_path: Optional[str] = None,
-) -> BindingGeneratorResult:
-    """
-    Generate C# bindings for a specific gem.
-
-    Args:
-        gem_name: Name of the gem to generate bindings for
-        output_directory: Where to write generated files
-        reflection_data_path: Path to reflection data JSON
-        project_path: Path to the project for gem discovery
-
-    Returns:
-        BindingGeneratorResult with statistics
-    """
-    orchestrator = BindingGenerationOrchestrator()
-    orchestrator.configure(
-        output_directory=output_directory,
-        generate_core=False,
-        generate_gems=True,
-    )
-
-    # Load reflection data
-    if reflection_data_path:
-        if not orchestrator.load_reflection_data(reflection_data_path):
-            return BindingGeneratorResult(
-                success=False, error_message="Failed to load reflection data"
-            )
-    else:
-        reflection_data = _get_live_reflection_data()
-        if reflection_data:
-            orchestrator.reflection_data = reflection_data
-        else:
-            return BindingGeneratorResult(
-                success=False, error_message="No reflection data available"
-            )
-
-    # Discover gems
-    if project_path:
-        gem_result = orchestrator.discover_gems_from_project(project_path)
-        if not gem_result.success:
-            return BindingGeneratorResult(
-                success=False,
-                error_message=f"Gem discovery failed: {gem_result.error_message}",
-            )
-    else:
+    # Create ClangSharp invoker with engine path
+    invoker = ClangSharpInvoker(engine_path=resolved_engine)
+    
+    # Check if tool is available
+    available, message = invoker.check_tool_available()
+    if not available:
+        logger.error(f"ClangSharp tool not available: {message}")
         return BindingGeneratorResult(
             success=False,
-            error_message="Project path required for gem-specific generation",
+            error_message=f"ClangSharp tool not available: {message}"
         )
-
-    # Generate for specific gem
-    result = orchestrator.generate_for_gem(gem_name)
+    
+    logger.info(f"Using ClangSharp tool: {message}")
+    
+    # Generate bindings
+    result = invoker.generate_bindings(
+        project_path=project_path,
+        config=config,
+        force_regenerate=force_regenerate
+    )
+    
     if result.success:
-        files_written = orchestrator.write_files()
-        result.files_written = files_written
-
+        logger.info(
+            f"Successfully generated bindings: "
+            f"{result.classes_generated} classes, {result.files_written} files"
+        )
+        if result.processed_gems:
+            logger.info(f"Processed gems: {', '.join(result.processed_gems)}")
+    else:
+        logger.error(f"Binding generation failed: {result.error_message}")
+    
+    # Print warnings if any
+    for warning in result.warnings:
+        logger.warning(warning)
+    
     return result
 
 
-def generate_core_bindings(
-    output_directory: str,
-    reflection_data_path: Optional[str] = None,
+def generate_bindings_for_gems(
+    project_path: str,
+    gem_names: List[str],
+    force_regenerate: bool = False,
 ) -> BindingGeneratorResult:
     """
-    Generate only core O3DE bindings (no gems).
-
+    Generate C# bindings for specific gems only.
+    
     Args:
-        output_directory: Where to write generated files
-        reflection_data_path: Path to reflection data JSON
-
+        project_path: Path to the O3DE project root
+        gem_names: List of gem names to generate bindings for
+        force_regenerate: If True, bypass incremental build cache
+        
     Returns:
-        BindingGeneratorResult with statistics
+        BindingGeneratorResult with generation statistics
     """
-    orchestrator = BindingGenerationOrchestrator()
-    orchestrator.configure(
-        output_directory=output_directory,
-        generate_core=True,
-        generate_gems=False,
+    logger.info(f"Generating C# bindings for gems: {', '.join(gem_names)}")
+    
+    # Create config for specific gems
+    config = BindingGeneratorConfig()
+    config.output_directory = str(Path(project_path) / "Generated" / "CSharp")
+    config.include_gems = gem_names
+    config.incremental_build = not force_regenerate
+    
+    return generate_bindings_for_project(
+        project_path=project_path,
+        config=config,
+        force_regenerate=force_regenerate
     )
 
-    # Load reflection data
-    if reflection_data_path:
-        if not orchestrator.load_reflection_data(reflection_data_path):
-            return BindingGeneratorResult(
-                success=False, error_message="Failed to load reflection data"
-            )
-    else:
-        reflection_data = _get_live_reflection_data()
-        if reflection_data:
-            orchestrator.reflection_data = reflection_data
-        else:
-            return BindingGeneratorResult(
-                success=False, error_message="No reflection data available"
-            )
 
-    # Generate and write
-    result = orchestrator.generate()
-    if result.success:
-        files_written = orchestrator.write_files()
-        result.files_written = files_written
-
-    return result
-
-
-def _get_live_reflection_data() -> Optional[ReflectionData]:
+def check_bindings_need_regeneration(project_path: str) -> bool:
     """
-    Try to get live reflection data from the O3DE Editor.
-
-    This requires the O3DESharp gem to be loaded and exposes
-    the reflection data via azlmbr.
-
+    Check if bindings need to be regenerated based on file timestamps.
+    
+    This performs a simple check comparing the gem headers against generated files.
+    The ClangSharp tool has its own internal hash-based caching that is more accurate.
+    
+    Args:
+        project_path: Path to the O3DE project root
+        
     Returns:
-        ReflectionData if available, None otherwise
+        True if bindings need regeneration, False otherwise
     """
-    try:
-        # Try to import O3DE's Python bindings
-        import azlmbr.bus as bus
-        import azlmbr.o3desharp as o3desharp
-
-        # Request reflection data from the O3DESharp system component
-        json_data = o3desharp.get_reflection_data_json()
-        if json_data:
-            import json
-
-            from csharp_binding_generator import (
-                _parse_class_from_json,
-                _parse_ebus_from_json,
-            )
-
-            data = json.loads(json_data)
-            reflection_data = ReflectionData()
-
-            for class_data in data.get("classes", []):
-                cls = _parse_class_from_json(class_data)
-                reflection_data.classes[cls.name] = cls
-
-            for ebus_data in data.get("ebuses", []):
-                ebus = _parse_ebus_from_json(ebus_data)
-                reflection_data.ebuses[ebus.name] = ebus
-
-            return reflection_data
-
-    except ImportError:
-        logger.debug("O3DE Python bindings not available (not running in Editor)")
-    except Exception as e:
-        logger.warning(f"Failed to get live reflection data: {e}")
-
-    return None
+    project_path = Path(project_path)
+    generated_dir = project_path / "Generated" / "CSharp"
+    
+    # If generated directory doesn't exist, need to generate
+    if not generated_dir.exists():
+        logger.info("Generated bindings directory not found - regeneration needed")
+        return True
+    
+    # Check for binding_config.json changes
+    config_file = project_path / "Gems" / "O3DESharp" / "binding_config.json"
+    if config_file.exists():
+        config_mtime = config_file.stat().st_mtime
+        
+        # Check if any generated file is older than config
+        for gen_file in generated_dir.rglob("*.cs"):
+            if gen_file.stat().st_mtime < config_mtime:
+                logger.info("Binding configuration changed - regeneration needed")
+                return True
+    
+    # For more accurate checking, the ClangSharp tool uses file hash caching
+    # So we'll default to letting the tool decide via incremental build
+    logger.info("Using ClangSharp incremental build for change detection")
+    return False
 
 
-def list_available_gems(project_path: str) -> List[str]:
+def list_available_gems(project_path: str, engine_path: Optional[Path] = None) -> List[str]:
     """
     List all available gems in a project.
-
+    
     Args:
         project_path: Path to the project root
-
+        engine_path: Optional explicit engine root
+        
     Returns:
         List of gem names
     """
-    resolver = GemDependencyResolver()
+    resolver = GemDependencyResolver(engine_path_hint=engine_path or _SCRIPT_ENGINE_ROOT)
     result = resolver.discover_gems_from_project(project_path)
     if result.success:
-        return result.active_gem_names
-    return []
+        return sorted(result.active_gem_names)
+    else:
+        logger.error(f"Failed to discover gems: {result.error_message}")
+        return []
 
 
-def get_gem_dependencies(project_path: str, gem_name: str) -> List[str]:
+def get_gem_dependencies(project_path: str, gem_name: str, engine_path: Optional[Path] = None) -> List[str]:
     """
     Get dependencies for a specific gem.
-
+    
     Args:
         project_path: Path to the project root
         gem_name: Name of the gem
-
+        engine_path: Optional explicit engine root
+        
     Returns:
         List of dependency gem names
     """
-    resolver = GemDependencyResolver()
+    resolver = GemDependencyResolver(engine_path_hint=engine_path or _SCRIPT_ENGINE_ROOT)
     result = resolver.discover_gems_from_project(project_path)
     if result.success:
         return resolver.get_gem_dependencies(gem_name, include_transitive=True)
-    return []
+    else:
+        logger.error(f"Failed to discover gems: {result.error_message}")
+        return []
+
+
+def find_binding_generator_tool() -> Optional[Path]:
+    """
+    Find the ClangSharp binding generator tool.
+    
+    Searches in common locations relative to this script and the CMake build directory.
+    
+    Returns:
+        Path to the tool if found, None otherwise
+    """
+    script_dir = Path(__file__).parent
+    gem_root = script_dir.parent.parent
+    
+    # Search locations
+    possible_paths = [
+        gem_root / "build" / "bin" / "BindingGenerator",
+        gem_root / "Code" / "Tools" / "BindingGenerator",
+        Path.cwd() / "build" / "bin" / "BindingGenerator",
+        Path(os.environ.get("O3DESHARP_BINDING_GENERATOR_PATH", "")),
+    ]
+    
+    for path in possible_paths:
+        if path and path.exists():
+            logger.info(f"Found ClangSharp tool at: {path}")
+            return path
+    
+    # Check source project
+    source_project = gem_root / "Code" / "Tools" / "BindingGenerator" / "BindingGenerator.csproj"
+    if source_project.exists():
+        logger.info(f"Using ClangSharp tool source project: {source_project}")
+        return source_project
+    
+    logger.warning("ClangSharp binding generator tool not found")
+    return None
 
 
 # ============================================================
@@ -495,53 +381,54 @@ def get_gem_dependencies(project_path: str, gem_name: str) -> List[str]:
 def create_argument_parser() -> argparse.ArgumentParser:
     """Create the command-line argument parser."""
     parser = argparse.ArgumentParser(
-        description="Generate C# bindings from O3DE BehaviorContext reflection data",
+        description="Generate C# bindings from O3DE C++ headers using ClangSharp",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
   # Generate all bindings for a project
-  python generate_bindings.py -p /path/to/project -r reflection.json -o Generated
+  python generate_bindings.py --project /path/to/project
 
   # Generate bindings for specific gems
-  python generate_bindings.py -p /path/to/project -r reflection.json --gems PhysX Atom
+  python generate_bindings.py --project /path/to/project --gems PhysX Atom
 
-  # Generate core bindings only (no gems)
-  python generate_bindings.py -r reflection.json --core-only
+  # Force regeneration (bypass incremental build)
+  python generate_bindings.py --project /path/to/project --force-regenerate
 
-  # Generate with separate .csproj per gem
-  python generate_bindings.py -p /path/to/project -r reflection.json --per-gem-projects
+  # Specify the engine root explicitly
+  python generate_bindings.py --project /path/to/project --engine /path/to/o3de
+
+  # Require export attribute (only export marked declarations)
+  python generate_bindings.py --project /path/to/project --require-attribute
 
   # List available gems in a project
-  python generate_bindings.py -p /path/to/project --list-gems
+  python generate_bindings.py --project /path/to/project --list-gems
         """,
     )
 
     parser.add_argument(
-        "--reflection-data",
-        "-r",
-        help="Path to reflection data JSON file (exported from C++)",
-    )
-    parser.add_argument(
         "--project",
         "-p",
-        help="Path to O3DE project root (for gem discovery)",
+        required=True,
+        help="Path to O3DE project root",
     )
     parser.add_argument(
         "--engine",
         "-e",
-        help="Path to O3DE engine root (alternative to --project)",
+        help=(
+            "Path to O3DE engine root. Auto-detected from this script's location, "
+            "~/.o3de/o3de_manifest.json, or O3DE_ENGINE_PATH env var if not specified."
+        ),
     )
     parser.add_argument(
         "--output",
         "-o",
-        default="Generated/CSharp",
-        help="Output directory for generated files (default: Generated/CSharp)",
+        help="Output directory for generated files (default: <project>/Generated/CSharp)",
     )
     parser.add_argument(
         "--namespace",
         "-n",
-        default="O3DE.Generated",
-        help="Root C# namespace (default: O3DE.Generated)",
+        default="O3DE",
+        help="Root C# namespace (default: O3DE)",
     )
     parser.add_argument(
         "--gems",
@@ -555,30 +442,25 @@ Examples:
         help="Exclude specific gems from generation",
     )
     parser.add_argument(
-        "--core-only",
+        "--require-attribute",
         action="store_true",
-        help="Generate only core bindings (no gems)",
+        help="Only export declarations marked with O3DE_EXPORT_CSHARP attribute",
     )
     parser.add_argument(
-        "--gems-only",
+        "--force-regenerate",
+        "-f",
         action="store_true",
-        help="Generate only gem bindings (no core)",
+        help="Force regeneration (bypass incremental build cache)",
     )
     parser.add_argument(
-        "--per-gem-projects",
+        "--no-incremental",
         action="store_true",
-        help="Generate separate .csproj for each gem",
-    )
-    parser.add_argument(
-        "--combined-assembly",
-        action="store_true",
-        default=True,
-        help="Generate a combined assembly (default)",
+        help="Disable incremental build (same as --force-regenerate)",
     )
     parser.add_argument(
         "--target-framework",
-        default="net8.0",
-        help="Target .NET framework (default: net8.0)",
+        default="net9.0",
+        help="Target .NET framework (default: net9.0)",
     )
     parser.add_argument(
         "--list-gems",
@@ -591,15 +473,20 @@ Examples:
         help="Show dependencies for a gem and exit",
     )
     parser.add_argument(
+        "--check-tool",
+        action="store_true",
+        help="Check if ClangSharp tool is available and exit",
+    )
+    parser.add_argument(
+        "--build-dlls",
+        action="store_true",
+        help="After generation, compile per-gem .csproj files into DLLs via 'dotnet build'",
+    )
+    parser.add_argument(
         "--verbose",
         "-v",
         action="store_true",
         help="Enable verbose output",
-    )
-    parser.add_argument(
-        "--dry-run",
-        action="store_true",
-        help="Generate but don't write files",
     )
 
     return parser
@@ -619,136 +506,127 @@ def main() -> int:
     )
 
     # Handle info-only commands
-    if args.list_gems:
-        if not args.project and not args.engine:
-            logger.error("--project or --engine required with --list-gems")
-            return 1
-
-        path = args.project or args.engine
-        resolver = GemDependencyResolver()
-
-        if args.project:
-            result = resolver.discover_gems_from_project(path)
+    if args.check_tool:
+        invoker = ClangSharpInvoker()
+        available, message = invoker.check_tool_available()
+        if available:
+            print(f"✓ ClangSharp tool is available: {message}")
+            return 0
         else:
-            result = resolver.discover_gems_from_engine(path)
-
-        if not result.success:
-            logger.error(f"Failed to discover gems: {result.error_message}")
+            print(f"✗ ClangSharp tool not available: {message}")
             return 1
 
-        print(f"\nDiscovered {len(result.active_gem_names)} gems:")
-        for gem_name in sorted(result.active_gem_names):
-            gem = resolver.get_gem(gem_name)
-            deps = gem.dependencies if gem else []
-            dep_str = f" -> {', '.join(deps)}" if deps else ""
-            print(f"  {gem_name}{dep_str}")
-
+    if args.list_gems:
+        engine = Path(args.engine) if args.engine else _SCRIPT_ENGINE_ROOT
+        gems = list_available_gems(args.project, engine_path=engine)
+        if not gems:
+            logger.error("No gems found or gem discovery failed")
+            return 1
+        
+        print(f"\nDiscovered {len(gems)} gems in project:")
+        for gem_name in gems:
+            print(f"  {gem_name}")
         return 0
 
     if args.show_dependencies:
-        if not args.project and not args.engine:
-            logger.error("--project or --engine required with --show-dependencies")
-            return 1
-
-        path = args.project or args.engine
-        resolver = GemDependencyResolver()
-
-        if args.project:
-            result = resolver.discover_gems_from_project(path)
-        else:
-            result = resolver.discover_gems_from_engine(path)
-
-        if not result.success:
-            logger.error(f"Failed to discover gems: {result.error_message}")
-            return 1
-
-        gem_name = args.show_dependencies
-        deps = resolver.get_gem_dependencies(gem_name, include_transitive=True)
-
-        print(f"\nDependencies for {gem_name}:")
+        engine = Path(args.engine) if args.engine else _SCRIPT_ENGINE_ROOT
+        deps = get_gem_dependencies(args.project, args.show_dependencies, engine_path=engine)
+        if not deps:
+            print(f"No dependencies found for {args.show_dependencies}")
+            return 0
+        
+        print(f"\nDependencies for {args.show_dependencies}:")
         for dep in deps:
             print(f"  {dep}")
-
-        dependents = resolver.get_gem_dependents(gem_name, include_transitive=True)
-        if dependents:
-            print(f"\nGems that depend on {gem_name}:")
-            for dep in dependents:
-                print(f"  {dep}")
-
         return 0
 
-    # Validate required arguments for generation
-    if not args.reflection_data:
-        logger.error("--reflection-data is required for binding generation")
-        parser.print_help()
+    # Validate project path
+    project_path = Path(args.project)
+    if not project_path.exists():
+        logger.error(f"Project path does not exist: {project_path}")
         return 1
 
-    # Create and configure orchestrator
-    orchestrator = BindingGenerationOrchestrator()
-    orchestrator.configure(
-        output_directory=args.output,
-        root_namespace=args.namespace,
-        generate_core=not args.gems_only,
-        generate_gems=not args.core_only,
-        generate_per_gem_projects=args.per_gem_projects,
-        include_gems=args.gems,
-        exclude_gems=args.exclude_gems,
-        target_framework=args.target_framework,
-    )
-
-    # Disable file writing for dry run
-    if args.dry_run:
-        orchestrator.config.write_to_disk = False
-
-    # Load reflection data
-    if not orchestrator.load_reflection_data(args.reflection_data):
-        return 1
-
-    # Discover gems if needed
-    if not args.core_only:
-        if args.project:
-            gem_result = orchestrator.discover_gems_from_project(args.project)
-            if not gem_result.success:
-                logger.warning(f"Gem discovery failed: {gem_result.error_message}")
-        elif args.engine:
-            gem_result = orchestrator.discover_gems_from_engine(args.engine)
-            if not gem_result.success:
-                logger.warning(f"Gem discovery failed: {gem_result.error_message}")
-        elif not args.core_only:
-            logger.warning(
-                "No --project or --engine specified, gem bindings will be limited"
-            )
+    # Create configuration
+    config = BindingGeneratorConfig()
+    config.root_namespace = args.namespace
+    config.target_framework = args.target_framework
+    config.require_export_attribute = args.require_attribute
+    config.incremental_build = not (args.force_regenerate or args.no_incremental)
+    config.verbose = args.verbose
+    
+    if args.output:
+        config.output_directory = args.output
+    else:
+        config.output_directory = str(project_path / "Generated" / "CSharp")
+    
+    if args.gems:
+        config.include_gems = args.gems
+    
+    if args.exclude_gems:
+        config.exclude_gems = args.exclude_gems
 
     # Generate bindings
-    if args.gems and len(args.gems) == 1:
-        # Generate for single specific gem
-        result = orchestrator.generate_for_gem(args.gems[0])
-    else:
-        # Generate all (filtered by config)
-        result = orchestrator.generate()
+    engine = args.engine or (str(_SCRIPT_ENGINE_ROOT) if _SCRIPT_ENGINE_ROOT else None)
+    result = generate_bindings_for_project(
+        project_path=str(project_path),
+        config=config,
+        force_regenerate=args.force_regenerate or args.no_incremental,
+        engine_path=engine,
+    )
 
     if not result.success:
         logger.error(f"Generation failed: {result.error_message}")
         return 1
 
-    # Write files (unless dry run)
-    if not args.dry_run:
-        files_written = orchestrator.write_files()
-        logger.info(f"Wrote {files_written} files to {args.output}")
-    else:
-        logger.info(
-            f"Dry run: would write {len(orchestrator.get_generated_files())} files"
-        )
-        for path in orchestrator.get_generated_files():
-            logger.info(f"  {path}")
+    # Build DLLs if requested. The ClangSharp tool already emits a .csproj
+    # per gem when --per-gem-projects is in effect (see
+    # Code/Tools/BindingGenerator/.../CSharpProjectGenerator.cs); we just
+    # walk the output tree and run `dotnet build` on each one. This used to
+    # live in the now-deleted BindingGenerationOrchestrator.build_binding_dlls.
+    build_results: Dict[str, bool] = {}
+    if args.build_dlls:
+        gen_dir = Path(config.output_directory)
+        csproj_files = list(gen_dir.rglob("*.csproj")) if gen_dir.exists() else []
+        if not csproj_files:
+            logger.warning("No .csproj files found in generation output - skipping DLL build.")
+        else:
+            logger.info(f"Building {len(csproj_files)} generated .csproj into DLLs ...")
+            for csproj_path in csproj_files:
+                # Gem name is the parent directory of the .csproj per the
+                # tool's output layout.
+                gem_name = csproj_path.parent.name
+                logger.info(f"Building {gem_name} from {csproj_path} ...")
+                try:
+                    proc = subprocess.run(
+                        ["dotnet", "build", str(csproj_path), "-c", "Release", "--nologo"],
+                        capture_output=True,
+                        text=True,
+                        timeout=120,
+                    )
+                    if proc.returncode == 0:
+                        logger.info(f"  {gem_name}: BUILD SUCCEEDED")
+                        build_results[gem_name] = True
+                    else:
+                        logger.error(f"  {gem_name}: BUILD FAILED\n{proc.stdout}\n{proc.stderr}")
+                        build_results[gem_name] = False
+                except FileNotFoundError:
+                    logger.error(
+                        "dotnet CLI not found - cannot compile bindings. "
+                        "Install the .NET SDK from https://dotnet.microsoft.com/download"
+                    )
+                    build_results[gem_name] = False
+                    break
+                except subprocess.TimeoutExpired:
+                    logger.error(f"  {gem_name}: build timed out after 120 s")
+                    build_results[gem_name] = False
 
     # Print summary
-    print("\n" + "=" * 60)
+    print("\n" + "=" * 70)
     print("C# Binding Generation Complete")
-    print("=" * 60)
+    print("=" * 70)
     print(f"  Classes generated:  {result.classes_generated}")
-    print(f"  EBuses generated:   {result.ebuses_generated}")
-    print(f"  Files generated:    {len(result.generated_files)}")
+    print(f"  Files written:      {result.files_written}")
+    print(f"  Output directory:   {config.output_directory}")
 
     if result.processed_gems:
         print(f"  Gems processed:     {len(result.processed_gems)}")
@@ -757,12 +635,22 @@ def main() -> int:
         if len(result.processed_gems) > 10:
             print(f"    ... and {len(result.processed_gems) - 10} more")
 
-    if result.warnings:
-        print("\nWarnings:")
-        for warning in result.warnings:
-            print(f"  ! {warning}")
+    if build_results:
+        succeeded = sum(1 for v in build_results.values() if v)
+        failed = len(build_results) - succeeded
+        print(f"\n  DLL builds:  {succeeded} succeeded, {failed} failed")
+        for gem_name, ok in build_results.items():
+            status = "OK" if ok else "FAILED"
+            print(f"    [{status}] {gem_name}")
 
-    print("=" * 60)
+    if result.warnings:
+        print(f"\n  Warnings ({len(result.warnings)}):")
+        for warning in result.warnings[:5]:
+            print(f"  {warning}")
+        if len(result.warnings) > 5:
+            print(f"  ... and {len(result.warnings) - 5} more warnings")
+
+    print("=" * 70)
 
     return 0
 

@@ -5,255 +5,131 @@
 # SPDX-License-Identifier: Apache-2.0 OR MIT
 #
 """
-C# Binding Generator for O3DESharp
+C# Binding Generator - ClangSharp Tool Wrapper
 
-This module generates C# source files from O3DE BehaviorContext reflection data.
-It works in conjunction with the gem_dependency_resolver to organize bindings by gem.
+This module wraps the C# / libclang-based binding generator at
+``Code/Tools/BindingGenerator``. It provides:
 
-The generator produces:
-- Core O3DE bindings (math, entity, transform, etc.)
-- Per-gem bindings organized by namespace
-- EBus wrapper classes
-- Solution and project files
+- :class:`BindingGeneratorConfig` - knobs that map onto the tool's CLI flags.
+- :class:`BindingGeneratorResult` - the structured result the tool produces.
+- :class:`GemBindingInfo` - per-gem output info.
+- :class:`ClangSharpInvoker` - constructs the ``dotnet run -- generate ...``
+  command line, executes it, and parses the tool's stdout into a
+  :class:`BindingGeneratorResult`.
 
-Usage:
-    from csharp_binding_generator import CSharpBindingGenerator, BindingGeneratorConfig
-    from gem_dependency_resolver import GemDependencyResolver
+The previous Python BehaviorContext generator (``CSharpBindingGenerator``,
+``BindingGenerationOrchestrator``, ``ReflectionData`` and supporting reflected
+data classes, ``TypeMapper``, ``load_reflection_data_from_json``) has been
+removed - the C# tool reads C++ headers directly and no longer needs the
+reflection_data.json intermediate. If you need to resurrect any of that
+flow, the pre-removal version lives in git history at the commit prior to
+"Phase 12 migrate editor button..."
 
-    # Configure the generator
+Canonical usage::
+
+    invoker = ClangSharpInvoker()
     config = BindingGeneratorConfig()
     config.output_directory = "Generated/CSharp"
-    config.root_namespace = "O3DE.Generated"
-
-    # Create generator and generate bindings
-    generator = CSharpBindingGenerator(config)
-    result = generator.generate_from_reflection_data(reflection_data, gem_resolver)
-
-    # Write files to disk
-    generator.write_files()
+    config.include_gems = ["PhysX", "Atom"]
+    result = invoker.generate_bindings(project_path="/path/to/project", config=config)
+    if result.success:
+        print(f"Generated {result.classes_generated} classes")
 """
 
-import hashlib
-import json
 import logging
-import os
-import re
+import subprocess
 from dataclasses import dataclass, field
-from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Set, Tuple
+from typing import Callable, List, Optional, Set, Tuple
 
-from gem_dependency_resolver import GemDependencyResolver, GemDescriptor
 
-# Set up logging
 logger = logging.getLogger("O3DESharp.BindingGenerator")
 
 
 # ============================================================
-# Data Classes for Reflection Data
-# ============================================================
-
-
-@dataclass
-class ReflectedParameter:
-    """Represents a parameter in a reflected method."""
-
-    name: str
-    type_name: str
-    type_id: str = ""
-    is_pointer: bool = False
-    is_reference: bool = False
-    is_const: bool = False
-    marshal_type: str = "Unknown"
-
-
-@dataclass
-class ReflectedMethod:
-    """Represents a reflected method from BehaviorContext."""
-
-    name: str
-    class_name: str = ""
-    is_static: bool = False
-    is_const: bool = False
-    return_type: ReflectedParameter = None
-    parameters: List[ReflectedParameter] = field(default_factory=list)
-    description: str = ""
-    category: str = ""
-    is_deprecated: bool = False
-    deprecation_message: str = ""
-
-    def __post_init__(self):
-        if self.return_type is None:
-            self.return_type = ReflectedParameter(name="", type_name="void")
-
-
-@dataclass
-class ReflectedProperty:
-    """Represents a reflected property from BehaviorContext."""
-
-    name: str
-    class_name: str = ""
-    value_type: ReflectedParameter = None
-    has_getter: bool = True
-    has_setter: bool = True
-    description: str = ""
-    is_deprecated: bool = False
-
-    def __post_init__(self):
-        if self.value_type is None:
-            self.value_type = ReflectedParameter(name="", type_name="object")
-
-
-@dataclass
-class ReflectedEBusEvent:
-    """Represents a reflected EBus event."""
-
-    name: str
-    bus_name: str = ""
-    return_type: ReflectedParameter = None
-    parameters: List[ReflectedParameter] = field(default_factory=list)
-    is_broadcast: bool = True
-
-    def __post_init__(self):
-        if self.return_type is None:
-            self.return_type = ReflectedParameter(name="", type_name="void")
-
-
-@dataclass
-class ReflectedEBus:
-    """Represents a reflected EBus from BehaviorContext."""
-
-    name: str
-    type_id: str = ""
-    address_type: ReflectedParameter = None
-    events: List[ReflectedEBusEvent] = field(default_factory=list)
-    description: str = ""
-    category: str = ""
-    source_gem_name: str = ""
-
-
-@dataclass
-class ReflectedClass:
-    """Represents a reflected class from BehaviorContext."""
-
-    name: str
-    type_id: str = ""
-    base_classes: List[str] = field(default_factory=list)
-    methods: List[ReflectedMethod] = field(default_factory=list)
-    properties: List[ReflectedProperty] = field(default_factory=list)
-    constructors: List[ReflectedMethod] = field(default_factory=list)
-    description: str = ""
-    category: str = ""
-    is_deprecated: bool = False
-    source_gem_name: str = ""
-
-
-@dataclass
-class ReflectionData:
-    """Container for all reflection data."""
-
-    classes: Dict[str, ReflectedClass] = field(default_factory=dict)
-    ebuses: Dict[str, ReflectedEBus] = field(default_factory=dict)
-    global_methods: List[ReflectedMethod] = field(default_factory=list)
-    global_properties: List[ReflectedProperty] = field(default_factory=list)
-
-
-# ============================================================
-# Generator Configuration
+# Data Classes
 # ============================================================
 
 
 @dataclass
 class BindingGeneratorConfig:
-    """Configuration for the C# binding generator."""
+    """Configuration for C# binding generation."""
 
     # Output configuration
     output_directory: str = "Generated/CSharp"
-    root_namespace: str = "O3DE.Generated"
-    write_to_disk: bool = True
-    overwrite_existing: bool = True
+    root_namespace: str = "O3DE"
+    target_framework: str = "net9.0"
 
-    # Core bindings configuration
-    generate_core_bindings: bool = True
-    core_namespace: str = "O3DE.Core"
-    core_output_subdir: str = "Core"
-    core_categories: List[str] = field(
-        default_factory=lambda: [
-            "Core",
-            "Math",
-            "Entity",
-            "Components",
-            "Transform",
-            "Debug",
-            "Time",
-        ]
-    )
-    core_prefixes: List[str] = field(
-        default_factory=lambda: [
-            "AZ",
-            "Az",
-            "Entity",
-            "Component",
-            "Transform",
-            "Vector",
-            "Quaternion",
-            "Matrix",
-        ]
-    )
-
-    # Gem bindings configuration
-    generate_gem_bindings: bool = True
+    # Generation options
+    require_export_attribute: bool = False
+    incremental_build: bool = True
+    verbose: bool = False
+    generate_core: bool = True
+    generate_gems: bool = True
     separate_gem_directories: bool = True
-    generate_per_gem_projects: bool = False
+    generate_per_gem_projects: bool = True
+    # When True, every discovered gem's include surface gets added to
+    # libclang's search path (not just declared dependencies). Fixes
+    # cross-gem 'file not found' errors that arise when a gem.json
+    # doesn't declare every transitive include source - e.g. EMotionFX
+    # pulling IAudioSystem.h without AudioSystem appearing as a dep.
+    # Defaults False here (strict mode catches missing-dep bugs at
+    # generation time); the editor flow flips it True for the
+    # "just give me bindings" UX.
+    all_gems_on_include_path: bool = False
+
+    # Generator backend. "reflection" (default) consumes
+    # reflection_data.json from the editor's AutoExportReflectionData
+    # hook - same BehaviorContext data Lua/ScriptCanvas/Python use.
+    # "clang" uses ClangSharp header parsing (heavier, can produce
+    # wrappers without a BehaviorContext dispatch path that crash at
+    # runtime; kept as opt-in for advanced cases).
+    source: str = "reflection"
+
+    # Reflection backend only: explicit path to reflection_data.json.
+    # When None, the tool defaults to
+    # <project>/Cache/pc/generated/reflection_data.json (where the
+    # editor's auto-export writes it). Set this if your editor wrote
+    # the JSON to a custom location via ExportReflectionData(path).
+    reflection_data_path: Optional[str] = None
+
+    # Gem filtering
     include_gems: List[str] = field(default_factory=list)
     exclude_gems: List[str] = field(default_factory=list)
-    include_gem_dependencies: bool = True
 
-    # Code generation options
-    generate_documentation: bool = True
-    generate_ebus_wrappers: bool = True
-    mark_deprecated_as_obsolete: bool = True
-    generate_partial_classes: bool = True
-    generate_extension_methods: bool = False
+    # Core types to always include
+    core_types: Set[str] = field(
+        default_factory=lambda: {
+            "Vector3",
+            "Vector2",
+            "Vector4",
+            "Quaternion",
+            "Transform",
+            "Color",
+            "EntityId",
+            "Entity",
+            "Matrix",
+        }
+    )
+
+    # File header
     file_header: str = ""
 
-    # Solution/project generation
-    generate_solution: bool = True
-    solution_name: str = "O3DE.Generated"
-    generate_combined_assembly: bool = True
-    combined_assembly_name: str = "O3DE.Generated"
-
-    # Target framework
-    target_framework: str = "net8.0"
-
 
 @dataclass
-class GeneratedFile:
-    """Represents a generated C# file."""
-
-    relative_path: str
-    content: str
-    checksum: str = ""
-
-    def __post_init__(self):
-        if not self.checksum:
-            self.checksum = hashlib.md5(self.content.encode("utf-8")).hexdigest()
-
-
-@dataclass
-class GemBindingStats:
-    """Statistics for per-gem binding generation."""
+class GemBindingInfo:
+    """Information about generated bindings for a single gem."""
 
     gem_name: str
+    output_path: str
     classes_generated: int = 0
-    ebuses_generated: int = 0
     files_generated: int = 0
     generated_files: List[str] = field(default_factory=list)
 
 
 @dataclass
 class BindingGeneratorResult:
-    """Result of a binding generation operation."""
+    """Result of a binding generation invocation."""
 
     success: bool = False
     error_message: str = ""
@@ -261,1718 +137,485 @@ class BindingGeneratorResult:
     # Statistics
     classes_generated: int = 0
     ebuses_generated: int = 0
-    methods_generated: int = 0
-    properties_generated: int = 0
     files_written: int = 0
-
-    # Per-gem statistics
-    per_gem_stats: List[GemBindingStats] = field(default_factory=list)
     processed_gems: List[str] = field(default_factory=list)
 
     # Generated files
     generated_files: List[str] = field(default_factory=list)
 
-    # Warnings
+    # Warnings parsed out of tool output
     warnings: List[str] = field(default_factory=list)
 
 
 # ============================================================
-# C# Code Generation
+# ClangSharpInvoker
 # ============================================================
 
-# C# reserved keywords that need escaping with @
-CSHARP_KEYWORDS = {
-    "abstract",
-    "as",
-    "base",
-    "bool",
-    "break",
-    "byte",
-    "case",
-    "catch",
-    "char",
-    "checked",
-    "class",
-    "const",
-    "continue",
-    "decimal",
-    "default",
-    "delegate",
-    "do",
-    "double",
-    "else",
-    "enum",
-    "event",
-    "explicit",
-    "extern",
-    "false",
-    "finally",
-    "fixed",
-    "float",
-    "for",
-    "foreach",
-    "goto",
-    "if",
-    "implicit",
-    "in",
-    "int",
-    "interface",
-    "internal",
-    "is",
-    "lock",
-    "long",
-    "namespace",
-    "new",
-    "null",
-    "object",
-    "operator",
-    "out",
-    "override",
-    "params",
-    "private",
-    "protected",
-    "public",
-    "readonly",
-    "ref",
-    "return",
-    "sbyte",
-    "sealed",
-    "short",
-    "sizeof",
-    "stackalloc",
-    "static",
-    "string",
-    "struct",
-    "switch",
-    "this",
-    "throw",
-    "true",
-    "try",
-    "typeof",
-    "uint",
-    "ulong",
-    "unchecked",
-    "unsafe",
-    "ushort",
-    "using",
-    "virtual",
-    "void",
-    "volatile",
-    "while",
-}
 
-# Type mappings from O3DE to C#
-TYPE_MAPPINGS = {
-    "Vector3": "Vector3",
-    "Quaternion": "Quaternion",
-    "Transform": "Transform",
-    "EntityId": "EntityId",
-    "AZ::Vector3": "Vector3",
-    "AZ::Quaternion": "Quaternion",
-    "AZ::Transform": "Transform",
-    "AZ::EntityId": "EntityId",
-    "AZStd::string": "string",
-    "string": "string",
-    "bool": "bool",
-    "int": "int",
-    "float": "float",
-    "double": "double",
-    "int8": "sbyte",
-    "int16": "short",
-    "int32": "int",
-    "int64": "long",
-    "uint8": "byte",
-    "uint16": "ushort",
-    "uint32": "uint",
-    "uint64": "ulong",
-    "void": "void",
-    "AZ::u8": "byte",
-    "AZ::u16": "ushort",
-    "AZ::u32": "uint",
-    "AZ::u64": "ulong",
-    "AZ::s8": "sbyte",
-    "AZ::s16": "short",
-    "AZ::s32": "int",
-    "AZ::s64": "long",
-}
-
-
-class CSharpBindingGenerator:
+class ClangSharpInvoker:
     """
-    Generates C# source files from O3DE BehaviorContext reflection data.
+    Invokes the ClangSharp-based binding generator tool.
 
-    This class takes reflection metadata and generates strongly-typed C# wrapper
-    classes organized by gem. The generated code provides:
-
-    - Full IntelliSense support in IDEs
-    - Compile-time type checking
-    - XML documentation from BehaviorContext attributes
-    - Proper C# naming conventions (PascalCase methods, etc.)
-    - Nullable reference type annotations
+    This class constructs command-line arguments and executes the
+    C# ClangSharp tool that performs static analysis of C++ headers.
     """
 
-    def __init__(self, config: Optional[BindingGeneratorConfig] = None):
-        self.config = config or BindingGeneratorConfig()
-        self._generated_files: List[GeneratedFile] = []
-        self._gem_stats: Dict[str, GemBindingStats] = {}
-
-    # ============================================================
-    # Main Generation Methods
-    # ============================================================
-
-    def generate_from_reflection_data(
-        self,
-        reflection_data: ReflectionData,
-        gem_resolver: Optional[GemDependencyResolver] = None,
-    ) -> BindingGeneratorResult:
+    def __init__(self, tool_path: Optional[str] = None, engine_path: Optional[str] = None):
         """
-        Generate C# bindings from reflection data.
+        Initialize the ClangSharp invoker.
 
         Args:
-            reflection_data: The reflection data to generate bindings from
-            gem_resolver: Optional gem resolver for per-gem organization
-
-        Returns:
-            BindingGeneratorResult with statistics
+            tool_path: Path to the BindingGenerator executable/project.
+                      If None, will search in common locations.
+            engine_path: Optional explicit engine root path to pass to the tool.
         """
-        self.clear()
+        self.logger = logging.getLogger("O3DESharp.ClangSharpInvoker")
+        self.tool_path = tool_path or self._find_tool()
+        self.engine_path = engine_path
 
-        logger.info("Starting C# binding generation...")
+    def _find_tool(self) -> Optional[str]:
+        """Find the ClangSharp binding generator tool.
 
-        result = BindingGeneratorResult(success=True)
+        The tool ships as a .csproj that is invoked through `dotnet run`. We
+        search several roots because an installed engine (cmake --install)
+        often does NOT copy Code/Tools/BindingGenerator/ into the install
+        tree, so the loaded gem_root (which points at the install location)
+        won't have the csproj even though the developer has it under the
+        source tree.
 
-        # Resolve gem sources if we have a gem resolver
-        if gem_resolver and self.config.generate_gem_bindings:
-            self._resolve_gem_sources(reflection_data, gem_resolver)
+        Search order:
+          1. <loaded_gem_root>/Code/Tools/BindingGenerator/...
+             - normal case when running from a fully-populated source clone.
+          2. <engine_source>/Gems/O3DESharp/Code/Tools/BindingGenerator/...
+             - hop back from the install tree to the source clone via the
+               azlmbr engroot setting. Lets the editor find the tool even
+               when it's been deleted from the install location.
+          3. build/bin/BindingGenerator under either gem_root or cwd.
+        """
+        script_dir = Path(__file__).parent
+        gem_root = script_dir.parent.parent
 
-        # Generate core bindings
-        if self.config.generate_core_bindings:
-            core_result = self._generate_core_bindings(reflection_data)
-            result.classes_generated += core_result.classes_generated
-            result.ebuses_generated += core_result.ebuses_generated
+        # === Pass 1: prebuilt DLL ==================================
+        # Prefer the prebuilt DLL over the csproj. Why: invoking via
+        # `dotnet run --project <csproj>` re-runs MSBuild's restore +
+        # build pipeline on every invocation, which takes 30-180s of
+        # silent startup time before the tool emits a single line of
+        # output. Users watching the log see no progress and assume the
+        # generator is hung. `dotnet <path-to-dll>` skips the rebuild
+        # entirely and starts the tool in under a second, so first-line
+        # output appears immediately.
+        #
+        # The CMake target `O3DESharp.BindingGenerator` builds the DLL
+        # to <build>/bin/BindingGenerator/O3DESharp.BindingGenerator.dll
+        # via ExternalProject_Add - so on any developer machine where
+        # the engine has been configured + built once, the DLL is
+        # there. We just check the common build-tree locations.
+        dll_candidates: List[Path] = [
+            gem_root / "build" / "bin" / "BindingGenerator" / "O3DESharp.BindingGenerator.dll",
+            Path.cwd() / "build" / "bin" / "BindingGenerator" / "O3DESharp.BindingGenerator.dll",
+        ]
 
-        # Generate gem bindings
-        if self.config.generate_gem_bindings and gem_resolver:
-            gem_result = self._generate_gem_bindings(reflection_data, gem_resolver)
-            result.classes_generated += gem_result.classes_generated
-            result.ebuses_generated += gem_result.ebuses_generated
-            result.per_gem_stats = gem_result.per_gem_stats
-            result.processed_gems = gem_result.processed_gems
+        # Engine-relative build dir (when running inside the editor).
+        try:
+            import azlmbr.paths as _paths
+            engroot = Path(_paths.engroot)
+            dll_candidates.extend([
+                engroot / "Workspace" / "bin" / "BindingGenerator" / "O3DESharp.BindingGenerator.dll",
+                engroot / "build" / "bin" / "BindingGenerator" / "O3DESharp.BindingGenerator.dll",
+            ])
+        except Exception:
+            pass
 
-        # Generate internal calls file
-        self._generate_internal_calls_file(reflection_data)
+        for dll in dll_candidates:
+            if dll.is_file():
+                self.logger.info(f"Using prebuilt ClangSharp tool DLL: {dll}")
+                return str(dll)
 
-        # Generate solution/project files
-        if self.config.generate_solution:
-            self._generate_solution_files(gem_resolver)
-
-        result.files_written = len(self._generated_files)
-        result.generated_files = [f.relative_path for f in self._generated_files]
-
-        logger.info(
-            f"Generated {result.classes_generated} classes, "
-            f"{result.ebuses_generated} EBuses, {result.files_written} files"
+        # === Pass 2: csproj (fallback - triggers dotnet run rebuild) =
+        # Only reached when no prebuilt DLL is found. Costs the
+        # 30-180s rebuild penalty but at least the tool runs.
+        candidates: List[Path] = []
+        candidates.append(
+            gem_root / "Code" / "Tools" / "BindingGenerator" /
+            "O3DESharp.BindingGenerator" / "O3DESharp.BindingGenerator.csproj"
         )
 
-        return result
+        # Try the engine source clone via azlmbr.paths if available. This is
+        # only resolvable inside an Editor Python context, so guard the
+        # import.
+        try:
+            import azlmbr.paths as _paths
+            engroot = Path(_paths.engroot)
+            candidates.append(
+                engroot / "Gems" / "O3DESharp" / "Code" / "Tools" /
+                "BindingGenerator" / "O3DESharp.BindingGenerator" /
+                "O3DESharp.BindingGenerator.csproj"
+            )
+        except Exception:
+            pass  # Not running inside the editor; skip the azlmbr lookup.
 
-    def generate_for_gem(
+        for csproj in candidates:
+            if csproj.exists():
+                self.logger.info(
+                    f"Using ClangSharp tool source project (will trigger dotnet build): {csproj}"
+                )
+                return str(csproj)
+
+        # Check in CMake binary directory (last-resort)
+        possible_paths = [
+            gem_root / "build" / "bin" / "BindingGenerator",
+            Path.cwd() / "build" / "bin" / "BindingGenerator",
+        ]
+
+        for path in possible_paths:
+            if path.exists():
+                # If it's a directory, look for a .csproj inside
+                if path.is_dir():
+                    for csproj in path.rglob("*.csproj"):
+                        self.logger.info(f"Found ClangSharp tool project: {csproj}")
+                        return str(csproj)
+                else:
+                    self.logger.info(f"Found ClangSharp tool at: {path}")
+                    return str(path)
+
+        self.logger.warning(
+            "ClangSharp binding generator tool not found in common locations. "
+            f"Searched DLLs: {[str(d) for d in dll_candidates]} ; "
+            f"csprojs: {[str(c) for c in candidates]}"
+        )
+        return None
+
+    def generate_bindings(
         self,
-        reflection_data: ReflectionData,
-        gem_resolver: GemDependencyResolver,
-        gem_name: str,
+        project_path: str,
+        config: Optional[BindingGeneratorConfig] = None,
+        force_regenerate: bool = False,
+        output_callback: Optional[Callable[[str], None]] = None,
     ) -> BindingGeneratorResult:
         """
-        Generate bindings for a specific gem and its dependencies.
+        Generate C# bindings using the ClangSharp tool.
 
         Args:
-            reflection_data: The reflection data
-            gem_resolver: Gem resolver for dependency information
-            gem_name: Name of the gem to generate bindings for
+            project_path: Path to the O3DE project
+            config: Binding generation configuration
+            force_regenerate: If True, bypass incremental build cache
+            output_callback: Optional callable invoked with each line of
+                stdout/stderr as the tool emits it. When provided, the
+                tool runs in streaming mode (subprocess.Popen + line-by-
+                line read) instead of capture_output=True buffering -
+                lets callers display live progress in a UI without the
+                "completely silent for 60s, then a wall of text" UX.
+                The callback is invoked from THIS thread, so the caller
+                is responsible for thread-marshaling if the UI lives
+                elsewhere (the editor UI uses a QThread + signal for
+                exactly this case).
 
         Returns:
-            BindingGeneratorResult with statistics
+            BindingGeneratorResult with generation statistics
         """
-        self.clear()
-
-        logger.info(f"Generating bindings for gem: {gem_name}")
-
-        result = BindingGeneratorResult(success=True)
-
-        # Resolve gem sources
-        self._resolve_gem_sources(reflection_data, gem_resolver)
-
-        # Get gems to process (including dependencies)
-        gems_to_process = []
-        if self.config.include_gem_dependencies:
-            gems_to_process = gem_resolver.get_gem_dependencies(gem_name, True)
-        gems_to_process.append(gem_name)
-
-        # Process each gem
-        for process_gem_name in gems_to_process:
-            stats = self._process_gem(process_gem_name, reflection_data, gem_resolver)
-            result.classes_generated += stats.classes_generated
-            result.ebuses_generated += stats.ebuses_generated
-            result.per_gem_stats.append(stats)
-            result.processed_gems.append(process_gem_name)
-
-        result.files_written = len(self._generated_files)
-        result.generated_files = [f.relative_path for f in self._generated_files]
-
-        return result
-
-    def write_files(self) -> int:
-        """
-        Write all generated files to disk.
-
-        Returns:
-            Number of files written
-        """
-        if not self.config.write_to_disk:
-            return 0
-
-        output_dir = Path(self.config.output_directory)
-        output_dir.mkdir(parents=True, exist_ok=True)
-
-        files_written = 0
-        for generated_file in self._generated_files:
-            file_path = output_dir / generated_file.relative_path
-            file_path.parent.mkdir(parents=True, exist_ok=True)
-
-            # Check if we should overwrite
-            if file_path.exists() and not self.config.overwrite_existing:
-                # Check if content is different
-                existing_content = file_path.read_text(encoding="utf-8")
-                existing_checksum = hashlib.md5(
-                    existing_content.encode("utf-8")
-                ).hexdigest()
-                if existing_checksum == generated_file.checksum:
-                    continue
-
-            file_path.write_text(generated_file.content, encoding="utf-8")
-            files_written += 1
-            logger.debug(f"Wrote: {file_path}")
-
-        logger.info(f"Wrote {files_written} files to {output_dir}")
-        return files_written
-
-    def clear(self) -> None:
-        """Clear all generated content."""
-        self._generated_files.clear()
-        self._gem_stats.clear()
-
-    def get_generated_files(self) -> List[GeneratedFile]:
-        """Get all generated files."""
-        return self._generated_files.copy()
-
-    # ============================================================
-    # Core Bindings Generation
-    # ============================================================
-
-    def _generate_core_bindings(
-        self, reflection_data: ReflectionData
-    ) -> BindingGeneratorResult:
-        """Generate core O3DE bindings."""
-        result = BindingGeneratorResult(success=True)
-
-        # Collect core classes
-        core_classes = []
-        for cls in reflection_data.classes.values():
-            if self._is_core_class(cls):
-                core_classes.append(cls)
-                result.classes_generated += 1
-
-        # Collect core EBuses
-        core_ebuses = []
-        for ebus in reflection_data.ebuses.values():
-            if self._is_core_ebus(ebus):
-                core_ebuses.append(ebus)
-                result.ebuses_generated += 1
-
-        # Group by category
-        classes_by_category = self._group_by_category(core_classes)
-        ebuses_by_category = self._group_by_category(core_ebuses)
-
-        # Generate files for each category
-        for category, classes in classes_by_category.items():
-            self._generate_classes_file(
-                self.config.core_output_subdir, category, classes, is_core=True
+        if not self.tool_path:
+            return BindingGeneratorResult(
+                success=False,
+                error_message="ClangSharp binding generator tool not found. "
+                              "Ensure Code/Tools/BindingGenerator is built."
             )
 
-        if self.config.generate_ebus_wrappers:
-            for category, ebuses in ebuses_by_category.items():
-                self._generate_ebus_file(
-                    self.config.core_output_subdir, category, ebuses, is_core=True
-                )
+        config = config or BindingGeneratorConfig()
 
-        # Generate core project file
-        if (
-            self.config.generate_per_gem_projects
-            or self.config.generate_combined_assembly
-        ):
-            self._generate_project_file(self.config.core_output_subdir, "O3DE.Core", [])
+        # Build command-line arguments
+        args = self._build_arguments(project_path, config, force_regenerate)
 
-        return result
+        # Execute the tool
+        self.logger.info("Executing ClangSharp binding generator...")
+        self.logger.debug(f"Command: {' '.join(args)}")
 
-    def _is_core_class(self, cls: ReflectedClass) -> bool:
-        """Check if a class belongs to core bindings."""
-        # Check category
-        if cls.category in self.config.core_categories:
-            return True
-
-        # Check name prefix
-        for prefix in self.config.core_prefixes:
-            if cls.name.startswith(prefix):
-                return True
-
-        # Check if no gem source assigned (default to core)
-        if not cls.source_gem_name or cls.source_gem_name == "O3DE.Core":
-            return True
-
-        return False
-
-    def _is_core_ebus(self, ebus: ReflectedEBus) -> bool:
-        """Check if an EBus belongs to core bindings."""
-        if ebus.category in self.config.core_categories:
-            return True
-
-        for prefix in self.config.core_prefixes:
-            if ebus.name.startswith(prefix):
-                return True
-
-        if not ebus.source_gem_name or ebus.source_gem_name == "O3DE.Core":
-            return True
-
-        return False
-
-    # ============================================================
-    # Gem Bindings Generation
-    # ============================================================
-
-    def _generate_gem_bindings(
-        self, reflection_data: ReflectionData, gem_resolver: GemDependencyResolver
-    ) -> BindingGeneratorResult:
-        """Generate per-gem bindings."""
-        result = BindingGeneratorResult(success=True)
-
-        # Get gems to process
-        gems_to_process = self._get_gems_to_process(gem_resolver)
-
-        # Process each gem
-        for gem_name in gems_to_process:
-            if not self._should_process_gem(gem_name):
-                continue
-
-            stats = self._process_gem(gem_name, reflection_data, gem_resolver)
-            result.classes_generated += stats.classes_generated
-            result.ebuses_generated += stats.ebuses_generated
-            result.per_gem_stats.append(stats)
-            result.processed_gems.append(gem_name)
-
-        return result
-
-    def _process_gem(
-        self,
-        gem_name: str,
-        reflection_data: ReflectionData,
-        gem_resolver: GemDependencyResolver,
-    ) -> GemBindingStats:
-        """Process a single gem's classes and EBuses."""
-        stats = GemBindingStats(gem_name=gem_name)
-
-        logger.debug(f"Processing gem: {gem_name}")
-
-        # Get classes for this gem
-        gem_classes = [
-            cls
-            for cls in reflection_data.classes.values()
-            if cls.source_gem_name == gem_name and not self._is_core_class(cls)
-        ]
-
-        # Get EBuses for this gem
-        gem_ebuses = [
-            ebus
-            for ebus in reflection_data.ebuses.values()
-            if ebus.source_gem_name == gem_name and not self._is_core_ebus(ebus)
-        ]
-
-        if not gem_classes and not gem_ebuses:
-            return stats
-
-        # Group by category
-        classes_by_category = self._group_by_category(gem_classes)
-        ebuses_by_category = self._group_by_category(gem_ebuses)
-
-        # Determine output directory
-        if self.config.separate_gem_directories:
-            output_subdir = self._get_safe_filename(gem_name)
-        else:
-            output_subdir = ""
-
-        files_before = len(self._generated_files)
-
-        # Generate files for each category
-        for category, classes in classes_by_category.items():
-            self._generate_classes_file(
-                output_subdir, category, classes, gem_name=gem_name
-            )
-            stats.classes_generated += len(classes)
-
-        if self.config.generate_ebus_wrappers:
-            for category, ebuses in ebuses_by_category.items():
-                self._generate_ebus_file(
-                    output_subdir, category, ebuses, gem_name=gem_name
-                )
-                stats.ebuses_generated += len(ebuses)
-
-        # Generate gem project file
-        if self.config.generate_per_gem_projects:
-            gem_descriptor = gem_resolver.get_gem(gem_name)
-            dependencies = gem_resolver.get_gem_dependencies(gem_name, False)
-            self._generate_project_file(output_subdir, gem_name, dependencies)
-            self._generate_assembly_info(output_subdir, gem_name, gem_descriptor)
-
-        stats.files_generated = len(self._generated_files) - files_before
-        stats.generated_files = [
-            f.relative_path for f in self._generated_files[files_before:]
-        ]
-
-        self._gem_stats[gem_name] = stats
-        return stats
-
-    def _resolve_gem_sources(
-        self, reflection_data: ReflectionData, gem_resolver: GemDependencyResolver
-    ) -> None:
-        """Resolve gem sources for all reflected types."""
-        logger.debug("Resolving gem sources for reflected types...")
-
-        for cls in reflection_data.classes.values():
-            if not cls.source_gem_name:
-                cls.source_gem_name = gem_resolver.resolve_gem_for_class(
-                    cls.name, cls.category
-                )
-
-        for ebus in reflection_data.ebuses.values():
-            if not ebus.source_gem_name:
-                ebus.source_gem_name = gem_resolver.resolve_gem_for_class(
-                    ebus.name, ebus.category
-                )
-
-    # ============================================================
-    # File Generation
-    # ============================================================
-
-    def _generate_classes_file(
-        self,
-        output_subdir: str,
-        category: str,
-        classes: List[ReflectedClass],
-        is_core: bool = False,
-        gem_name: str = "",
-    ) -> None:
-        """Generate a classes file for a category."""
-        if not classes:
-            return
-
-        content = []
-
-        # File header
-        content.append(self._generate_file_header())
-        content.append("")
-
-        # Using statements
-        content.append(self._generate_usings())
-        content.append("")
-
-        # Namespace
-        if is_core:
-            namespace = self.config.core_namespace
-        else:
-            namespace = self._get_gem_namespace(gem_name)
-
-        if category and category != "Core":
-            namespace += f".{self._to_pascal_case(category)}"
-
-        content.append(f"namespace {namespace}")
-        content.append("{")
-
-        # Sort classes by name
-        sorted_classes = sorted(classes, key=lambda c: c.name)
-
-        # Generate each class
-        for i, cls in enumerate(sorted_classes):
-            content.append(self._generate_class(cls, indent=1))
-            if i < len(sorted_classes) - 1:
-                content.append("")
-
-        content.append("}")
-
-        # Create file entry
-        filename = self._get_category_filename(category) + ".cs"
-        if output_subdir:
-            relative_path = f"{output_subdir}/{filename}"
-        else:
-            relative_path = filename
-
-        self._generated_files.append(
-            GeneratedFile(relative_path=relative_path, content="\n".join(content))
+        cwd = (
+            Path(self.tool_path).parent if Path(self.tool_path).is_file()
+            else self.tool_path
         )
 
-    def _generate_ebus_file(
-        self,
-        output_subdir: str,
-        category: str,
-        ebuses: List[ReflectedEBus],
-        is_core: bool = False,
-        gem_name: str = "",
-    ) -> None:
-        """Generate an EBus wrappers file for a category."""
-        if not ebuses:
-            return
+        # Streaming path: line-by-line read via Popen. Used when a
+        # caller (the editor's Binding tab) wants live progress
+        # rendered in its log view as the tool runs, rather than a
+        # 60-second blank screen followed by a wall of buffered text.
+        if output_callback is not None:
+            return self._generate_streaming(args, cwd, config, output_callback)
 
-        content = []
-
-        # File header
-        content.append(self._generate_file_header())
-        content.append("")
-
-        # Using statements
-        content.append(self._generate_usings())
-        content.append("")
-
-        # Namespace
-        if is_core:
-            namespace = self.config.core_namespace
-        else:
-            namespace = self._get_gem_namespace(gem_name)
-
-        if category and category != "Core":
-            namespace += f".{self._to_pascal_case(category)}"
-
-        content.append(f"namespace {namespace}.EBus")
-        content.append("{")
-
-        # Sort EBuses by name
-        sorted_ebuses = sorted(ebuses, key=lambda e: e.name)
-
-        # Generate each EBus
-        for i, ebus in enumerate(sorted_ebuses):
-            content.append(self._generate_ebus(ebus, indent=1))
-            if i < len(sorted_ebuses) - 1:
-                content.append("")
-
-        content.append("}")
-
-        # Create file entry
-        filename = self._get_category_filename(category) + ".EBus.cs"
-        if output_subdir:
-            relative_path = f"{output_subdir}/{filename}"
-        else:
-            relative_path = filename
-
-        self._generated_files.append(
-            GeneratedFile(relative_path=relative_path, content="\n".join(content))
-        )
-
-    def _generate_internal_calls_file(self, reflection_data: ReflectionData) -> None:
-        """Generate the internal calls file for native method declarations."""
-        content = []
-
-        content.append(self._generate_file_header())
-        content.append("")
-        content.append("using System;")
-        content.append("using System.Runtime.CompilerServices;")
-        content.append("using System.Runtime.InteropServices;")
-        content.append("")
-        content.append(f"namespace {self.config.root_namespace}.Internal")
-        content.append("{")
-        content.append("    /// <summary>")
-        content.append("    /// Internal calls to native O3DE methods.")
-        content.append(
-            "    /// These are registered by the O3DESharp native module via Coral."
-        )
-        content.append("    /// </summary>")
-        content.append("    internal static class NativeMethods")
-        content.append("    {")
-
-        # Generate internal call declarations for each class method
-        for cls in sorted(reflection_data.classes.values(), key=lambda c: c.name):
-            for method in cls.methods:
-                internal_call = self._generate_internal_call_signature(method, cls)
-                content.append(f"        {internal_call}")
-
-        content.append("    }")
-        content.append("}")
-
-        self._generated_files.append(
-            GeneratedFile(relative_path="InternalCalls.cs", content="\n".join(content))
-        )
-
-    def _generate_project_file(
-        self, output_subdir: str, project_name: str, dependencies: List[str]
-    ) -> None:
-        """Generate a .csproj file."""
-        is_core_project = project_name == "O3DE.Core"
-        
-        content = []
-
-        content.append('<Project Sdk="Microsoft.NET.Sdk">')
-        content.append("")
-        content.append("  <PropertyGroup>")
-        content.append(
-            f"    <TargetFramework>{self.config.target_framework}</TargetFramework>"
-        )
-        content.append("    <ImplicitUsings>enable</ImplicitUsings>")
-        content.append("    <Nullable>enable</Nullable>")
-        content.append(
-            f"    <AssemblyName>{self._get_safe_filename(project_name)}</AssemblyName>"
-        )
-        content.append(
-            f"    <RootNamespace>{self._get_gem_namespace(project_name)}</RootNamespace>"
-        )
-        content.append("  </PropertyGroup>")
-        content.append("")
-
-        # Add project references for dependencies
-        has_project_refs = dependencies or (not is_core_project and self.config.generate_core_bindings)
-        if has_project_refs:
-            content.append("  <ItemGroup>")
-            
-            # Gem projects should reference Core project
-            if not is_core_project and self.config.generate_core_bindings:
-                core_subdir = self.config.core_output_subdir
-                content.append(
-                    f'    <ProjectReference Include="../{core_subdir}/O3DE.Core.csproj" />'
-                )
-            
-            # Add other gem dependencies
-            for dep in dependencies:
-                dep_filename = self._get_safe_filename(dep)
-                content.append(
-                    f'    <ProjectReference Include="../{dep_filename}/{dep_filename}.csproj" />'
-                )
-            content.append("  </ItemGroup>")
-            content.append("")
-
-        # Reference to core assembly
-        content.append("  <ItemGroup>")
-        content.append('    <Reference Include="O3DE.Sharp.Core">')
-        content.append(
-            "      <HintPath>$(O3DESharpCorePath)/O3DE.Sharp.Core.dll</HintPath>"
-        )
-        content.append("    </Reference>")
-        content.append("  </ItemGroup>")
-        content.append("")
-        content.append("</Project>")
-
-        filename = f"{self._get_safe_filename(project_name)}.csproj"
-        if output_subdir:
-            relative_path = f"{output_subdir}/{filename}"
-        else:
-            relative_path = filename
-
-        self._generated_files.append(
-            GeneratedFile(relative_path=relative_path, content="\n".join(content))
-        )
-
-    def _generate_assembly_info(
-        self,
-        output_subdir: str,
-        gem_name: str,
-        gem_descriptor: Optional[GemDescriptor],
-    ) -> None:
-        """Generate AssemblyInfo.cs for a gem."""
-        content = []
-
-        content.append(self._generate_file_header())
-        content.append("")
-        content.append("using System.Reflection;")
-        content.append("using System.Runtime.CompilerServices;")
-        content.append("using System.Runtime.InteropServices;")
-        content.append("")
-
-        display_name = gem_descriptor.display_name if gem_descriptor else gem_name
-        content.append(f'[assembly: AssemblyTitle("{display_name}")]')
-
-        if gem_descriptor and gem_descriptor.summary:
-            content.append(
-                f'[assembly: AssemblyDescription("{gem_descriptor.summary}")]'
+        # Legacy capture path: buffered run, single result. Kept for
+        # callers that don't care about progress UX (CLI scripts, tests,
+        # places where the caller is already on a worker thread).
+        try:
+            result = subprocess.run(
+                args,
+                capture_output=True,
+                text=True,
+                cwd=cwd,
+                timeout=1800,  # 30 minute timeout for full project generation
             )
 
-        version = gem_descriptor.version if gem_descriptor else "1.0.0"
-        content.append(f'[assembly: AssemblyVersion("{version}")]')
-        content.append(f'[assembly: AssemblyFileVersion("{version}")]')
-        content.append("[assembly: ComVisible(false)]")
-
-        if output_subdir:
-            relative_path = f"{output_subdir}/AssemblyInfo.cs"
-        else:
-            relative_path = "AssemblyInfo.cs"
-
-        self._generated_files.append(
-            GeneratedFile(relative_path=relative_path, content="\n".join(content))
-        )
-
-    def _generate_solution_files(
-        self, gem_resolver: Optional[GemDependencyResolver]
-    ) -> None:
-        """Generate Visual Studio solution file."""
-        content = []
-
-        content.append("")
-        content.append("Microsoft Visual Studio Solution File, Format Version 12.00")
-        content.append("# Visual Studio Version 17")
-        content.append("VisualStudioVersion = 17.0.31903.59")
-        content.append("MinimumVisualStudioVersion = 10.0.40219.1")
-
-        projects = []
-
-        # Add core project
-        if self.config.generate_core_bindings:
-            core_guid = self._generate_guid("O3DE.Core")
-            core_path = f"{self.config.core_output_subdir}/O3DE.Core.csproj"
-            projects.append(("O3DE.Core", core_path, core_guid))
-
-        # Add gem projects
-        for gem_name in self._gem_stats.keys():
-            gem_guid = self._generate_guid(gem_name)
-            gem_filename = self._get_safe_filename(gem_name)
-            gem_path = f"{gem_filename}/{gem_filename}.csproj"
-            projects.append((gem_name, gem_path, gem_guid))
-
-        # Write project entries
-        for name, path, guid in projects:
-            content.append(
-                f'Project("{{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}}") = "{name}", "{path}", "{{{guid}}}"'
-            )
-            content.append("EndProject")
-
-        content.append("Global")
-        content.append(
-            "    GlobalSection(SolutionConfigurationPlatforms) = preSolution"
-        )
-        content.append("        Debug|Any CPU = Debug|Any CPU")
-        content.append("        Release|Any CPU = Release|Any CPU")
-        content.append("    EndGlobalSection")
-        content.append(
-            "    GlobalSection(ProjectConfigurationPlatforms) = postSolution"
-        )
-
-        for _, _, guid in projects:
-            content.append(
-                f"        {{{guid}}}.Debug|Any CPU.ActiveCfg = Debug|Any CPU"
-            )
-            content.append(f"        {{{guid}}}.Debug|Any CPU.Build.0 = Debug|Any CPU")
-            content.append(
-                f"        {{{guid}}}.Release|Any CPU.ActiveCfg = Release|Any CPU"
-            )
-            content.append(
-                f"        {{{guid}}}.Release|Any CPU.Build.0 = Release|Any CPU"
-            )
-
-        content.append("    EndGlobalSection")
-        content.append("EndGlobal")
-
-        self._generated_files.append(
-            GeneratedFile(
-                relative_path=f"{self.config.solution_name}.sln",
-                content="\n".join(content),
-            )
-        )
-
-    # ============================================================
-    # Class/Method/Property Generation
-    # ============================================================
-
-    def _generate_class(self, cls: ReflectedClass, indent: int = 0) -> str:
-        """Generate C# code for a class."""
-        lines = []
-        ind = self._indent(indent)
-
-        # XML documentation
-        if self.config.generate_documentation and cls.description:
-            lines.append(f"{ind}/// <summary>")
-            lines.append(f"{ind}/// {self._escape_xml(cls.description)}")
-            lines.append(f"{ind}/// </summary>")
-
-        # Obsolete attribute
-        if self.config.mark_deprecated_as_obsolete and cls.is_deprecated:
-            lines.append(f'{ind}[Obsolete("This class is deprecated.")]')
-
-        # Class declaration
-        partial = "partial " if self.config.generate_partial_classes else ""
-        class_name = self._get_csharp_class_name(cls.name)
-
-        # Base class
-        base_clause = ""
-        if cls.base_classes:
-            base_name = self._get_csharp_type_name(cls.base_classes[0])
-            base_clause = f" : {base_name}"
-
-        lines.append(f"{ind}public {partial}class {class_name}{base_clause}")
-        lines.append(f"{ind}{{")
-
-        # Native handle field
-        lines.append(f"{ind}    private IntPtr _nativeHandle;")
-        lines.append("")
-
-        # Constructors
-        for ctor in cls.constructors:
-            lines.append(self._generate_constructor(ctor, cls, indent + 1))
-            lines.append("")
-
-        # Properties
-        for prop in cls.properties:
-            lines.append(self._generate_property(prop, cls, indent + 1))
-            lines.append("")
-
-        # Methods
-        for method in cls.methods:
-            lines.append(self._generate_method(method, cls, indent + 1))
-            lines.append("")
-
-        # Remove trailing empty line
-        if lines and lines[-1] == "":
-            lines.pop()
-
-        lines.append(f"{ind}}}")
-
-        return "\n".join(lines)
-
-    def _generate_method(
-        self, method: ReflectedMethod, cls: Optional[ReflectedClass], indent: int = 0
-    ) -> str:
-        """Generate C# code for a method."""
-        lines = []
-        ind = self._indent(indent)
-
-        # XML documentation
-        if self.config.generate_documentation:
-            lines.append(f"{ind}/// <summary>")
-            desc = method.description if method.description else f"{method.name} method"
-            lines.append(f"{ind}/// {self._escape_xml(desc)}")
-            lines.append(f"{ind}/// </summary>")
-
-            for param in method.parameters:
-                clean_name = self._clean_parameter_name(param.name)
-                lines.append(
-                    f'{ind}/// <param name="{self._to_camel_case(clean_name)}">'
-                    f"Parameter of type {param.type_name}</param>"
-                )
-
-            if method.return_type.type_name != "void":
-                lines.append(
-                    f"{ind}/// <returns>{method.return_type.type_name}</returns>"
-                )
-
-        # Obsolete attribute
-        if self.config.mark_deprecated_as_obsolete and method.is_deprecated:
-            msg = method.deprecation_message or "This method is deprecated."
-            lines.append(f'{ind}[Obsolete("{msg}")]')
-
-        # Method signature
-        static = "static " if method.is_static else ""
-        return_type = self._get_csharp_type_name(method.return_type.type_name)
-        method_name = self._clean_identifier(self._to_pascal_case(method.name))
-
-        # Parameters
-        params = []
-        for param in method.parameters:
-            param_type = self._get_csharp_type_name(param.type_name)
-            clean_name = self._clean_parameter_name(param.name)
-            param_name = self._make_safe_name(self._to_camel_case(clean_name))
-            params.append(f"{param_type} {param_name}")
-
-        param_list = ", ".join(params)
-
-        lines.append(f"{ind}public {static}{return_type} {method_name}({param_list})")
-        lines.append(f"{ind}{{")
-
-        # Method body - call native method
-        native_prefix = self._get_native_method_prefix(cls.name) if cls else "Global"
-        internal_call = f"NativeMethods.{native_prefix}_{method.name}"
-
-        args = []
-        if not method.is_static and cls:
-            args.append("_nativeHandle")
-        for param in method.parameters:
-            clean_name = self._clean_parameter_name(param.name)
-            args.append(self._make_safe_name(self._to_camel_case(clean_name)))
-
-        args_str = ", ".join(args)
-
-        if return_type == "void":
-            lines.append(f"{ind}    {internal_call}({args_str});")
-        else:
-            lines.append(f"{ind}    return {internal_call}({args_str});")
-
-        lines.append(f"{ind}}}")
-
-        return "\n".join(lines)
-
-    def _generate_property(
-        self, prop: ReflectedProperty, cls: Optional[ReflectedClass], indent: int = 0
-    ) -> str:
-        """Generate C# code for a property."""
-        lines = []
-        ind = self._indent(indent)
-
-        # XML documentation
-        if self.config.generate_documentation and prop.description:
-            lines.append(f"{ind}/// <summary>")
-            lines.append(f"{ind}/// {self._escape_xml(prop.description)}")
-            lines.append(f"{ind}/// </summary>")
-
-        # Obsolete attribute
-        if self.config.mark_deprecated_as_obsolete and prop.is_deprecated:
-            lines.append(f'{ind}[Obsolete("This property is deprecated.")]')
-
-        prop_type = self._get_csharp_type_name(prop.value_type.type_name)
-        prop_name = self._to_pascal_case(prop.name)
-        native_prefix = self._get_native_method_prefix(cls.name) if cls else "Global"
-
-        lines.append(f"{ind}public {prop_type} {prop_name}")
-        lines.append(f"{ind}{{")
-
-        if prop.has_getter:
-            lines.append(
-                f"{ind}    get => NativeMethods.{native_prefix}_Get{prop.name}(_nativeHandle);"
-            )
-
-        if prop.has_setter:
-            lines.append(
-                f"{ind}    set => NativeMethods.{native_prefix}_Set{prop.name}(_nativeHandle, value);"
-            )
-
-        lines.append(f"{ind}}}")
-
-        return "\n".join(lines)
-
-    def _generate_constructor(
-        self, ctor: ReflectedMethod, cls: ReflectedClass, indent: int = 0
-    ) -> str:
-        """Generate C# code for a constructor."""
-        lines = []
-        ind = self._indent(indent)
-
-        class_name = self._get_csharp_class_name(cls.name)
-        native_prefix = self._get_native_method_prefix(cls.name)
-
-        # Parameters
-        params = []
-        for param in ctor.parameters:
-            param_type = self._get_csharp_type_name(param.type_name)
-            clean_name = self._clean_parameter_name(param.name)
-            param_name = self._make_safe_name(self._to_camel_case(clean_name))
-            params.append(f"{param_type} {param_name}")
-
-        param_list = ", ".join(params)
-
-        lines.append(f"{ind}public {class_name}({param_list})")
-        lines.append(f"{ind}{{")
-
-        # Constructor body
-        args = [
-            self._make_safe_name(self._to_camel_case(self._clean_parameter_name(p.name))) for p in ctor.parameters
-        ]
-        args_str = ", ".join(args)
-        lines.append(
-            f"{ind}    _nativeHandle = NativeMethods.{native_prefix}_Create({args_str});"
-        )
-
-        lines.append(f"{ind}}}")
-
-        return "\n".join(lines)
-
-    def _generate_ebus(self, ebus: ReflectedEBus, indent: int = 0) -> str:
-        """Generate C# code for an EBus wrapper."""
-        lines = []
-        ind = self._indent(indent)
-
-        # XML documentation
-        if self.config.generate_documentation and ebus.description:
-            lines.append(f"{ind}/// <summary>")
-            lines.append(f"{ind}/// {self._escape_xml(ebus.description)}")
-            lines.append(f"{ind}/// </summary>")
-
-        ebus_name = self._get_csharp_class_name(ebus.name)
-        lines.append(f"{ind}public static class {ebus_name}")
-        lines.append(f"{ind}{{")
-
-        # Generate event methods
-        for event in ebus.events:
-            lines.append(self._generate_ebus_event(event, ebus, indent + 1))
-            lines.append("")
-
-        # Remove trailing empty line
-        if lines and lines[-1] == "":
-            lines.pop()
-
-        lines.append(f"{ind}}}")
-
-        return "\n".join(lines)
-
-    def _generate_ebus_event(
-        self, event: ReflectedEBusEvent, ebus: ReflectedEBus, indent: int = 0
-    ) -> str:
-        """Generate C# code for an EBus event method."""
-        lines = []
-        ind = self._indent(indent)
-
-        return_type = self._get_csharp_type_name(event.return_type.type_name)
-        method_name = self._clean_identifier(self._to_pascal_case(event.name))
-
-        # Parameters
-        params = []
-        if not event.is_broadcast and ebus.address_type:
-            addr_type = self._get_csharp_type_name(ebus.address_type.type_name)
-            params.append(f"{addr_type} address")
-
-        for param in event.parameters:
-            param_type = self._get_csharp_type_name(param.type_name)
-            clean_name = self._clean_parameter_name(param.name)
-            param_name = self._make_safe_name(self._to_camel_case(clean_name))
-            params.append(f"{param_type} {param_name}")
-
-        param_list = ", ".join(params)
-
-        # Method signature
-        if event.is_broadcast:
-            lines.append(
-                f"{ind}public static {return_type} Broadcast{method_name}({param_list})"
-            )
-        else:
-            lines.append(
-                f"{ind}public static {return_type} Event{method_name}({param_list})"
-            )
-
-        lines.append(f"{ind}{{")
-
-        # Method body
-        args = []
-        if not event.is_broadcast:
-            args.append("address")
-        for param in event.parameters:
-            clean_name = self._clean_parameter_name(param.name)
-            args.append(self._make_safe_name(self._to_camel_case(clean_name)))
-
-        args_str = ", ".join(args)
-        ebus_prefix = self._get_native_method_prefix(ebus.name)
-        internal_method = f"NativeMethods.{ebus_prefix}_{event.name}"
-
-        if return_type == "void":
-            lines.append(f"{ind}    {internal_method}({args_str});")
-        else:
-            lines.append(f"{ind}    return {internal_method}({args_str});")
-
-        lines.append(f"{ind}}}")
-
-        return "\n".join(lines)
-
-    def _generate_internal_call_signature(
-        self, method: ReflectedMethod, cls: Optional[ReflectedClass]
-    ) -> str:
-        """Generate the internal call declaration for a method."""
-        return_type = self._get_csharp_type_name(method.return_type.type_name)
-        native_prefix = self._get_native_method_prefix(cls.name) if cls else "Global"
-        method_name = f"{native_prefix}_{method.name}"
-
-        params = []
-        if not method.is_static and cls:
-            params.append("IntPtr instance")
-
-        for param in method.parameters:
-            param_type = self._get_csharp_type_name(param.type_name)
-            clean_name = self._clean_parameter_name(param.name)
-            param_name = self._make_safe_name(self._to_camel_case(clean_name))
-            params.append(f"{param_type} {param_name}")
-
-        param_list = ", ".join(params)
-
-        return f"[MethodImpl(MethodImplOptions.InternalCall)] internal static extern {return_type} {method_name}({param_list});"
-
-    # ============================================================
-    # Helper Methods
-    # ============================================================
-
-    def _generate_file_header(self) -> str:
-        """Generate file header comment."""
-        if self.config.file_header:
-            return self.config.file_header
-
-        now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        return f"""//------------------------------------------------------------------------------
-// <auto-generated>
-//     This code was generated by O3DESharp Binding Generator.
-//     Generated: {now}
-//
-//     Changes to this file may be overwritten when regenerated.
-// </auto-generated>
-//------------------------------------------------------------------------------"""
-
-    def _generate_usings(self) -> str:
-        """Generate using statements."""
-        return """using System;
-using System.Runtime.CompilerServices;
-using System.Runtime.InteropServices;
-using O3DE.Core;"""
-
-    def _indent(self, level: int) -> str:
-        """Generate indentation string."""
-        return "    " * level
-
-    def _get_csharp_type_name(self, type_name: str) -> str:
-        """Convert an O3DE type name to C# type name."""
-        if not type_name:
-            return "void"
-            
-        if type_name in TYPE_MAPPINGS:
-            return TYPE_MAPPINGS[type_name]
-
-        # Handle pointers, references, and const qualifiers
-        clean_name = type_name
-        clean_name = clean_name.replace("const ", "").replace(" const", "")
-        clean_name = clean_name.replace("*", "").replace("&", "")
-        clean_name = clean_name.strip()
-        
-        if clean_name in TYPE_MAPPINGS:
-            return TYPE_MAPPINGS[clean_name]
-
-        # Handle UUID types like {1A5676D2-767B-4C2F-BC35-9CDDCE1430BB}
-        if clean_name.startswith("{") and clean_name.endswith("}"):
-            return "Guid"
-        
-        # Handle AZ::Uuid
-        if clean_name in ("Uuid", "AZ::Uuid"):
-            return "Guid"
-
-        # Remove common AZ:: and AZStd:: prefixes first
-        if clean_name.startswith("AZ::"):
-            clean_name = clean_name[4:]
-        elif clean_name.startswith("AZStd::"):
-            clean_name = clean_name[7:]
-
-        if clean_name in TYPE_MAPPINGS:
-            return TYPE_MAPPINGS[clean_name]
-        
-        # Check again after stripping prefix
-        if clean_name == "Uuid":
-            return "Guid"
-
-        # Handle template types - extract the base type or use object
-        if "<" in clean_name:
-            # For complex template types, just use the base type name or object
-            base_type = clean_name.split("<")[0].strip()
-            # Handle common template types
-            if base_type in ("vector", "Vector", "AZStd::vector", "list", "List"):
-                return "object[]"  # TODO: Could be made generic
-            elif base_type in ("basic_string_view", "string_view", "AZStd::string_view"):
-                return "string"
-            elif base_type in ("basic_string", "AZStd::string"):
-                return "string"
-            elif base_type in ("optional", "AZStd::optional"):
-                return "object"  # TODO: Could be Nullable<T>
-            elif base_type in ("shared_ptr", "unique_ptr", "AZStd::shared_ptr", "AZStd::unique_ptr"):
-                return "IntPtr"
+            # Parse output
+            if result.returncode == 0:
+                return self._parse_success_output(result.stdout, config)
             else:
-                # Unknown template - use object
-                return "object"
+                return BindingGeneratorResult(
+                    success=False,
+                    error_message=f"ClangSharp tool failed with exit code {result.returncode}\n"
+                                  f"STDOUT: {result.stdout}\n"
+                                  f"STDERR: {result.stderr}"
+                )
 
-        # For any remaining namespaced types, extract just the type name
-        # e.g., "Render::AreaLightComponent" -> "AreaLightComponent"
-        if "::" in clean_name:
-            clean_name = clean_name.split("::")[-1]
+        except subprocess.TimeoutExpired:
+            return BindingGeneratorResult(
+                success=False,
+                error_message="ClangSharp tool timed out after 30 minutes"
+            )
+        except Exception as e:
+            return BindingGeneratorResult(
+                success=False,
+                error_message=f"Failed to execute ClangSharp tool: {str(e)}"
+            )
 
-        # Default: return the cleaned name (escaping keywords if needed)
-        return self._make_safe_name(clean_name)
-
-    def _make_safe_name(self, name: str) -> str:
-        """Make a name safe for C# (escape keywords, handle C++ namespaces)."""
-        # First, extract just the class/type name if it has C++ namespaces
-        if "::" in name:
-            name = name.split("::")[-1]
-        
-        # Also handle the case where it might have C# dots
-        if "." in name:
-            name = name.split(".")[-1]
-        
-        # Escape C# keywords
-        if name.lower() in CSHARP_KEYWORDS:
-            return f"@{name}"
-        return name
-
-    def _get_csharp_class_name(self, cpp_name: str) -> str:
-        """Extract the C# class name from a potentially namespaced C++ name.
-        
-        Examples:
-            'AZ::Render::AreaLightComponent' -> 'AreaLightComponent'
-            'TransformComponent' -> 'TransformComponent'
+    def _generate_streaming(
+        self,
+        args: List[str],
+        cwd,
+        config: "BindingGeneratorConfig",
+        output_callback: Callable[[str], None],
+    ) -> "BindingGeneratorResult":
         """
-        if "::" in cpp_name:
-            simple_name = cpp_name.split("::")[-1]
-        else:
-            simple_name = cpp_name
-        
-        return self._make_safe_name(simple_name)
+        Run the generator with line-by-line stdout streaming.
 
-    def _get_native_method_prefix(self, cpp_name: str) -> str:
-        """Get the prefix for native method calls.
-        
-        Converts C++ namespace separators to underscores for use in NativeMethods.
-        
-        Examples:
-            'AZ::Render::AreaLightComponent' -> 'AZ_Render_AreaLightComponent'
-            'TransformComponent' -> 'TransformComponent'
-            'Has Key' -> 'Has_Key'
+        Merges stderr into stdout so order is preserved (matches what a
+        user sees on a terminal). Each line is dispatched to
+        output_callback as it arrives, AND accumulated for the final
+        _parse_success_output pass so we still get classes/EBuses/files
+        counts on success.
+
+        Uses Popen with bufsize=1 + universal_newlines=True so the OS
+        pipe doesn't sit on lines until the buffer fills - that's the
+        whole point of streaming.
         """
-        result = cpp_name.replace("::", "_").replace(".", "_").replace(" ", "_")
-        # Remove any remaining invalid C# identifier characters
-        result = ''.join(c for c in result if c.isalnum() or c == '_')
-        return result
+        accumulated_stdout: List[str] = []
+        try:
+            proc = subprocess.Popen(
+                args,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,  # merge into stdout for order
+                text=True,
+                bufsize=1,
+                cwd=cwd,
+            )
+        except Exception as e:
+            return BindingGeneratorResult(
+                success=False,
+                error_message=f"Failed to launch ClangSharp tool: {str(e)}"
+            )
 
-    def _clean_parameter_name(self, name: str) -> str:
-        """Clean a parameter name by removing C++ type qualifiers.
-        
-        Sometimes parameter names from reflection contain type info like:
-            'entityId const&' -> 'entityId'
-            'value*' -> 'value'
-            'allocator>' -> 'allocator'
-        """
-        if not name:
-            return "param"
-        
-        # Remove common C++ qualifiers and template fragments that might be in the name
-        clean = name
-        clean = clean.replace("const", "").replace("&", "").replace("*", "")
-        # Remove template fragments
-        clean = clean.replace("<", "").replace(">", "")
-        # Remove braces (UUIDs like {GUID})
-        clean = clean.replace("{", "").replace("}", "")
-        clean = clean.strip()
-        
-        # If the name became empty or just whitespace, use a default
-        if not clean:
-            return "param"
-        
-        # Take only the first word if there are spaces (might be "type name")
-        if " " in clean:
-            parts = clean.split()
-            # Usually the last part is the actual name
-            clean = parts[-1]
-        
-        # If name starts with a digit, prefix with underscore
-        if clean and clean[0].isdigit():
-            clean = "_" + clean
-        
-        # Remove any remaining invalid characters for C# identifiers
-        clean = ''.join(c for c in clean if c.isalnum() or c == '_')
-        
-        # If still empty after all cleaning, use default
-        if not clean:
-            return "param"
-        
-        return clean
+        try:
+            # readline blocks per-line; we yield each to the callback
+            # so the UI can render it. None signals EOF.
+            assert proc.stdout is not None
+            for line in proc.stdout:
+                # Trim trailing newline so the callback can format as it
+                # likes. The accumulator keeps the raw line so the
+                # success-parser sees the same output it would have
+                # gotten from capture_output=True.
+                accumulated_stdout.append(line)
+                try:
+                    output_callback(line.rstrip("\r\n"))
+                except Exception:
+                    # Callback errors must not kill the generator run.
+                    pass
+        finally:
+            # Drain + close. Bound the wait at 30 minutes total (the
+            # same cap the legacy capture path enforces via timeout=).
+            try:
+                rc = proc.wait(timeout=1800)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+                return BindingGeneratorResult(
+                    success=False,
+                    error_message="ClangSharp tool timed out after 30 minutes"
+                )
 
-    def _clean_identifier(self, name: str) -> str:
-        """Clean a name to be a valid C# identifier (for method names, etc.).
-        
-        Examples:
-            'Has Key' -> 'HasKey'
-            'Get_Value' -> 'GetValue'
-        """
-        if not name:
-            return "Unknown"
-        
-        # Remove spaces by converting to PascalCase
-        if " " in name:
-            parts = name.split()
-            name = "".join(part.capitalize() for part in parts if part)
-        
-        # Remove any invalid characters
-        name = ''.join(c for c in name if c.isalnum() or c == '_')
-        
-        # If name starts with a digit, prefix with underscore
-        if name and name[0].isdigit():
-            name = "_" + name
-        
-        if not name:
-            return "Unknown"
-        
-        return name
-
-    def _to_pascal_case(self, name: str) -> str:
-        """Convert a name to PascalCase."""
-        if not name:
-            return name
-
-        # Handle spaces first (e.g., "Has Key" -> "HasKey")
-        if " " in name:
-            parts = name.split()
-            return "".join(part.capitalize() for part in parts if part)
-
-        # Handle snake_case
-        if "_" in name:
-            parts = name.split("_")
-            return "".join(part.capitalize() for part in parts if part)
-
-        # Handle camelCase - just capitalize first letter
-        return name[0].upper() + name[1:] if len(name) > 1 else name.upper()
-
-    def _to_camel_case(self, name: str) -> str:
-        """Convert a name to camelCase."""
-        pascal = self._to_pascal_case(name)
-        if not pascal:
-            return pascal
-        return pascal[0].lower() + pascal[1:]
-
-    def _escape_xml(self, text: str) -> str:
-        """Escape text for XML documentation."""
-        return (
-            text.replace("&", "&amp;")
-            .replace("<", "&lt;")
-            .replace(">", "&gt;")
-            .replace('"', "&quot;")
+        full_stdout = "".join(accumulated_stdout)
+        if rc == 0:
+            return self._parse_success_output(full_stdout, config)
+        return BindingGeneratorResult(
+            success=False,
+            error_message=(
+                f"ClangSharp tool failed with exit code {rc}\n"
+                f"OUTPUT: {full_stdout}"
+            ),
         )
 
-    def _get_gem_namespace(self, gem_name: str) -> str:
-        """Get the C# namespace for a gem."""
-        clean_name = gem_name.replace("_", ".").replace("-", ".")
-        while ".." in clean_name:
-            clean_name = clean_name.replace("..", ".")
-        return f"{self.config.root_namespace}.{clean_name}"
+    def _build_arguments(
+        self,
+        project_path: str,
+        config: BindingGeneratorConfig,
+        force_regenerate: bool,
+    ) -> List[str]:
+        """Build command-line arguments for the ClangSharp tool."""
+        tool_path = Path(self.tool_path)
 
-    def _get_safe_filename(self, name: str) -> str:
-        """Get a safe filename from a name."""
-        invalid_chars = [":", "<", ">", "|", "?", "*", "/", "\\", '"']
-        result = name
-        for char in invalid_chars:
-            result = result.replace(char, "_")
-        return result
-
-    def _get_category_filename(self, category: str) -> str:
-        """Get a filename for a category."""
-        if not category:
-            return "Core"
-        return self._to_pascal_case(self._get_safe_filename(category))
-
-    def _group_by_category(self, items: List[Any]) -> Dict[str, List[Any]]:
-        """Group items by their category."""
-        result: Dict[str, List[Any]] = {}
-        for item in items:
-            category = getattr(item, "category", "") or "Core"
-            if category not in result:
-                result[category] = []
-            result[category].append(item)
-        return result
-
-    def _get_gems_to_process(self, gem_resolver: GemDependencyResolver) -> List[str]:
-        """Get the list of gems to process."""
-        if self.config.include_gems:
-            gems = self.config.include_gems.copy()
+        # Base command - prefer running the prebuilt DLL with `dotnet <dll>`
+        # because that skips the dotnet-run restore + build pipeline entirely
+        # (30-180s of silent startup → < 1s). Fall through to `dotnet run`
+        # only if all we have is a csproj.
+        if tool_path.suffix == ".dll":
+            # Prebuilt DLL path - fastest startup, no MSBuild involvement
+            args = ["dotnet", str(tool_path)]
+        elif tool_path.suffix == ".csproj":
+            # Csproj fallback - dotnet run with --no-build first attempt
+            # would be ideal but requires a prior build that we can't
+            # guarantee here. Plain dotnet run is what we have.
+            args = ["dotnet", "run", "--project", str(tool_path), "--"]
+        elif tool_path.is_dir():
+            # Directory - look for a DLL first, then fall back to csproj
+            dll = tool_path / "O3DESharp.BindingGenerator.dll"
+            csproj = tool_path / "O3DESharp.BindingGenerator.csproj"
+            if dll.exists():
+                args = ["dotnet", str(dll)]
+            elif csproj.exists():
+                args = ["dotnet", "run", "--project", str(csproj), "--"]
+            else:
+                args = ["dotnet", "run", "--"]
         else:
-            gems = gem_resolver.get_active_gem_names()
-
-        # Include dependencies if configured
-        if self.config.include_gem_dependencies:
-            all_gems = set()
-            ordered_gems = []
-
-            for gem_name in gems:
-                deps = gem_resolver.get_gem_dependencies(gem_name, True)
-                for dep in deps:
-                    if dep not in all_gems:
-                        all_gems.add(dep)
-                        ordered_gems.append(dep)
-
-                if gem_name not in all_gems:
-                    all_gems.add(gem_name)
-                    ordered_gems.append(gem_name)
-
-            return ordered_gems
-
-        return gems
-
-    def _should_process_gem(self, gem_name: str) -> bool:
-        """Check if a gem should be processed."""
-        if self.config.exclude_gems and gem_name in self.config.exclude_gems:
-            return False
-
-        if self.config.include_gems:
-            return gem_name in self.config.include_gems
-
-        return True
-
-    def _generate_guid(self, name: str) -> str:
-        """Generate a deterministic GUID from a name."""
-        hash_bytes = hashlib.md5(name.encode("utf-8")).digest()
-        guid = f"{hash_bytes[0]:02X}{hash_bytes[1]:02X}{hash_bytes[2]:02X}{hash_bytes[3]:02X}-"
-        guid += f"{hash_bytes[4]:02X}{hash_bytes[5]:02X}-"
-        guid += f"{hash_bytes[6]:02X}{hash_bytes[7]:02X}-"
-        guid += f"{hash_bytes[8]:02X}{hash_bytes[9]:02X}-"
-        guid += "".join(f"{b:02X}" for b in hash_bytes[10:16])
-        return guid
-
-
-# ============================================================
-# Reflection Data Loading
-# ============================================================
-
-
-def load_reflection_data_from_json(json_path: str) -> ReflectionData:
-    """
-    Load reflection data from a JSON file.
-
-    The JSON file should be exported from the C++ BehaviorContextReflector.
-
-    Args:
-        json_path: Path to the JSON file
-
-    Returns:
-        ReflectionData object
-    """
-    with open(json_path, "r", encoding="utf-8") as f:
-        data = json.load(f)
-
-    reflection_data = ReflectionData()
-
-    # Load classes
-    for class_data in data.get("classes", []):
-        cls = _parse_class_from_json(class_data)
-        reflection_data.classes[cls.name] = cls
-
-    # Load EBuses
-    for ebus_data in data.get("ebuses", []):
-        ebus = _parse_ebus_from_json(ebus_data)
-        reflection_data.ebuses[ebus.name] = ebus
-
-    # Load global methods
-    for method_data in data.get("global_methods", []):
-        method = _parse_method_from_json(method_data)
-        reflection_data.global_methods.append(method)
-
-    # Load global properties
-    for prop_data in data.get("global_properties", []):
-        prop = _parse_property_from_json(prop_data)
-        reflection_data.global_properties.append(prop)
-
-    return reflection_data
-
-
-def _parse_class_from_json(data: Dict[str, Any]) -> ReflectedClass:
-    """Parse a ReflectedClass from JSON data."""
-    cls = ReflectedClass(
-        name=data.get("name", ""),
-        type_id=data.get("type_id", ""),
-        base_classes=data.get("base_classes", []),
-        description=data.get("description", ""),
-        category=data.get("category", ""),
-        is_deprecated=data.get("is_deprecated", False),
-        source_gem_name=data.get("source_gem_name", ""),
-    )
-
-    for method_data in data.get("methods", []):
-        cls.methods.append(_parse_method_from_json(method_data))
-
-    for prop_data in data.get("properties", []):
-        cls.properties.append(_parse_property_from_json(prop_data))
-
-    for ctor_data in data.get("constructors", []):
-        cls.constructors.append(_parse_method_from_json(ctor_data))
-
-    return cls
-
-
-def _parse_ebus_from_json(data: Dict[str, Any]) -> ReflectedEBus:
-    """Parse a ReflectedEBus from JSON data."""
-    ebus = ReflectedEBus(
-        name=data.get("name", ""),
-        type_id=data.get("type_id", ""),
-        description=data.get("description", ""),
-        category=data.get("category", ""),
-        source_gem_name=data.get("source_gem_name", ""),
-    )
-
-    if "address_type" in data:
-        ebus.address_type = _parse_parameter_from_json(data["address_type"])
-
-    for event_data in data.get("events", []):
-        event = ReflectedEBusEvent(
-            name=event_data.get("name", ""),
-            bus_name=ebus.name,
-            is_broadcast=event_data.get("is_broadcast", True),
-        )
-
-        if "return_type" in event_data:
-            event.return_type = _parse_parameter_from_json(event_data["return_type"])
-
-        for param_data in event_data.get("parameters", []):
-            event.parameters.append(_parse_parameter_from_json(param_data))
-
-        ebus.events.append(event)
-
-    return ebus
-
-
-def _parse_method_from_json(data: Dict[str, Any]) -> ReflectedMethod:
-    """Parse a ReflectedMethod from JSON data."""
-    method = ReflectedMethod(
-        name=data.get("name", ""),
-        class_name=data.get("class_name", ""),
-        is_static=data.get("is_static", False),
-        is_const=data.get("is_const", False),
-        description=data.get("description", ""),
-        category=data.get("category", ""),
-        is_deprecated=data.get("is_deprecated", False),
-        deprecation_message=data.get("deprecation_message", ""),
-    )
-
-    if "return_type" in data:
-        method.return_type = _parse_parameter_from_json(data["return_type"])
-
-    for param_data in data.get("parameters", []):
-        method.parameters.append(_parse_parameter_from_json(param_data))
-
-    return method
-
-
-def _parse_property_from_json(data: Dict[str, Any]) -> ReflectedProperty:
-    """Parse a ReflectedProperty from JSON data."""
-    prop = ReflectedProperty(
-        name=data.get("name", ""),
-        class_name=data.get("class_name", ""),
-        has_getter=data.get("has_getter", True),
-        has_setter=data.get("has_setter", True),
-        description=data.get("description", ""),
-        is_deprecated=data.get("is_deprecated", False),
-    )
-
-    if "value_type" in data:
-        prop.value_type = _parse_parameter_from_json(data["value_type"])
-
-    return prop
-
-
-def _parse_parameter_from_json(data: Dict[str, Any]) -> ReflectedParameter:
-    """Parse a ReflectedParameter from JSON data."""
-    return ReflectedParameter(
-        name=data.get("name", ""),
-        type_name=data.get("type_name", "object"),
-        type_id=data.get("type_id", ""),
-        is_pointer=data.get("is_pointer", False),
-        is_reference=data.get("is_reference", False),
-        is_const=data.get("is_const", False),
-        marshal_type=data.get("marshal_type", "Unknown"),
-    )
-
-
-# ============================================================
-# CLI Interface
-# ============================================================
-
-
-def main():
-    """Command-line interface for binding generation."""
-    import argparse
-
-    parser = argparse.ArgumentParser(
-        description="Generate C# bindings from O3DE BehaviorContext reflection data"
-    )
-    parser.add_argument(
-        "--reflection-data",
-        "-r",
-        required=True,
-        help="Path to reflection data JSON file",
-    )
-    parser.add_argument(
-        "--output", "-o", default="Generated/CSharp", help="Output directory"
-    )
-    parser.add_argument(
-        "--project", "-p", help="Path to O3DE project (for gem discovery)"
-    )
-    parser.add_argument(
-        "--namespace", "-n", default="O3DE.Generated", help="Root namespace"
-    )
-    parser.add_argument("--gem", "-g", help="Generate bindings for a specific gem only")
-    parser.add_argument(
-        "--no-core", action="store_true", help="Skip core bindings generation"
-    )
-    parser.add_argument(
-        "--no-gems", action="store_true", help="Skip gem bindings generation"
-    )
-    parser.add_argument(
-        "--per-gem-projects",
-        action="store_true",
-        help="Generate separate .csproj per gem",
-    )
-    parser.add_argument(
-        "--verbose", "-v", action="store_true", help="Enable verbose output"
-    )
-
-    args = parser.parse_args()
-
-    if args.verbose:
-        logging.basicConfig(level=logging.DEBUG)
-    else:
-        logging.basicConfig(level=logging.INFO)
-
-    # Load reflection data
-    logger.info(f"Loading reflection data from: {args.reflection_data}")
-    reflection_data = load_reflection_data_from_json(args.reflection_data)
-
-    logger.info(
-        f"Loaded {len(reflection_data.classes)} classes, "
-        f"{len(reflection_data.ebuses)} EBuses"
-    )
-
-    # Configure generator
-    config = BindingGeneratorConfig()
-    config.output_directory = args.output
-    config.root_namespace = args.namespace
-    config.generate_core_bindings = not args.no_core
-    config.generate_gem_bindings = not args.no_gems
-    config.generate_per_gem_projects = args.per_gem_projects
-
-    # Create gem resolver if project specified
-    gem_resolver = None
-    if args.project and not args.no_gems:
-        gem_resolver = GemDependencyResolver()
-        gem_result = gem_resolver.discover_gems_from_project(args.project)
-        if not gem_result.success:
-            logger.error(f"Failed to discover gems: {gem_result.error_message}")
-            return 1
-        logger.info(f"Discovered {len(gem_result.active_gem_names)} active gems")
-
-    # Create generator
-    generator = CSharpBindingGenerator(config)
-
-    # Generate bindings
-    if args.gem:
-        if not gem_resolver:
-            logger.error("--project is required when using --gem")
-            return 1
-        result = generator.generate_for_gem(reflection_data, gem_resolver, args.gem)
-    else:
-        result = generator.generate_from_reflection_data(reflection_data, gem_resolver)
-
-    if not result.success:
-        logger.error(f"Generation failed: {result.error_message}")
-        return 1
-
-    # Write files
-    files_written = generator.write_files()
-
-    logger.info(
-        f"Successfully generated {result.classes_generated} classes, "
-        f"{result.ebuses_generated} EBuses in {files_written} files"
-    )
-
-    if result.processed_gems:
-        logger.info(f"Processed gems: {', '.join(result.processed_gems)}")
-
-    return 0
-
-
-if __name__ == "__main__":
-    import sys
-
-    sys.exit(main())
+            # Assume it's an executable
+            args = [str(tool_path)]
+
+        # Add generate command
+        args.append("generate")
+
+        # Add project path
+        args.extend(["--project", str(project_path)])
+
+        # Add engine path if available
+        if self.engine_path:
+            args.extend(["--engine", str(self.engine_path)])
+
+        # Add configuration options
+        if config.require_export_attribute:
+            args.append("--require-attribute")
+
+        if config.incremental_build and not force_regenerate:
+            args.append("--incremental")
+
+        if force_regenerate:
+            args.append("--force")
+
+        if config.verbose:
+            args.append("--verbose")
+
+        if config.all_gems_on_include_path:
+            args.append("--all-gems-include")
+
+        # Backend selector. Reflection is the default in both the C# CLI
+        # and here, but we pass it explicitly so the choice is logged and
+        # a future default-change in either layer doesn't silently flip
+        # the wrong way for existing callers.
+        if config.source:
+            args.extend(["--source", config.source])
+
+        if config.reflection_data_path:
+            args.extend(["--reflection-data", config.reflection_data_path])
+
+        if config.include_gems:
+            args.extend(["--gems", ",".join(config.include_gems)])
+
+        if config.output_directory:
+            args.extend(["--output", config.output_directory])
+
+        return args
+
+    def _parse_success_output(
+        self,
+        stdout: str,
+        config: BindingGeneratorConfig
+    ) -> BindingGeneratorResult:
+        """Parse the ClangSharp tool output for statistics."""
+        result = BindingGeneratorResult(success=True)
+
+        # Parse output for statistics (simple regex patterns)
+        import re
+
+        # Look for patterns like "Generated 42 classes" or "Generated 42 classes in 15 files"
+        classes_match = re.search(r"Generated (\d+) classes", stdout)
+        if classes_match:
+            result.classes_generated = int(classes_match.group(1))
+
+        # Look for "in X files" (part of "Generated N classes in M files") or "Wrote 15 files"
+        files_match = re.search(r"in (\d+) files", stdout)
+        if not files_match:
+            files_match = re.search(r"Wrote (\d+) files", stdout)
+        if files_match:
+            result.files_written = int(files_match.group(1))
+
+        # Look for "Processed gems: Gem1, Gem2"
+        gems_match = re.search(r"Processed gems?: (.+)", stdout)
+        if gems_match:
+            gems_str = gems_match.group(1).strip()
+            result.processed_gems = [g.strip() for g in gems_str.split(",")]
+
+        # Look for warnings
+        for line in stdout.split("\n"):
+            if "warning:" in line.lower() or "warn:" in line.lower():
+                result.warnings.append(line.strip())
+
+        self.logger.info(f"Generated {result.classes_generated} classes in {result.files_written} files")
+        if result.processed_gems:
+            self.logger.info(f"Processed gems: {', '.join(result.processed_gems)}")
+
+        return result
+
+    def check_tool_available(self) -> Tuple[bool, str]:
+        """
+        Check if the ClangSharp tool is available.
+
+        Returns:
+            Tuple of (available, message)
+        """
+        if not self.tool_path:
+            return False, "ClangSharp binding generator tool not found"
+
+        tool_path = Path(self.tool_path)
+
+        # Check if it's a source project (.csproj file or directory containing one)
+        if tool_path.suffix == ".csproj" and tool_path.exists():
+            csproj_path = tool_path
+        elif tool_path.is_dir():
+            # Look for any .csproj in the directory tree
+            csproj_path = None
+            for candidate_name in [
+                "O3DESharp.BindingGenerator.csproj",
+                "BindingGenerator.csproj",
+            ]:
+                found = list(tool_path.rglob(candidate_name))
+                if found:
+                    csproj_path = found[0]
+                    break
+        else:
+            csproj_path = None
+
+        if csproj_path and csproj_path.exists():
+            # Check if dotnet is available
+            try:
+                result = subprocess.run(
+                    ["dotnet", "--version"],
+                    capture_output=True,
+                    text=True,
+                    timeout=5
+                )
+                if result.returncode == 0:
+                    dotnet_version = result.stdout.strip()
+                    return True, f"ClangSharp tool source available, dotnet version: {dotnet_version}"
+                else:
+                    return False, "dotnet CLI not found. Install .NET 9.0 SDK or later."
+            except Exception as e:
+                return False, f"dotnet CLI check failed: {str(e)}"
+
+        # Check if it's a built executable
+        if tool_path.is_file() and tool_path.exists():
+            return True, f"ClangSharp tool executable found at {tool_path}"
+
+        return False, "ClangSharp tool path exists but is not executable or project"

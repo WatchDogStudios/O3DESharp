@@ -7,6 +7,7 @@
  */
 
 using System;
+using System.Collections.Generic;
 
 namespace O3DE
 {
@@ -222,6 +223,175 @@ namespace O3DE
         protected void DeactivateEntity()
         {
             Entity.Deactivate();
+        }
+
+        #endregion
+
+        #region Delayed Actions
+
+        /// <summary>
+        /// Internal representation of a scheduled action.
+        /// </summary>
+        private class ScheduledAction
+        {
+            public Action Callback;
+            public float TimeRemaining;
+            public float RepeatInterval; // 0 = one-shot
+            public bool Cancelled;
+
+            public ScheduledAction(Action callback, float delay, float repeatInterval = 0f)
+            {
+                Callback = callback;
+                TimeRemaining = delay;
+                RepeatInterval = repeatInterval;
+                Cancelled = false;
+            }
+        }
+
+        /// <summary>
+        /// List of pending scheduled actions.
+        /// </summary>
+        private List<ScheduledAction>? m_scheduledActions;
+
+        /// <summary>
+        /// Invokes an action after a delay (in seconds).
+        /// </summary>
+        /// <param name="action">The action to invoke</param>
+        /// <param name="delay">Delay in seconds before invoking</param>
+        public void Invoke(Action action, float delay)
+        {
+            m_scheduledActions ??= new List<ScheduledAction>();
+            m_scheduledActions.Add(new ScheduledAction(action, delay));
+        }
+
+        /// <summary>
+        /// Invokes an action repeatedly, starting after an initial delay.
+        /// </summary>
+        /// <param name="action">The action to invoke</param>
+        /// <param name="delay">Initial delay in seconds</param>
+        /// <param name="repeatInterval">Time between subsequent invocations</param>
+        public void InvokeRepeating(Action action, float delay, float repeatInterval)
+        {
+            m_scheduledActions ??= new List<ScheduledAction>();
+            m_scheduledActions.Add(new ScheduledAction(action, delay, repeatInterval));
+        }
+
+        /// <summary>
+        /// Cancels all scheduled invocations for this component.
+        /// </summary>
+        public void CancelInvoke()
+        {
+            m_scheduledActions?.Clear();
+        }
+
+        /// <summary>
+        /// Cancels all scheduled invocations of a specific action.
+        /// </summary>
+        /// <param name="action">The action to cancel</param>
+        public void CancelInvoke(Action action)
+        {
+            if (m_scheduledActions == null) return;
+            for (int i = m_scheduledActions.Count - 1; i >= 0; i--)
+            {
+                if (m_scheduledActions[i].Callback == action)
+                {
+                    m_scheduledActions[i].Cancelled = true;
+                }
+            }
+        }
+
+        /// <summary>
+        /// Apply a JSON-encoded { "fieldName": "stringValue", ... } map of
+        /// <see cref="ExposedPropertyAttribute"/>-decorated values. Invoked by
+        /// the C++ <c>CSharpScriptComponent</c> after the managed instance has
+        /// been constructed but before <c>OnCreate</c> runs, so user code in
+        /// <c>OnCreate</c> sees the editor-configured values.
+        ///
+        /// Marked non-virtual so user subclasses can't accidentally short-
+        /// circuit the property application.
+        /// </summary>
+        public void ApplyExposedProperties(string valuesJson)
+        {
+            ExposedPropertyHelpers.ApplyFromJson(this, valuesJson);
+        }
+
+        /// <summary>
+        /// Return a JSON-encoded array describing every
+        /// <see cref="ExposedPropertyAttribute"/>-decorated member on this
+        /// instance's type. Used by the editor (Phase 7.5) to decide which
+        /// typed inspector widget to render for each field.
+        ///
+        /// Marked non-virtual to match <see cref="ApplyExposedProperties"/>.
+        /// </summary>
+        public string GetExposedPropertySchemaJson()
+        {
+            return ExposedPropertyHelpers.GetSchemaJson(this);
+        }
+
+        /// <summary>
+        /// Combined per-frame entry point invoked by the C++ CSharpScriptComponent.
+        /// Runs the user's overridden OnUpdate then drains any scheduled
+        /// Invoke / InvokeRepeating actions in a single managed transition.
+        /// Marked non-virtual so user scripts cannot accidentally break the
+        /// scheduler by forgetting to call base.Tick.
+        /// </summary>
+        /// <param name="deltaTime">Seconds since the last tick.</param>
+        public void Tick(float deltaTime)
+        {
+            OnUpdate(deltaTime);
+
+            // Cheap early-out: skip the inner loop entirely when nothing is
+            // scheduled. m_scheduledActions stays null for scripts that never
+            // call Invoke / InvokeRepeating, which is the common case.
+            if (m_scheduledActions != null && m_scheduledActions.Count > 0)
+            {
+                ProcessPendingInvocations(deltaTime);
+            }
+        }
+
+        /// <summary>
+        /// Processes pending scheduled actions. Called internally by Tick.
+        /// DO NOT call this directly.
+        /// </summary>
+        internal void ProcessPendingInvocations(float deltaTime)
+        {
+            if (m_scheduledActions == null || m_scheduledActions.Count == 0)
+                return;
+
+            // Process backwards so we can safely remove items
+            for (int i = m_scheduledActions.Count - 1; i >= 0; i--)
+            {
+                var action = m_scheduledActions[i];
+                if (action.Cancelled)
+                {
+                    m_scheduledActions.RemoveAt(i);
+                    continue;
+                }
+
+                action.TimeRemaining -= deltaTime;
+                if (action.TimeRemaining <= 0f)
+                {
+                    try
+                    {
+                        action.Callback();
+                    }
+                    catch (Exception ex)
+                    {
+                        Debug.LogError($"Error in scheduled action: {ex.Message}");
+                    }
+
+                    if (action.RepeatInterval > 0f)
+                    {
+                        // Reschedule for next repeat
+                        action.TimeRemaining += action.RepeatInterval;
+                    }
+                    else
+                    {
+                        // One-shot: remove
+                        m_scheduledActions.RemoveAt(i);
+                    }
+                }
+            }
         }
 
         #endregion

@@ -63,6 +63,7 @@ namespace O3DESharp
         bool IsHotReloadEnabled() const override;
         bool TypeExists(const AZStd::string& fullTypeName) const override;
         AZStd::vector<AZStd::string> GetAvailableScriptTypes() const override;
+        AZStd::string GetExposedPropertySchemaJson(const AZStd::string& fullTypeName) const override;
         AZStd::string GetCoralDirectory() const override;
         AZStd::string GetCoreAssemblyPath() const override;
         AZStd::string GetUserAssemblyPath() const override;
@@ -91,6 +92,14 @@ namespace O3DESharp
          * Called during component activation
          */
         void InitializeCoralHost();
+
+        /**
+         * Scan known build-output / staging directories for the newest copies
+         * of Coral.Managed.dll and O3DE.Core.dll and deploy them to the
+         * project's Bin/Scripts directory so the Coral host can find them.
+         * Called automatically before InitializeCoralHost().
+         */
+        void DeployLatestManagedAssemblies();
 
         /**
          * Shutdown the Coral .NET host

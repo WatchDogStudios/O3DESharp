@@ -8,17 +8,36 @@
 
 #include "GenericDispatcher.h"
 
+#include <AzCore/Component/ComponentApplicationBus.h>
 #include <AzCore/Console/ILogger.h>
+#include <AzCore/Math/Vector2.h>
 #include <AzCore/Math/Vector3.h>
+#include <AzCore/Math/Vector4.h>
 #include <AzCore/Math/Quaternion.h>
 #include <AzCore/Math/Transform.h>
+#include <AzCore/Math/Color.h>
+#include <AzCore/Math/Aabb.h>
+#include <AzCore/Math/Matrix3x3.h>
+#include <AzCore/Math/Matrix4x4.h>
+#include <AzCore/Math/Crc.h>
+#include <AzCore/Math/Uuid.h>
 #include <AzCore/Component/EntityId.h>
 #include <AzCore/JSON/rapidjson.h>
 #include <AzCore/JSON/document.h>
 #include <AzCore/JSON/stringbuffer.h>
 #include <AzCore/JSON/writer.h>
+#include <AzCore/std/parallel/mutex.h>
+#include <AzCore/std/containers/unordered_map.h>
+#include <AzCore/std/smart_ptr/unique_ptr.h>
+#include <AzCore/std/smart_ptr/make_shared.h>
+#include <AzCore/RTTI/BehaviorContext.h>
+
+#include <Scripting/CoralHostManager.h>
+#include <Coral/Type.hpp>
 
 #include <Coral/Assembly.hpp>
+
+#include <Scripting/Marshaling/BehaviorContextMarshaling.h>
 
 namespace O3DESharp
 {
@@ -866,6 +885,12 @@ namespace O3DESharp
 
         // EBus
         assembly->AddInternalCall("O3DE.Reflection.ReflectionInternalCalls", "Reflection_BroadcastEBusEvent", reinterpret_cast<void*>(&GenericDispatcherInternalCalls::BroadcastEBusEvent));
+
+        // Phase 18-E2: managed EBus handler authoring. RegisterEBusHandler
+        // spins up a BehaviorEBusHandler with a generic hook that forwards
+        // every event back into managed via Coral.
+        assembly->AddInternalCall("O3DE.Reflection.ReflectionInternalCalls", "Reflection_RegisterEBusHandler", reinterpret_cast<void*>(&GenericDispatcherInternalCalls::RegisterEBusHandler));
+        assembly->AddInternalCall("O3DE.Reflection.ReflectionInternalCalls", "Reflection_UnregisterEBusHandler", reinterpret_cast<void*>(&GenericDispatcherInternalCalls::UnregisterEBusHandler));
         assembly->AddInternalCall("O3DE.Reflection.ReflectionInternalCalls", "Reflection_SendEBusEvent", reinterpret_cast<void*>(&GenericDispatcherInternalCalls::SendEBusEvent));
 
         // Object lifecycle
@@ -1245,108 +1270,1502 @@ namespace O3DESharp
             return cls->FindMethod(methodNameStr.c_str()) != nullptr;
         }
 
+        // Real implementations of these moved below DispatchEBusEvent so
+        // they can share the CallBehaviorMethodAndMarshalResult helper.
+        // The stubs that used to return "Not fully implemented" were
+        // pre-Phase-18 placeholders; every reflection-backend generated
+        // wrapper for a class method / global function / property now
+        // routes through one of the implementations below.
+        Coral::String InvokeStaticMethod(Coral::String className, Coral::String methodName, Coral::String argsJson);
+        Coral::String InvokeInstanceMethod(Coral::String className, Coral::String methodName, int64_t instanceHandle, Coral::String argsJson);
+        Coral::String InvokeGlobalMethod(Coral::String methodName, Coral::String argsJson);
+        Coral::String GetProperty(Coral::String className, Coral::String propertyName, int64_t instanceHandle);
+        bool SetProperty(Coral::String className, Coral::String propertyName, int64_t instanceHandle, Coral::String valueJson);
+        Coral::String GetGlobalProperty(Coral::String propertyName);
+        bool SetGlobalProperty(Coral::String propertyName, Coral::String valueJson);
+
+        // Phase 18-E2: managed EBus handler bridge entry points.
+        int64_t RegisterEBusHandler(Coral::String busName, uint64_t address, int64_t managedToken);
+        void UnregisterEBusHandler(int64_t managedToken);
+
+        namespace
+        {
+            // Storage requirements for a reflected BehaviorContext type.
+            // BehaviorMethod::Call(result*) writes the return value
+            // through result->m_value via operator=, which assumes
+            // m_value already points at storage sized to fit the actual
+            // return type. A default-constructed BehaviorArgument has
+            // m_value == nullptr, so the first dispatcher that tries
+            // to write into it crashes with a null-deref. Phase 18-A's
+            // result-marshal path now allocates storage explicitly,
+            // and this helper is how we know how much to allocate.
+            struct ResultStorageRequirements
+            {
+                size_t size = 0;
+                size_t alignment = 0;
+            };
+
+            // Returns size + alignment for any TypeId BehaviorContext
+            // can return. Hardcoded primitive table first because
+            // primitives are not always registered as BehaviorClasses;
+            // falls back to ctx->m_typeToClassMap for everything
+            // user-reflected. Returns {0, 0} only for types neither
+            // we nor BehaviorContext recognize - the caller fails
+            // the dispatch with a clear error in that case rather than
+            // guess at a fallback size.
+            static ResultStorageRequirements ComputeResultStorageRequirements(
+                const AZ::Uuid& typeId, AZ::BehaviorContext* ctx)
+            {
+                ResultStorageRequirements r;
+                auto match = [&](const AZ::Uuid& t, size_t sz, size_t al)
+                {
+                    if (typeId == t) { r.size = sz; r.alignment = al; return true; }
+                    return false;
+                };
+
+                // Primitives - shape mirrors BehaviorContextMarshaling.cpp.
+                if (match(azrtti_typeid<bool>(),    sizeof(bool),    alignof(bool)))    return r;
+                if (match(azrtti_typeid<AZ::s8>(),  sizeof(AZ::s8),  alignof(AZ::s8)))  return r;
+                if (match(azrtti_typeid<AZ::u8>(),  sizeof(AZ::u8),  alignof(AZ::u8)))  return r;
+                if (match(azrtti_typeid<AZ::s16>(), sizeof(AZ::s16), alignof(AZ::s16))) return r;
+                if (match(azrtti_typeid<AZ::u16>(), sizeof(AZ::u16), alignof(AZ::u16))) return r;
+                if (match(azrtti_typeid<AZ::s32>(), sizeof(AZ::s32), alignof(AZ::s32))) return r;
+                if (match(azrtti_typeid<AZ::u32>(), sizeof(AZ::u32), alignof(AZ::u32))) return r;
+                if (match(azrtti_typeid<AZ::s64>(), sizeof(AZ::s64), alignof(AZ::s64))) return r;
+                if (match(azrtti_typeid<AZ::u64>(), sizeof(AZ::u64), alignof(AZ::u64))) return r;
+                if (match(azrtti_typeid<float>(),   sizeof(float),   alignof(float)))   return r;
+                if (match(azrtti_typeid<double>(),  sizeof(double),  alignof(double)))  return r;
+
+                // O3DE math + identifier types - all trivially
+                // copyable, so operator= into zero-initialised
+                // storage is safe.
+                if (match(azrtti_typeid<AZ::Vector2>(),    sizeof(AZ::Vector2),    alignof(AZ::Vector2)))    return r;
+                if (match(azrtti_typeid<AZ::Vector3>(),    sizeof(AZ::Vector3),    alignof(AZ::Vector3)))    return r;
+                if (match(azrtti_typeid<AZ::Vector4>(),    sizeof(AZ::Vector4),    alignof(AZ::Vector4)))    return r;
+                if (match(azrtti_typeid<AZ::Quaternion>(), sizeof(AZ::Quaternion), alignof(AZ::Quaternion))) return r;
+                if (match(azrtti_typeid<AZ::Color>(),      sizeof(AZ::Color),      alignof(AZ::Color)))      return r;
+                if (match(azrtti_typeid<AZ::Aabb>(),       sizeof(AZ::Aabb),       alignof(AZ::Aabb)))       return r;
+                if (match(azrtti_typeid<AZ::Matrix3x3>(),  sizeof(AZ::Matrix3x3),  alignof(AZ::Matrix3x3)))  return r;
+                if (match(azrtti_typeid<AZ::Matrix4x4>(),  sizeof(AZ::Matrix4x4),  alignof(AZ::Matrix4x4)))  return r;
+                if (match(azrtti_typeid<AZ::Transform>(),  sizeof(AZ::Transform),  alignof(AZ::Transform)))  return r;
+                if (match(azrtti_typeid<AZ::EntityId>(),   sizeof(AZ::EntityId),   alignof(AZ::EntityId)))   return r;
+                if (match(azrtti_typeid<AZ::Crc32>(),      sizeof(AZ::Crc32),      alignof(AZ::Crc32)))      return r;
+                if (match(azrtti_typeid<AZ::Uuid>(),       sizeof(AZ::Uuid),       alignof(AZ::Uuid)))       return r;
+
+                // Strings and user-reflected types we look up in the
+                // BehaviorContext registry. Note non-trivial types
+                // (AZStd::string) will need destructor-after-marshal
+                // tracking when we add return-marshaling for them;
+                // for now, this branch is reached only for trivially
+                // copyable user POD types reflected with size in
+                // BehaviorClass.
+                if (ctx != nullptr)
+                {
+                    auto it = ctx->m_typeToClassMap.find(typeId);
+                    if (it != ctx->m_typeToClassMap.end() && it->second != nullptr)
+                    {
+                        r.size = it->second->m_size;
+                        r.alignment = it->second->m_alignment;
+                    }
+                }
+                return r;
+            }
+
+            // Phase 18-A: shared helper used by BroadcastEBusEvent and
+            // SendEBusEvent. Both flows look up the bus + event, marshal
+            // args, dispatch through the BehaviorMethod, marshal the
+            // result back to JSON. The only difference between them is
+            // whether they use the addressed (m_event) or unaddressed
+            // (m_broadcast) variant of the event sender, and whether the
+            // caller-supplied bus id is consumed as a leading argument.
+            Coral::String DispatchEBusEvent(
+                Coral::String busName,
+                Coral::String eventName,
+                Coral::String argsJson,
+                bool addressed,
+                AZ::u64 busIdAsU64)
+            {
+                std::string busNameStr(busName);
+                std::string eventNameStr(eventName);
+                std::string argsJsonStr(argsJson);
+
+                auto makeError = [&](const char* fmt, ...) -> Coral::String
+                {
+                    va_list args;
+                    va_start(args, fmt);
+                    char buf[1024] = {};
+                    azvsnprintf(buf, sizeof(buf), fmt, args);
+                    va_end(args);
+                    AZ_Warning(
+                        "O3DESharp",
+                        false,
+                        "BroadcastEBusEvent('%s', '%s'): %s",
+                        busNameStr.c_str(), eventNameStr.c_str(), buf);
+                    AZStd::string msg = AZStd::string::format("{\"error\":\"%s\"}", buf);
+                    return Coral::String::New(msg.c_str());
+                };
+
+                // 1. Find the BehaviorContext.
+                AZ::BehaviorContext* behaviorContext = nullptr;
+                AZ::ComponentApplicationBus::BroadcastResult(
+                    behaviorContext,
+                    &AZ::ComponentApplicationRequests::GetBehaviorContext);
+                if (behaviorContext == nullptr)
+                {
+                    return makeError("no BehaviorContext available");
+                }
+
+                // 2. Look up the bus by name.
+                auto busIt = behaviorContext->m_ebuses.find(busNameStr.c_str());
+                if (busIt == behaviorContext->m_ebuses.end())
+                {
+                    return makeError("bus '%s' not reflected in BehaviorContext",
+                                     busNameStr.c_str());
+                }
+                AZ::BehaviorEBus* bus = busIt->second;
+
+                // 3. Look up the event on the bus.
+                auto evtIt = bus->m_events.find(eventNameStr.c_str());
+                if (evtIt == bus->m_events.end())
+                {
+                    return makeError("event '%s' not found on bus '%s'",
+                                     eventNameStr.c_str(), busNameStr.c_str());
+                }
+                AZ::BehaviorEBusEventSender& sender = evtIt->second;
+
+                // Pick broadcast vs addressed dispatch.
+                AZ::BehaviorMethod* method = addressed
+                    ? (sender.m_event != nullptr ? sender.m_event : sender.m_broadcast)
+                    : (sender.m_broadcast != nullptr ? sender.m_broadcast : sender.m_event);
+                if (method == nullptr)
+                {
+                    return makeError(
+                        "bus '%s' event '%s' has no %s dispatcher reflected",
+                        busNameStr.c_str(), eventNameStr.c_str(),
+                        addressed ? "Event" : "Broadcast");
+                }
+
+                // 4. Parse args JSON and marshal into BehaviorArguments.
+                rapidjson::Document argsDoc;
+                if (argsJsonStr.empty())
+                {
+                    argsDoc.SetArray(); // no-arg event
+                }
+                else
+                {
+                    argsDoc.Parse(argsJsonStr.c_str());
+                    if (argsDoc.HasParseError())
+                    {
+                        return makeError("args JSON parse error at offset %zu",
+                                         argsDoc.GetErrorOffset());
+                    }
+                }
+
+                // Addressed dispatch has the bus id as the leading
+                // argument in BehaviorMethod's signature; we synthesize
+                // it from the busIdAsU64 the caller supplied.
+                Marshaling::StackAllocator marshalAlloc;
+                AZStd::vector<AZ::BehaviorArgument> dispatchArgs;
+                AZStd::string marshalError;
+                const size_t skipFront = addressed ? 1 : 0;
+                if (!Marshaling::MarshalJsonArrayToArguments(
+                        argsDoc, *method, dispatchArgs,
+                        marshalAlloc, marshalError, skipFront))
+                {
+                    return makeError("arg marshal: %s", marshalError.c_str());
+                }
+                AZ::BehaviorArgument busIdArg;
+                if (addressed)
+                {
+                    // Bus id types vary - EntityId, integers, strings.
+                    // In v1 we accept any integer-compatible id by
+                    // populating a u64 cast; the BehaviorMethod's expected
+                    // parameter type does the final coercion via the
+                    // BehaviorContext type system.
+                    const AZ::BehaviorParameter* idParam = method->GetArgument(0);
+                    if (idParam == nullptr)
+                    {
+                        return makeError("addressed event has no bus-id parameter");
+                    }
+                    rapidjson::Document idDoc;
+                    idDoc.SetUint64(busIdAsU64);
+                    AZStd::string idError;
+                    if (!Marshaling::JsonValueToBehaviorParameter(
+                            idDoc, *idParam, busIdArg, marshalAlloc, idError))
+                    {
+                        return makeError("bus id marshal: %s", idError.c_str());
+                    }
+                }
+
+                // Build the final argument array. Addressed: [busId, args...].
+                AZStd::vector<AZ::BehaviorArgument*> argPtrs;
+                argPtrs.reserve(dispatchArgs.size() + (addressed ? 1u : 0u));
+                if (addressed)
+                {
+                    argPtrs.push_back(&busIdArg);
+                }
+                for (auto& a : dispatchArgs)
+                {
+                    argPtrs.push_back(&a);
+                }
+
+                // 5. Call. BehaviorMethod::Call signature is (args[],
+                // numArgs, result*). The args parameter is a flat
+                // BehaviorArgument array, not a pointer array - rebuild.
+                AZStd::vector<AZ::BehaviorArgument> flatArgs;
+                flatArgs.reserve(argPtrs.size());
+                for (auto* p : argPtrs)
+                {
+                    flatArgs.push_back(*p);
+                }
+
+                AZ::BehaviorArgument result;
+                const bool hasReturn = method->HasResult();
+
+                // Heap fallback for return values that don't fit in
+                // BehaviorArgument::m_tempData (a 32-byte static
+                // buffer). Sized below once we know the return type.
+                AZStd::vector<AZ::u8> resultHeapBuffer;
+
+                if (hasReturn)
+                {
+                    // Pre-populate the result BehaviorArgument's type
+                    // metadata from the reflected return-type parameter.
+                    // BehaviorMethod::Call writes the return value into
+                    // result's storage but doesn't always set m_typeId,
+                    // m_name, or m_traits - and BehaviorArgumentToJsonValue
+                    // dispatches on m_typeId. Without this, primitives
+                    // like TickRequestBus::GetTickDeltaTime (float return)
+                    // come out with m_typeId = AZ::TypeId::CreateNull(),
+                    // hit the marshaler's catch-all error path, and
+                    // surface as
+                    //   "result marshal: unsupported return type 0x{00000000-...}"
+                    // even though the storage actually does contain the
+                    // float result.
+                    const AZ::BehaviorParameter* resultParam = method->GetResult();
+                    if (resultParam == nullptr)
+                    {
+                        return makeError(
+                            "method '%s.%s' has HasResult()==true but GetResult() returned null",
+                            busNameStr.c_str(), eventNameStr.c_str());
+                    }
+                    result.m_typeId = resultParam->m_typeId;
+                    result.m_name = resultParam->m_name;
+                    result.m_traits = resultParam->m_traits;
+                    result.m_azRtti = resultParam->m_azRtti;
+
+                    // Allocate storage for the return value. Without
+                    // this step the dispatcher's operator= path
+                    // (AZ::SetResult::Set in BehaviorContext.h) writes
+                    // to result.m_value, which is null on a default-
+                    // constructed BehaviorArgument - crash inside
+                    // AzCore.dll instead of a clean error here.
+                    const auto storage = ComputeResultStorageRequirements(
+                        resultParam->m_typeId, behaviorContext);
+                    if (storage.size == 0)
+                    {
+                        return makeError(
+                            "result type 0x%s for '%s.%s' has unknown storage requirements; "
+                            "neither a primitive nor a reflected BehaviorClass",
+                            resultParam->m_typeId.ToString<AZStd::string>().c_str(),
+                            busNameStr.c_str(), eventNameStr.c_str());
+                    }
+
+                    if (storage.size <= 32)
+                    {
+                        // Fits in BehaviorArgument's inline 32-byte
+                        // m_tempData buffer - free path, no heap.
+                        result.m_value = result.m_tempData.allocate(
+                            storage.size, storage.alignment, /*flags*/ 0);
+                    }
+                    else
+                    {
+                        // Heap fallback for AZ::Matrix3x3 / Matrix4x4 /
+                        // Transform / large user types. Over-allocate
+                        // by alignment so we can align up inside the
+                        // buffer; resultHeapBuffer outlives the Call
+                        // so the storage stays valid through the
+                        // marshal-to-JSON step below.
+                        resultHeapBuffer.resize(storage.size + storage.alignment);
+                        result.m_value = AZ::PointerAlignUp(
+                            resultHeapBuffer.data(), storage.alignment);
+                    }
+                    if (result.m_value == nullptr)
+                    {
+                        return makeError(
+                            "result storage allocation returned null for type 0x%s ('%s.%s', size=%zu align=%zu)",
+                            resultParam->m_typeId.ToString<AZStd::string>().c_str(),
+                            busNameStr.c_str(), eventNameStr.c_str(),
+                            storage.size, storage.alignment);
+                    }
+
+                    // Zero the buffer so a result-bus event with no
+                    // connected handlers (the dispatcher skips writing
+                    // in that case) marshals back a deterministic
+                    // zero value instead of stack garbage. For trivially
+                    // copyable types (every primitive + every math type
+                    // in the table above), zero is a valid initial state
+                    // that operator= can safely overwrite.
+                    memset(result.m_value, 0, storage.size);
+                }
+                const bool ok = method->Call(
+                    flatArgs.data(),
+                    static_cast<unsigned int>(flatArgs.size()),
+                    hasReturn ? &result : nullptr);
+                if (!ok)
+                {
+                    return makeError("BehaviorMethod::Call returned false");
+                }
+                // Defensive: if Call did set m_typeId itself, we use that;
+                // if it didn't, our pre-populated value wins. Either way
+                // the marshaler now has a valid TypeId to dispatch on.
+                if (hasReturn && result.m_typeId.IsNull())
+                {
+                    if (const auto* resultParam = method->GetResult())
+                    {
+                        result.m_typeId = resultParam->m_typeId;
+                    }
+                }
+
+                // 6. Marshal the result back to JSON.
+                if (!hasReturn)
+                {
+                    return Coral::String::New("{\"ok\":true}");
+                }
+                rapidjson::Document resultDoc;
+                resultDoc.SetObject();
+                rapidjson::Value resultValue;
+                AZStd::string resultError;
+                if (!Marshaling::BehaviorArgumentToJsonValue(
+                        result, resultValue, resultDoc.GetAllocator(), resultError))
+                {
+                    return makeError("result marshal: %s", resultError.c_str());
+                }
+                resultDoc.AddMember("result", resultValue, resultDoc.GetAllocator());
+                rapidjson::StringBuffer buffer;
+                rapidjson::Writer<rapidjson::StringBuffer> writer(buffer);
+                resultDoc.Accept(writer);
+                return Coral::String::New(buffer.GetString());
+            }
+        } // namespace
+
+        namespace
+        {
+            // ============================================================
+            // Phase 18-C: NativeObject handle table.
+            // ============================================================
+            // Maps opaque int64 handles (the int64_t the C# NativeObject
+            // wrapper carries) to the live (void*, AZ::BehaviorClass*)
+            // pair the BehaviorContext machinery needs to call an
+            // instance method, get/set a property, or destruct.
+            //
+            // Why a table instead of "pointer-as-int64" (the pre-Phase-
+            // 18-C trick): pointer-as-int64 has no validation - a stale
+            // handle from a destroyed object dereferences garbage and
+            // either silently corrupts memory or crashes. The table
+            // gives us:
+            //   - monotonic ids (handle reuse only happens after the
+            //     u64 counter wraps, i.e. never in practice)
+            //   - typed lookups (we know the class behind every handle)
+            //   - explicit Release so destruction is observable
+            //   - thread-safety via a single shared mutex
+            //
+            // Handle 0 is reserved for "invalid" (mirrors the C#
+            // NativeObject.IsValid convention).
+            struct InstanceEntry
+            {
+                void* address = nullptr;           // raw pointer to the constructed object
+                AZ::BehaviorClass* behaviorClass = nullptr; // for method/property lookup + dtor
+                AZStd::string className;           // mirrors what C# carries for error messages
+            };
+
+            class InstanceHandleTable
+            {
+            public:
+                int64_t Register(void* address, AZ::BehaviorClass* cls, const AZStd::string& className)
+                {
+                    AZStd::lock_guard<AZStd::mutex> lock(m_mutex);
+                    const int64_t handle = ++m_nextHandle;
+                    m_entries.emplace(handle, InstanceEntry{address, cls, className});
+                    return handle;
+                }
+
+                // Returns a copy so the caller doesn't have to hold the
+                // mutex past the lookup. The returned address remains
+                // valid until someone calls Release(handle).
+                bool Lookup(int64_t handle, InstanceEntry& outEntry) const
+                {
+                    AZStd::lock_guard<AZStd::mutex> lock(m_mutex);
+                    auto it = m_entries.find(handle);
+                    if (it == m_entries.end()) return false;
+                    outEntry = it->second;
+                    return true;
+                }
+
+                // Removes the entry and returns the snapshot so the
+                // caller can run the C++ destructor + deallocator
+                // outside the lock (those may re-enter the dispatcher).
+                bool Release(int64_t handle, InstanceEntry& outEntry)
+                {
+                    AZStd::lock_guard<AZStd::mutex> lock(m_mutex);
+                    auto it = m_entries.find(handle);
+                    if (it == m_entries.end()) return false;
+                    outEntry = it->second;
+                    m_entries.erase(it);
+                    return true;
+                }
+
+                void Clear()
+                {
+                    AZStd::lock_guard<AZStd::mutex> lock(m_mutex);
+                    m_entries.clear();
+                }
+
+                size_t Size() const
+                {
+                    AZStd::lock_guard<AZStd::mutex> lock(m_mutex);
+                    return m_entries.size();
+                }
+
+            private:
+                mutable AZStd::mutex m_mutex;
+                AZStd::unordered_map<int64_t, InstanceEntry> m_entries;
+                int64_t m_nextHandle = 0;  // first allocated is 1; 0 = invalid
+            };
+
+            // Single global table - the dispatcher is a process-wide
+            // singleton (via s_dispatcherInstance) and the handle space
+            // doesn't need to be per-context.
+            static InstanceHandleTable s_instanceTable;
+
+            // ============================================================
+            // Phase 18-E2: Managed EBus handler bridge.
+            // ============================================================
+            // A ManagedEBusProxy wraps an AZ::BehaviorEBusHandler bound to
+            // a specific bus and forwards every event the bus fires back
+            // into managed code via Coral. The managed side keys events
+            // by an opaque int64 token (the value
+            // EBusHandlerRegistry.Register handed out); when an event
+            // fires here, we marshal the event's BehaviorArguments into
+            // a JSON args array, then invoke
+            // O3DE.Reflection.EBusHandlerRegistry.DispatchEvent(token,
+            // eventName, argsJson) through Coral's Coral::Type::
+            // InvokeStaticMethod with the token as the first parameter.
+            //
+            // Lifecycle:
+            //   - RegisterEBusHandler(busName, address, token):
+            //       1. Look up bus in BehaviorContext.
+            //       2. Call bus->m_createHandler to spawn a
+            //          BehaviorEBusHandler.
+            //       3. For each event on the handler, InstallGenericHook
+            //          with our ForwardEvent thunk.
+            //       4. Connect to the bus (with address for addressed
+            //          buses, no-arg for broadcast-only).
+            //       5. Stash the proxy in s_managedHandlers keyed by
+            //          token.
+            //   - UnregisterEBusHandler(token):
+            //       1. Look up the proxy.
+            //       2. Disconnect from bus.
+            //       3. Call bus->m_destroyHandler to free.
+            //       4. Erase from s_managedHandlers.
+            //
+            // Mirrors EditorPythonBindings' PythonProxyBus pattern -
+            // we essentially have a "managed proxy bus" indexed by the
+            // managed token rather than a Python object.
+            struct ManagedEBusProxy
+            {
+                AZ::BehaviorEBus* bus = nullptr;
+                AZ::BehaviorEBusHandler* handler = nullptr;
+                int64_t managedToken = 0;
+            };
+
+            class ManagedHandlerTable
+            {
+            public:
+                bool Register(int64_t token, AZStd::unique_ptr<ManagedEBusProxy> proxy)
+                {
+                    AZStd::lock_guard<AZStd::mutex> lock(m_mutex);
+                    if (m_entries.find(token) != m_entries.end()) return false;
+                    m_entries.emplace(token, AZStd::move(proxy));
+                    return true;
+                }
+
+                AZStd::unique_ptr<ManagedEBusProxy> Release(int64_t token)
+                {
+                    AZStd::lock_guard<AZStd::mutex> lock(m_mutex);
+                    auto it = m_entries.find(token);
+                    if (it == m_entries.end()) return nullptr;
+                    auto proxy = AZStd::move(it->second);
+                    m_entries.erase(it);
+                    return proxy;
+                }
+
+                void Clear()
+                {
+                    AZStd::lock_guard<AZStd::mutex> lock(m_mutex);
+                    m_entries.clear();
+                }
+
+                size_t Size() const
+                {
+                    AZStd::lock_guard<AZStd::mutex> lock(m_mutex);
+                    return m_entries.size();
+                }
+
+            private:
+                mutable AZStd::mutex m_mutex;
+                AZStd::unordered_map<int64_t, AZStd::unique_ptr<ManagedEBusProxy>> m_entries;
+            };
+
+            static ManagedHandlerTable s_managedHandlers;
+
+            // The generic hook for every event on a managed handler.
+            // userData carries the managed token (encoded as void* via
+            // a uintptr_t cast - tokens are int64 so this fits in a
+            // pointer on 64-bit platforms; on 32-bit we'd need to box).
+            //
+            // The hook receives the AZ::BehaviorArguments for the
+            // event - we marshal them into a JSON array via the
+            // existing BehaviorArgumentToJsonValue helper, then call
+            // back into managed via the static method
+            //   O3DE.Reflection.EBusHandlerRegistry.DispatchEvent
+            // The managed side returns a JSON envelope (an "ok" / "error"
+            // / "result" object) which we currently ignore - the
+            // existing bus dispatch flow has no slot for handler-
+            // returned results since each handler returns independently
+            // and the bus aggregates them. Future Phase 18-E3 could
+            // wire this up for ResultEBus dispatches.
+            void ForwardEventToManaged(
+                void* userData,
+                const char* eventName,
+                int eventIndex,
+                AZ::BehaviorArgument* /*result*/,
+                int numParameters,
+                AZ::BehaviorArgument* parameters)
+            {
+                AZ_UNUSED(eventIndex);
+                const int64_t token = static_cast<int64_t>(reinterpret_cast<uintptr_t>(userData));
+                if (token == 0) return;
+
+                // Build the args JSON array. Each parameter goes through
+                // BehaviorArgumentToJsonValue which handles all the
+                // primitive + math marshaling we've already shipped.
+                rapidjson::Document argsDoc;
+                argsDoc.SetArray();
+                for (int i = 0; i < numParameters; ++i)
+                {
+                    rapidjson::Value v;
+                    AZStd::string marshalErr;
+                    if (!Marshaling::BehaviorArgumentToJsonValue(
+                            parameters[i], v, argsDoc.GetAllocator(), marshalErr))
+                    {
+                        AZ_Warning("O3DESharp", false,
+                            "ForwardEventToManaged('%s'): arg[%d] marshal failed: %s - skipping handler call",
+                            eventName, i, marshalErr.c_str());
+                        return;
+                    }
+                    argsDoc.PushBack(v, argsDoc.GetAllocator());
+                }
+
+                rapidjson::StringBuffer buffer;
+                rapidjson::Writer<rapidjson::StringBuffer> writer(buffer);
+                argsDoc.Accept(writer);
+                const char* argsJson = buffer.GetString();
+
+                // Invoke EBusHandlerRegistry.DispatchEvent via Coral.
+                // We need the CoralHostManager to resolve the static
+                // method; if it's not available (gem teardown), the
+                // event is dropped (logged at the warning level).
+                ICoralHostManager* hostMgr = CoralHostManagerInterface::Get();
+                if (hostMgr == nullptr)
+                {
+                    AZ_Warning("O3DESharp", false,
+                        "ForwardEventToManaged('%s'): CoralHostManager unavailable; dropping event",
+                        eventName);
+                    return;
+                }
+                Coral::Type* registryType = hostMgr->GetCoreType("O3DE.Reflection.EBusHandlerRegistry");
+                if (registryType == nullptr)
+                {
+                    AZ_Warning("O3DESharp", false,
+                        "ForwardEventToManaged('%s'): O3DE.Reflection.EBusHandlerRegistry type not found; dropping event",
+                        eventName);
+                    return;
+                }
+                // DispatchEvent(long token, string eventName, string argsJson) -> string?
+                // Coral::Type::InvokeStaticMethod marshals string + long
+                // arguments via its built-in primitive support.
+                Coral::ScopedString eventNameStr = Coral::String::New(eventName);
+                Coral::ScopedString argsJsonStr = Coral::String::New(argsJson);
+                try
+                {
+                    registryType->InvokeStaticMethod(
+                        "DispatchEvent", token, eventNameStr, argsJsonStr);
+                }
+                catch (...)
+                {
+                    AZ_Warning("O3DESharp", false,
+                        "ForwardEventToManaged('%s'): exception from managed DispatchEvent; "
+                        "event dropped",
+                        eventName);
+                }
+            }
+
+            // Phase 18-B: factor the "marshal args, call, marshal result"
+            // tail of DispatchEBusEvent into a reusable helper so the
+            // new class-method / global-method / property entry points
+            // don't have to duplicate it. Used by InvokeStaticMethod,
+            // InvokeGlobalMethod, GetGlobalProperty, SetGlobalProperty
+            // (and eventually the instance-method variants once we have
+            // a NativeObject handle table).
+            //
+            // contextLabel is used purely for the error-log prefix
+            // ("InvokeStaticMethod('AZ::Vector3', 'Length'): ...") so
+            // failures point at the right call site.
+            Coral::String CallBehaviorMethodAndMarshalResult(
+                AZ::BehaviorMethod* method,
+                [[maybe_unused]] const char* contextLabel,
+                Coral::String argsJson)
+            {
+                std::string argsJsonStr(argsJson);
+
+                auto makeError = [&](const char* fmt, ...) -> Coral::String
+                {
+                    va_list args;
+                    va_start(args, fmt);
+                    char buf[1024] = {};
+                    azvsnprintf(buf, sizeof(buf), fmt, args);
+                    va_end(args);
+                    AZ_Warning("O3DESharp", false, "%s: %s", contextLabel, buf);
+                    AZStd::string msg = AZStd::string::format("{\"error\":\"%s\"}", buf);
+                    return Coral::String::New(msg.c_str());
+                };
+
+                if (method == nullptr)
+                {
+                    return makeError("method is null");
+                }
+
+                // Parse the args array (empty when no parameters).
+                rapidjson::Document argsDoc;
+                if (argsJsonStr.empty())
+                {
+                    argsDoc.SetArray();
+                }
+                else
+                {
+                    argsDoc.Parse(argsJsonStr.c_str());
+                    if (argsDoc.HasParseError())
+                    {
+                        return makeError("args JSON parse error at offset %zu",
+                                         argsDoc.GetErrorOffset());
+                    }
+                }
+
+                Marshaling::StackAllocator marshalAlloc;
+                AZStd::vector<AZ::BehaviorArgument> dispatchArgs;
+                AZStd::string marshalError;
+                if (!Marshaling::MarshalJsonArrayToArguments(
+                        argsDoc, *method, dispatchArgs,
+                        marshalAlloc, marshalError, /*skipFront=*/0))
+                {
+                    return makeError("arg marshal: %s", marshalError.c_str());
+                }
+
+                AZ::BehaviorArgument result;
+                const bool hasReturn = method->HasResult();
+                if (hasReturn)
+                {
+                    // Same pre-population trick as DispatchEBusEvent uses -
+                    // see commit a2759ff for the rationale (some
+                    // BehaviorMethod subclasses don't write m_typeId on the
+                    // result, so the marshaler can't dispatch on it).
+                    if (const auto* resultParam = method->GetResult())
+                    {
+                        result.m_typeId = resultParam->m_typeId;
+                        result.m_name = resultParam->m_name;
+                        result.m_traits = resultParam->m_traits;
+                    }
+                }
+                const bool ok = method->Call(
+                    dispatchArgs.data(),
+                    static_cast<unsigned int>(dispatchArgs.size()),
+                    hasReturn ? &result : nullptr);
+                if (!ok)
+                {
+                    return makeError("BehaviorMethod::Call returned false");
+                }
+                if (hasReturn && result.m_typeId.IsNull())
+                {
+                    if (const auto* resultParam = method->GetResult())
+                    {
+                        result.m_typeId = resultParam->m_typeId;
+                    }
+                }
+
+                if (!hasReturn)
+                {
+                    return Coral::String::New("{\"ok\":true}");
+                }
+                rapidjson::Document resultDoc;
+                resultDoc.SetObject();
+                rapidjson::Value resultValue;
+                AZStd::string resultError;
+                if (!Marshaling::BehaviorArgumentToJsonValue(
+                        result, resultValue, resultDoc.GetAllocator(), resultError))
+                {
+                    return makeError("result marshal: %s", resultError.c_str());
+                }
+                resultDoc.AddMember("result", resultValue, resultDoc.GetAllocator());
+                rapidjson::StringBuffer buffer;
+                rapidjson::Writer<rapidjson::StringBuffer> writer(buffer);
+                resultDoc.Accept(writer);
+                return Coral::String::New(buffer.GetString());
+            }
+
+            // Helper to get the global BehaviorContext, returning nullptr
+            // if it isn't up yet (called during ComponentApplication
+            // teardown, etc.).
+            AZ::BehaviorContext* GetBehaviorContext()
+            {
+                AZ::BehaviorContext* ctx = nullptr;
+                AZ::ComponentApplicationBus::BroadcastResult(
+                    ctx, &AZ::ComponentApplicationRequests::GetBehaviorContext);
+                return ctx;
+            }
+        } // anonymous namespace
+
+        // -------------------------------------------------------------
+        // Real implementations of the Phase 18 entry points.
+        // -------------------------------------------------------------
+
         Coral::String InvokeStaticMethod(Coral::String className, Coral::String methodName, Coral::String argsJson)
         {
-            AZ_UNUSED(argsJson);
-            // TODO: Parse JSON args and invoke
             std::string classNameStr(className);
             std::string methodNameStr(methodName);
-            return Coral::String::New(AZStd::string::format("{\"error\":\"Not fully implemented: %s.%s\"}", classNameStr.c_str(), methodNameStr.c_str()).c_str());
+            const AZStd::string contextLabel = AZStd::string::format(
+                "InvokeStaticMethod('%s', '%s')", classNameStr.c_str(), methodNameStr.c_str());
+
+            auto* ctx = GetBehaviorContext();
+            if (ctx == nullptr)
+            {
+                AZStd::string msg = AZStd::string::format(
+                    "{\"error\":\"%s: no BehaviorContext\"}", contextLabel.c_str());
+                return Coral::String::New(msg.c_str());
+            }
+
+            auto classIt = ctx->m_classes.find(classNameStr.c_str());
+            if (classIt == ctx->m_classes.end())
+            {
+                AZStd::string msg = AZStd::string::format(
+                    "{\"error\":\"%s: class not reflected\"}", contextLabel.c_str());
+                return Coral::String::New(msg.c_str());
+            }
+            AZ::BehaviorClass* cls = classIt->second;
+
+            auto methodIt = cls->m_methods.find(methodNameStr.c_str());
+            if (methodIt == cls->m_methods.end())
+            {
+                AZStd::string msg = AZStd::string::format(
+                    "{\"error\":\"%s: method not reflected on class\"}", contextLabel.c_str());
+                return Coral::String::New(msg.c_str());
+            }
+            AZ::BehaviorMethod* method = methodIt->second;
+            if (method->IsMember())
+            {
+                AZStd::string msg = AZStd::string::format(
+                    "{\"error\":\"%s: method is an instance member; use InvokeInstanceMethod\"}",
+                    contextLabel.c_str());
+                return Coral::String::New(msg.c_str());
+            }
+
+            return CallBehaviorMethodAndMarshalResult(method, contextLabel.c_str(), argsJson);
         }
 
         Coral::String InvokeInstanceMethod(Coral::String className, Coral::String methodName, int64_t instanceHandle, Coral::String argsJson)
         {
-            AZ_UNUSED(instanceHandle);
-            AZ_UNUSED(argsJson);
             std::string classNameStr(className);
             std::string methodNameStr(methodName);
-            return Coral::String::New(AZStd::string::format("{\"error\":\"Not fully implemented: %s.%s\"}", classNameStr.c_str(), methodNameStr.c_str()).c_str());
+            const AZStd::string contextLabel = AZStd::string::format(
+                "InvokeInstanceMethod('%s', '%s', handle=%lld)",
+                classNameStr.c_str(), methodNameStr.c_str(),
+                static_cast<long long>(instanceHandle));
+
+            // Resolve the handle. Empty/stale handle -> immediate error
+            // with the entry-point label, so the C# call site can see
+            // exactly which instance failed.
+            InstanceEntry entry;
+            if (!s_instanceTable.Lookup(instanceHandle, entry))
+            {
+                AZStd::string msg = AZStd::string::format(
+                    "{\"error\":\"%s: instance handle not found in table (already destroyed or never allocated)\"}",
+                    contextLabel.c_str());
+                return Coral::String::New(msg.c_str());
+            }
+            if (entry.behaviorClass == nullptr || entry.address == nullptr)
+            {
+                AZStd::string msg = AZStd::string::format(
+                    "{\"error\":\"%s: instance entry corrupted (class or address null)\"}",
+                    contextLabel.c_str());
+                return Coral::String::New(msg.c_str());
+            }
+
+            // Optional sanity check - if the caller's className doesn't
+            // match the class the handle was registered under, we have
+            // either a generator bug or a caller bug. Don't fail the
+            // dispatch (the handle's recorded class is the source of
+            // truth), but log it so the next person debugging knows.
+            if (!classNameStr.empty() && strcmp(classNameStr.c_str(), entry.className.c_str()) != 0)
+            {
+                AZ_Warning("O3DESharp", false,
+                    "%s: caller's class name '%s' differs from handle's registered class '%s' "
+                    "- proceeding with handle's class",
+                    contextLabel.c_str(), classNameStr.c_str(), entry.className.c_str());
+            }
+
+            auto methodIt = entry.behaviorClass->m_methods.find(methodNameStr.c_str());
+            if (methodIt == entry.behaviorClass->m_methods.end())
+            {
+                AZStd::string msg = AZStd::string::format(
+                    "{\"error\":\"%s: method not reflected on class '%s'\"}",
+                    contextLabel.c_str(), entry.className.c_str());
+                return Coral::String::New(msg.c_str());
+            }
+            AZ::BehaviorMethod* method = methodIt->second;
+            if (!method->IsMember())
+            {
+                AZStd::string msg = AZStd::string::format(
+                    "{\"error\":\"%s: method is static; use InvokeStaticMethod\"}",
+                    contextLabel.c_str());
+                return Coral::String::New(msg.c_str());
+            }
+
+            // Prepend the `this` BehaviorArgument to the args JSON.
+            // BehaviorMethod::Call expects member functions to receive
+            // the instance as arg[0]. We synthesize that argument
+            // directly (no JSON round-trip) by building a
+            // BehaviorArgument pointing at the live address with the
+            // class's TypeId; then we let CallBehaviorMethodAndMarshalResult
+            // marshal the remaining params from the JSON array.
+            //
+            // The helper currently doesn't have a "leading argument"
+            // hook - we cheat by doing the call inline here. Refactor
+            // candidate: thread a `BehaviorArgument* leading` through
+            // CallBehaviorMethodAndMarshalResult so EBus addressed
+            // dispatch (which also has a leading arg, the bus id) can
+            // reuse the same path.
+            std::string argsJsonStr(argsJson);
+
+            auto makeError = [&](const char* fmt, ...) -> Coral::String
+            {
+                va_list vargs;
+                va_start(vargs, fmt);
+                char buf[1024] = {};
+                azvsnprintf(buf, sizeof(buf), fmt, vargs);
+                va_end(vargs);
+                AZ_Warning("O3DESharp", false, "%s: %s", contextLabel.c_str(), buf);
+                AZStd::string m = AZStd::string::format("{\"error\":\"%s\"}", buf);
+                return Coral::String::New(m.c_str());
+            };
+
+            rapidjson::Document argsDoc;
+            if (argsJsonStr.empty())
+            {
+                argsDoc.SetArray();
+            }
+            else
+            {
+                argsDoc.Parse(argsJsonStr.c_str());
+                if (argsDoc.HasParseError())
+                {
+                    return makeError("args JSON parse error at offset %zu",
+                                     argsDoc.GetErrorOffset());
+                }
+            }
+
+            Marshaling::StackAllocator marshalAlloc;
+            AZStd::vector<AZ::BehaviorArgument> dispatchArgs;
+            AZStd::string marshalError;
+            // skipFront=1 because arg 0 is the `this` we're about to
+            // synthesize - we don't expect the JSON to provide it.
+            if (!Marshaling::MarshalJsonArrayToArguments(
+                    argsDoc, *method, dispatchArgs,
+                    marshalAlloc, marshalError, /*skipFront=*/1))
+            {
+                return makeError("arg marshal: %s", marshalError.c_str());
+            }
+
+            // Build the leading `this` arg from the registered handle entry.
+            AZ::BehaviorArgument thisArg;
+            thisArg.m_value = entry.address;
+            thisArg.m_typeId = entry.behaviorClass->m_typeId;
+            thisArg.m_traits = AZ::BehaviorParameter::TR_POINTER;
+
+            AZStd::vector<AZ::BehaviorArgument> flatArgs;
+            flatArgs.reserve(dispatchArgs.size() + 1);
+            flatArgs.push_back(thisArg);
+            for (auto& a : dispatchArgs)
+            {
+                flatArgs.push_back(a);
+            }
+
+            AZ::BehaviorArgument result;
+            const bool hasReturn = method->HasResult();
+            if (hasReturn)
+            {
+                if (const auto* resultParam = method->GetResult())
+                {
+                    result.m_typeId = resultParam->m_typeId;
+                    result.m_name = resultParam->m_name;
+                    result.m_traits = resultParam->m_traits;
+                }
+            }
+            const bool ok = method->Call(
+                flatArgs.data(),
+                static_cast<unsigned int>(flatArgs.size()),
+                hasReturn ? &result : nullptr);
+            if (!ok)
+            {
+                return makeError("BehaviorMethod::Call returned false");
+            }
+            if (hasReturn && result.m_typeId.IsNull())
+            {
+                if (const auto* resultParam = method->GetResult())
+                {
+                    result.m_typeId = resultParam->m_typeId;
+                }
+            }
+
+            if (!hasReturn)
+            {
+                return Coral::String::New("{\"ok\":true}");
+            }
+            rapidjson::Document resultDoc;
+            resultDoc.SetObject();
+            rapidjson::Value resultValue;
+            AZStd::string resultError;
+            if (!Marshaling::BehaviorArgumentToJsonValue(
+                    result, resultValue, resultDoc.GetAllocator(), resultError))
+            {
+                return makeError("result marshal: %s", resultError.c_str());
+            }
+            resultDoc.AddMember("result", resultValue, resultDoc.GetAllocator());
+            rapidjson::StringBuffer buffer;
+            rapidjson::Writer<rapidjson::StringBuffer> writer(buffer);
+            resultDoc.Accept(writer);
+            return Coral::String::New(buffer.GetString());
         }
 
         Coral::String InvokeGlobalMethod(Coral::String methodName, Coral::String argsJson)
         {
-            AZ_UNUSED(argsJson);
             std::string methodNameStr(methodName);
-            return Coral::String::New(AZStd::string::format("{\"error\":\"Not fully implemented: %s\"}", methodNameStr.c_str()).c_str());
+            const AZStd::string contextLabel = AZStd::string::format(
+                "InvokeGlobalMethod('%s')", methodNameStr.c_str());
+
+            auto* ctx = GetBehaviorContext();
+            if (ctx == nullptr)
+            {
+                AZStd::string msg = AZStd::string::format(
+                    "{\"error\":\"%s: no BehaviorContext\"}", contextLabel.c_str());
+                return Coral::String::New(msg.c_str());
+            }
+
+            auto methodIt = ctx->m_methods.find(methodNameStr.c_str());
+            if (methodIt == ctx->m_methods.end())
+            {
+                AZStd::string msg = AZStd::string::format(
+                    "{\"error\":\"%s: global method not reflected\"}", contextLabel.c_str());
+                return Coral::String::New(msg.c_str());
+            }
+            AZ::BehaviorMethod* method = methodIt->second;
+            return CallBehaviorMethodAndMarshalResult(method, contextLabel.c_str(), argsJson);
         }
 
         Coral::String GetProperty(Coral::String className, Coral::String propertyName, int64_t instanceHandle)
         {
-            AZ_UNUSED(instanceHandle);
             std::string classNameStr(className);
             std::string propertyNameStr(propertyName);
-            return Coral::String::New(AZStd::string::format("{\"error\":\"Not fully implemented: %s.%s\"}", classNameStr.c_str(), propertyNameStr.c_str()).c_str());
+            const AZStd::string contextLabel = AZStd::string::format(
+                "GetProperty('%s.%s', handle=%lld)",
+                classNameStr.c_str(), propertyNameStr.c_str(),
+                static_cast<long long>(instanceHandle));
+
+            InstanceEntry entry;
+            if (!s_instanceTable.Lookup(instanceHandle, entry))
+            {
+                AZStd::string msg = AZStd::string::format(
+                    "{\"error\":\"%s: instance handle not found\"}", contextLabel.c_str());
+                return Coral::String::New(msg.c_str());
+            }
+            if (entry.behaviorClass == nullptr || entry.address == nullptr)
+            {
+                AZStd::string msg = AZStd::string::format(
+                    "{\"error\":\"%s: instance entry corrupted\"}", contextLabel.c_str());
+                return Coral::String::New(msg.c_str());
+            }
+
+            auto propIt = entry.behaviorClass->m_properties.find(propertyNameStr.c_str());
+            if (propIt == entry.behaviorClass->m_properties.end())
+            {
+                AZStd::string msg = AZStd::string::format(
+                    "{\"error\":\"%s: property not reflected on class '%s'\"}",
+                    contextLabel.c_str(), entry.className.c_str());
+                return Coral::String::New(msg.c_str());
+            }
+            AZ::BehaviorProperty* prop = propIt->second;
+            if (prop->m_getter == nullptr)
+            {
+                AZStd::string msg = AZStd::string::format(
+                    "{\"error\":\"%s: property has no getter\"}", contextLabel.c_str());
+                return Coral::String::New(msg.c_str());
+            }
+
+            // The getter takes `this` as its only argument.
+            AZ::BehaviorArgument thisArg;
+            thisArg.m_value = entry.address;
+            thisArg.m_typeId = entry.behaviorClass->m_typeId;
+            thisArg.m_traits = AZ::BehaviorParameter::TR_POINTER;
+
+            AZ::BehaviorArgument result;
+            if (const auto* resultParam = prop->m_getter->GetResult())
+            {
+                result.m_typeId = resultParam->m_typeId;
+                result.m_name = resultParam->m_name;
+                result.m_traits = resultParam->m_traits;
+            }
+            const bool ok = prop->m_getter->Call(&thisArg, 1, &result);
+            if (!ok)
+            {
+                AZStd::string msg = AZStd::string::format(
+                    "{\"error\":\"%s: getter Call returned false\"}", contextLabel.c_str());
+                return Coral::String::New(msg.c_str());
+            }
+            if (result.m_typeId.IsNull())
+            {
+                if (const auto* resultParam = prop->m_getter->GetResult())
+                {
+                    result.m_typeId = resultParam->m_typeId;
+                }
+            }
+
+            rapidjson::Document resultDoc;
+            resultDoc.SetObject();
+            rapidjson::Value resultValue;
+            AZStd::string resultError;
+            if (!Marshaling::BehaviorArgumentToJsonValue(
+                    result, resultValue, resultDoc.GetAllocator(), resultError))
+            {
+                AZStd::string msg = AZStd::string::format(
+                    "{\"error\":\"%s: result marshal: %s\"}",
+                    contextLabel.c_str(), resultError.c_str());
+                return Coral::String::New(msg.c_str());
+            }
+            resultDoc.AddMember("result", resultValue, resultDoc.GetAllocator());
+            rapidjson::StringBuffer buffer;
+            rapidjson::Writer<rapidjson::StringBuffer> writer(buffer);
+            resultDoc.Accept(writer);
+            return Coral::String::New(buffer.GetString());
         }
 
         bool SetProperty(Coral::String className, Coral::String propertyName, int64_t instanceHandle, Coral::String valueJson)
         {
-            AZ_UNUSED(className);
-            AZ_UNUSED(propertyName);
-            AZ_UNUSED(instanceHandle);
-            AZ_UNUSED(valueJson);
-            return false;
+            std::string classNameStr(className);
+            std::string propertyNameStr(propertyName);
+            const AZStd::string contextLabel = AZStd::string::format(
+                "SetProperty('%s.%s', handle=%lld)",
+                classNameStr.c_str(), propertyNameStr.c_str(),
+                static_cast<long long>(instanceHandle));
+
+            InstanceEntry entry;
+            if (!s_instanceTable.Lookup(instanceHandle, entry))
+            {
+                AZ_Warning("O3DESharp", false, "%s: instance handle not found", contextLabel.c_str());
+                return false;
+            }
+            if (entry.behaviorClass == nullptr || entry.address == nullptr)
+            {
+                AZ_Warning("O3DESharp", false, "%s: instance entry corrupted", contextLabel.c_str());
+                return false;
+            }
+            auto propIt = entry.behaviorClass->m_properties.find(propertyNameStr.c_str());
+            if (propIt == entry.behaviorClass->m_properties.end())
+            {
+                AZ_Warning("O3DESharp", false, "%s: property not reflected", contextLabel.c_str());
+                return false;
+            }
+            AZ::BehaviorProperty* prop = propIt->second;
+            if (prop->m_setter == nullptr)
+            {
+                AZ_Warning("O3DESharp", false, "%s: property has no setter (readonly)", contextLabel.c_str());
+                return false;
+            }
+
+            // Setter signature is (this, newValue). Build the two-arg
+            // call: synthesize `this`, marshal newValue from valueJson.
+            AZ::BehaviorArgument thisArg;
+            thisArg.m_value = entry.address;
+            thisArg.m_typeId = entry.behaviorClass->m_typeId;
+            thisArg.m_traits = AZ::BehaviorParameter::TR_POINTER;
+
+            std::string valueJsonStr(valueJson);
+            rapidjson::Document valueDoc;
+            valueDoc.Parse(valueJsonStr.empty() ? "null" : valueJsonStr.c_str());
+            if (valueDoc.HasParseError())
+            {
+                AZ_Warning("O3DESharp", false, "%s: value JSON parse error at offset %zu",
+                    contextLabel.c_str(), valueDoc.GetErrorOffset());
+                return false;
+            }
+
+            // Setter arg 0 is `this`, arg 1 is the new value's param.
+            const AZ::BehaviorParameter* valueParam = prop->m_setter->GetArgument(1);
+            if (valueParam == nullptr)
+            {
+                AZ_Warning("O3DESharp", false, "%s: setter has no value parameter (corrupted reflection)",
+                    contextLabel.c_str());
+                return false;
+            }
+
+            Marshaling::StackAllocator marshalAlloc;
+            AZ::BehaviorArgument valueArg;
+            AZStd::string marshalError;
+            if (!Marshaling::JsonValueToBehaviorParameter(
+                    valueDoc, *valueParam, valueArg, marshalAlloc, marshalError))
+            {
+                AZ_Warning("O3DESharp", false, "%s: value marshal: %s",
+                    contextLabel.c_str(), marshalError.c_str());
+                return false;
+            }
+
+            AZ::BehaviorArgument callArgs[2] = { thisArg, valueArg };
+            const bool ok = prop->m_setter->Call(callArgs, 2, nullptr);
+            if (!ok)
+            {
+                AZ_Warning("O3DESharp", false, "%s: setter Call returned false", contextLabel.c_str());
+                return false;
+            }
+            return true;
         }
 
         Coral::String GetGlobalProperty(Coral::String propertyName)
         {
             std::string propertyNameStr(propertyName);
-            return Coral::String::New(AZStd::string::format("{\"error\":\"Not fully implemented: %s\"}", propertyNameStr.c_str()).c_str());
+            const AZStd::string contextLabel = AZStd::string::format(
+                "GetGlobalProperty('%s')", propertyNameStr.c_str());
+
+            auto* ctx = GetBehaviorContext();
+            if (ctx == nullptr)
+            {
+                AZStd::string msg = AZStd::string::format(
+                    "{\"error\":\"%s: no BehaviorContext\"}", contextLabel.c_str());
+                return Coral::String::New(msg.c_str());
+            }
+
+            auto propIt = ctx->m_properties.find(propertyNameStr.c_str());
+            if (propIt == ctx->m_properties.end())
+            {
+                AZStd::string msg = AZStd::string::format(
+                    "{\"error\":\"%s: global property not reflected\"}", contextLabel.c_str());
+                return Coral::String::New(msg.c_str());
+            }
+            AZ::BehaviorProperty* prop = propIt->second;
+            if (prop->m_getter == nullptr)
+            {
+                AZStd::string msg = AZStd::string::format(
+                    "{\"error\":\"%s: property has no getter\"}", contextLabel.c_str());
+                return Coral::String::New(msg.c_str());
+            }
+            // No args for a property getter; the empty argsJson string
+            // exercises the no-args path inside the helper.
+            return CallBehaviorMethodAndMarshalResult(prop->m_getter, contextLabel.c_str(), Coral::String::New(""));
         }
 
         bool SetGlobalProperty(Coral::String propertyName, Coral::String valueJson)
         {
-            AZ_UNUSED(propertyName);
-            AZ_UNUSED(valueJson);
-            return false;
+            std::string propertyNameStr(propertyName);
+
+            auto* ctx = GetBehaviorContext();
+            if (ctx == nullptr)
+            {
+                AZ_Warning("O3DESharp", false,
+                    "SetGlobalProperty('%s'): no BehaviorContext", propertyNameStr.c_str());
+                return false;
+            }
+            auto propIt = ctx->m_properties.find(propertyNameStr.c_str());
+            if (propIt == ctx->m_properties.end())
+            {
+                AZ_Warning("O3DESharp", false,
+                    "SetGlobalProperty('%s'): not reflected", propertyNameStr.c_str());
+                return false;
+            }
+            AZ::BehaviorProperty* prop = propIt->second;
+            if (prop->m_setter == nullptr)
+            {
+                AZ_Warning("O3DESharp", false,
+                    "SetGlobalProperty('%s'): no setter (readonly)", propertyNameStr.c_str());
+                return false;
+            }
+
+            // Setter signature is (newValue) - wrap the JSON value in an
+            // array so MarshalJsonArrayToArguments treats it as one arg.
+            const AZStd::string contextLabel = AZStd::string::format(
+                "SetGlobalProperty('%s')", propertyNameStr.c_str());
+            std::string valueJsonStr(valueJson);
+            AZStd::string wrappedJson = AZStd::string::format("[%s]",
+                valueJsonStr.empty() ? "null" : valueJsonStr.c_str());
+            Coral::String wrapped = Coral::String::New(wrappedJson.c_str());
+            Coral::String result = CallBehaviorMethodAndMarshalResult(
+                prop->m_setter, contextLabel.c_str(), wrapped);
+            // Setter is void-returning; "ok":true on success. We treat
+            // any error envelope as failure.
+            std::string resultStr(result);
+            return resultStr.find("\"ok\"") != std::string::npos;
         }
 
         Coral::String BroadcastEBusEvent(Coral::String busName, Coral::String eventName, Coral::String argsJson)
         {
-            AZ_UNUSED(argsJson);
-            std::string busNameStr(busName);
-            std::string eventNameStr(eventName);
-            return Coral::String::New(AZStd::string::format("{\"error\":\"Not fully implemented: %s.%s\"}", busNameStr.c_str(), eventNameStr.c_str()).c_str());
+            return DispatchEBusEvent(busName, eventName, argsJson, /*addressed*/ false, /*busId*/ 0u);
         }
 
         Coral::String SendEBusEvent(Coral::String busName, Coral::String eventName, int64_t address, Coral::String argsJson)
         {
-            AZ_UNUSED(address);
-            AZ_UNUSED(argsJson);
-            std::string busNameStr(busName);
-            std::string eventNameStr(eventName);
-            return Coral::String::New(AZStd::string::format("{\"error\":\"Not fully implemented: %s.%s\"}", busNameStr.c_str(), eventNameStr.c_str()).c_str());
+            return DispatchEBusEvent(
+                busName, eventName, argsJson,
+                /*addressed*/ true,
+                static_cast<AZ::u64>(address));
         }
 
         int64_t CreateInstance(Coral::String className, Coral::String argsJson)
         {
-            AZ_UNUSED(argsJson);
-            
+            AZ_UNUSED(argsJson);  // constructor args - default-construct only for now
+
             if (!s_dispatcherInstance)
             {
                 return 0;
             }
 
             std::string classNameStr(className);
-            AZStd::vector<MarshalledValue> args; // Empty for default constructor
-            
+            AZStd::vector<MarshalledValue> args;
+
             DispatchResult result = s_dispatcherInstance->CreateInstance(classNameStr.c_str(), args);
-            if (result.success && result.returnValue.type == ReflectedParameter::MarshalType::Object)
+            if (!result.success || result.returnValue.type != ReflectedParameter::MarshalType::Object)
             {
-                return reinterpret_cast<int64_t>(result.returnValue.objectHandle);
+                return 0;
             }
 
-            return 0;
+            // Look up the BehaviorClass so the handle table can later
+            // resolve method/property/destructor calls without round-
+            // tripping through the className string each time.
+            auto* ctx = GetBehaviorContext();
+            if (ctx == nullptr)
+            {
+                // Leak warning: we constructed an instance but can't
+                // register it. The raw pointer is the only reference,
+                // and the caller gets handle=0 which the C# side
+                // treats as "construction failed", so it won't try
+                // to destroy. This is a real leak but only fires
+                // during ComponentApplication teardown - and at that
+                // point the whole runtime is going down anyway.
+                AZ_Warning("O3DESharp", false,
+                    "CreateInstance('%s'): no BehaviorContext after construction; leaking instance",
+                    classNameStr.c_str());
+                return 0;
+            }
+            auto classIt = ctx->m_classes.find(classNameStr.c_str());
+            AZ::BehaviorClass* behaviorClass = (classIt != ctx->m_classes.end()) ? classIt->second : nullptr;
+
+            void* address = result.returnValue.objectHandle;
+            const int64_t handle = s_instanceTable.Register(address, behaviorClass, AZStd::string(classNameStr.c_str()));
+            return handle;
         }
 
         void DestroyInstance(Coral::String className, int64_t instanceHandle)
         {
+            AZ_UNUSED(className);  // handle-recorded class is the source of truth
             if (!s_dispatcherInstance || instanceHandle == 0)
             {
                 return;
             }
 
-            std::string classNameStr(className);
-            s_dispatcherInstance->DestroyInstance(classNameStr.c_str(), reinterpret_cast<void*>(instanceHandle));
+            InstanceEntry entry;
+            if (!s_instanceTable.Release(instanceHandle, entry))
+            {
+                AZ_Warning("O3DESharp", false,
+                    "DestroyInstance(handle=%lld): not in table (double-destroy or never allocated)",
+                    static_cast<long long>(instanceHandle));
+                return;
+            }
+
+            // Drive the existing dispatcher destructor + deallocator
+            // through the registered class so any BehaviorClass-side
+                // user-data hooks fire correctly. Outside the table
+                // mutex so a re-entrant call from a destructor doesn't
+                // self-deadlock.
+            s_dispatcherInstance->DestroyInstance(entry.className.c_str(), entry.address);
+        }
+
+        // ========================================================
+        // Phase 18-E2: Managed EBus handler registration.
+        // ========================================================
+        // Wired into the C# side as ReflectionInternalCalls.
+        //   Reflection_RegisterEBusHandler / Reflection_UnregisterEBusHandler
+
+        int64_t RegisterEBusHandler(Coral::String busName, uint64_t address, int64_t managedToken)
+        {
+            if (managedToken == 0)
+            {
+                return 0;
+            }
+            auto* ctx = GetBehaviorContext();
+            if (ctx == nullptr)
+            {
+                AZ_Warning("O3DESharp", false,
+                    "RegisterEBusHandler(token=%lld): no BehaviorContext available",
+                    static_cast<long long>(managedToken));
+                return 0;
+            }
+
+            std::string busNameStr(busName);
+            auto busIt = ctx->m_ebuses.find(busNameStr.c_str());
+            if (busIt == ctx->m_ebuses.end())
+            {
+                AZ_Warning("O3DESharp", false,
+                    "RegisterEBusHandler(token=%lld): bus '%s' not reflected in BehaviorContext",
+                    static_cast<long long>(managedToken), busNameStr.c_str());
+                return 0;
+            }
+            AZ::BehaviorEBus* bus = busIt->second;
+
+            if (bus->m_createHandler == nullptr || bus->m_destroyHandler == nullptr)
+            {
+                AZ_Warning("O3DESharp", false,
+                    "RegisterEBusHandler(token=%lld): bus '%s' has no handler factory "
+                    "(not all buses are reflected with handler support; only those that "
+                    "explicitly call .Handler<HandlerT>() in their Reflect can be implemented "
+                    "in script)",
+                    static_cast<long long>(managedToken), busNameStr.c_str());
+                return 0;
+            }
+
+            // Spawn the BehaviorEBusHandler via the bus's factory.
+            // m_createHandler is a BehaviorMethod*; its return type is
+            // a BehaviorEBusHandler*. Call with no args.
+            AZ::BehaviorArgument handlerResult;
+            if (const auto* resultParam = bus->m_createHandler->GetResult())
+            {
+                handlerResult.m_typeId = resultParam->m_typeId;
+                handlerResult.m_traits = resultParam->m_traits;
+            }
+            if (!bus->m_createHandler->Call(nullptr, 0, &handlerResult))
+            {
+                AZ_Warning("O3DESharp", false,
+                    "RegisterEBusHandler(token=%lld): bus '%s' m_createHandler->Call returned false",
+                    static_cast<long long>(managedToken), busNameStr.c_str());
+                return 0;
+            }
+            AZ::BehaviorEBusHandler* handler =
+                *reinterpret_cast<AZ::BehaviorEBusHandler**>(handlerResult.m_value);
+            if (handler == nullptr)
+            {
+                AZ_Warning("O3DESharp", false,
+                    "RegisterEBusHandler(token=%lld): bus '%s' factory returned null handler",
+                    static_cast<long long>(managedToken), busNameStr.c_str());
+                return 0;
+            }
+
+            // Install our generic hook on every event the handler
+            // exposes. userData carries the managed token (cast via
+            // uintptr_t since BehaviorEBusHandler typedefs userData
+            // as void*).
+            void* userData = reinterpret_cast<void*>(static_cast<uintptr_t>(managedToken));
+            for (const auto& evt : handler->GetEvents())
+            {
+                if (!handler->InstallGenericHook(
+                        evt.m_name, &ForwardEventToManaged, userData))
+                {
+                    AZ_Warning("O3DESharp", false,
+                        "RegisterEBusHandler(token=%lld): InstallGenericHook failed for event '%s' on bus '%s'",
+                        static_cast<long long>(managedToken), evt.m_name, busNameStr.c_str());
+                    // Continue with the other events - partial hook
+                    // installation is still useful.
+                }
+            }
+
+            // Connect. For addressed buses we synthesize a
+            // BehaviorArgument carrying the address; for broadcast-
+            // only buses we pass nullptr.
+            //
+            // The static_cast disambiguates between
+            //   virtual bool Connect(BehaviorArgument* id = nullptr)
+            // and the sibling
+            //   template<typename BusId> bool Connect(BusId id)
+            // which otherwise wins overload resolution on a bare
+            // `nullptr` (exact-match deduction beats the pointer
+            // conversion) and tries to instantiate AzTypeInfo on
+            // nullptr_t.
+            bool connected = false;
+            if (address != 0)
+            {
+                // Synthesize the address argument. We currently support
+                // EntityId-shaped addresses (the most common case) and
+                // u64 raw handles. Other address types (Crc32, strings)
+                // need their own marshaling path - tracked as Phase
+                // 18-E3 follow-up.
+                AZ::BehaviorArgument addressArg;
+                AZ::EntityId entityId(address);
+                addressArg.Set<AZ::EntityId>(&entityId);
+                connected = handler->Connect(&addressArg);
+            }
+            else
+            {
+                connected = handler->Connect(static_cast<AZ::BehaviorArgument*>(nullptr));
+            }
+            if (!connected)
+            {
+                AZ_Warning("O3DESharp", false,
+                    "RegisterEBusHandler(token=%lld): handler->Connect returned false for bus '%s'",
+                    static_cast<long long>(managedToken), busNameStr.c_str());
+                bus->m_destroyHandler->Call(&handlerResult, 1, nullptr);
+                return 0;
+            }
+
+            // Register in the managed-handler table so Unregister can
+            // find it and disconnect cleanly.
+            auto proxy = AZStd::make_unique<ManagedEBusProxy>();
+            proxy->bus = bus;
+            proxy->handler = handler;
+            proxy->managedToken = managedToken;
+            if (!s_managedHandlers.Register(managedToken, AZStd::move(proxy)))
+            {
+                AZ_Warning("O3DESharp", false,
+                    "RegisterEBusHandler(token=%lld): duplicate token; rolling back",
+                    static_cast<long long>(managedToken));
+                handler->Disconnect();
+                bus->m_destroyHandler->Call(&handlerResult, 1, nullptr);
+                return 0;
+            }
+
+            // Return a non-zero confirmation handle. We return the
+            // token itself; the C# side just checks != 0.
+            return managedToken;
+        }
+
+        void UnregisterEBusHandler(int64_t managedToken)
+        {
+            if (managedToken == 0) return;
+            auto proxy = s_managedHandlers.Release(managedToken);
+            if (proxy == nullptr) return;
+
+            if (proxy->handler != nullptr)
+            {
+                proxy->handler->Disconnect();
+                if (proxy->bus != nullptr && proxy->bus->m_destroyHandler != nullptr)
+                {
+                    AZ::BehaviorArgument handlerArg;
+                    handlerArg.Set<AZ::BehaviorEBusHandler*>(&proxy->handler);
+                    proxy->bus->m_destroyHandler->Call(&handlerArg, 1, nullptr);
+                }
+            }
         }
     }
 

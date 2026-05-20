@@ -7,12 +7,13 @@
  */
 
 using System;
+using System.Collections.Generic;
 using Coral.Managed.Interop;
 
 namespace O3DE
 {
     /// <summary>
-    /// Represents an O3DE Entity in managed code.
+    /// Represents an O3DE Entity in managed code. 
     /// An entity is a container for components that define its behavior and properties.
     /// </summary>
     public class Entity : IEquatable<Entity>
@@ -143,6 +144,68 @@ namespace O3DE
         }
 
         /// <summary>
+        /// Destroys this entity. After calling this, the entity reference becomes invalid.
+        /// </summary>
+        public void Destroy()
+        {
+            if (IsValid)
+            {
+                unsafe { InternalCalls.Entity_Destroy(m_id); }
+            }
+        }
+
+        /// <summary>
+        /// Gets all child entities of this entity.
+        /// </summary>
+        /// <returns>A list of child Entity objects</returns>
+        public List<Entity> GetChildren()
+        {
+            var children = new List<Entity>();
+            if (!IsValid) return children;
+
+            int count;
+            unsafe { count = InternalCalls.Entity_GetChildCount(m_id); }
+
+            for (int i = 0; i < count; i++)
+            {
+                ulong childId;
+                unsafe { childId = InternalCalls.Entity_GetChildAtIndex(m_id, i); }
+                if (childId != InvalidId)
+                {
+                    children.Add(new Entity(childId));
+                }
+            }
+            return children;
+        }
+
+        /// <summary>
+        /// Gets the number of child entities.
+        /// </summary>
+        public int ChildCount
+        {
+            get
+            {
+                if (!IsValid) return 0;
+                unsafe { return InternalCalls.Entity_GetChildCount(m_id); }
+            }
+        }
+
+        /// <summary>
+        /// Finds a direct child entity by name.
+        /// </summary>
+        /// <param name="childName">The name of the child entity to find</param>
+        /// <returns>The child Entity, or null if not found</returns>
+        public Entity? FindChild(string childName)
+        {
+            foreach (var child in GetChildren())
+            {
+                if (child.Name == childName)
+                    return child;
+            }
+            return null;
+        }
+
+        /// <summary>
         /// Checks if this entity has a component of the specified type
         /// </summary>
         /// <param name="componentTypeName">The fully qualified component type name</param>
@@ -167,6 +230,20 @@ namespace O3DE
         #endregion
 
         #region Static Methods
+
+        /// <summary>
+        /// Finds an entity in the scene by name.
+        /// </summary>
+        /// <param name="name">The name of the entity to find</param>
+        /// <returns>The Entity if found, or null if no entity with that name exists</returns>
+        public static Entity? Find(string name)
+        {
+            ulong id;
+            unsafe { id = InternalCalls.Entity_FindByName(name); }
+            if (id == InvalidId)
+                return null;
+            return new Entity(id);
+        }
 
         /// <summary>
         /// Creates an Entity wrapper from a native entity ID

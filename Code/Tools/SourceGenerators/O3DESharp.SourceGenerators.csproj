@@ -1,0 +1,62 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    O3DESharp source generators (Phase 18-E).
+
+    Roslyn source generators run during compilation and emit additional
+    C# source files that the compiler includes alongside the user's own
+    code. We use this to process [EBus] / [EBusHandler] attributes on
+    user classes and emit:
+      - ConnectTo<BusName>(...)
+      - DisconnectFrom<BusName>(...)
+      - A private dispatch shim that unmarshals JSON args from the C++
+        side into typed parameters before invoking the user's method.
+
+    Roslyn requires source generator packages target netstandard2.0
+    (the analyzer host's compiler embeds this exact framework version).
+    The IsRoslynComponent / EnforceExtendedAnalyzerRules / DevelopmentDependency
+    properties below are the standard Roslyn-analyzer packaging metadata.
+  -->
+
+  <PropertyGroup>
+    <TargetFramework>netstandard2.0</TargetFramework>
+    <ImplicitUsings>disable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <LangVersion>latest</LangVersion>
+    <RootNamespace>O3DESharp.SourceGenerators</RootNamespace>
+    <AssemblyName>O3DESharp.SourceGenerators</AssemblyName>
+
+    <!-- Roslyn analyzer packaging metadata -->
+    <IsRoslynComponent>true</IsRoslynComponent>
+    <EnforceExtendedAnalyzerRules>true</EnforceExtendedAnalyzerRules>
+    <IncludeBuildOutput>false</IncludeBuildOutput>
+    <SuppressDependenciesWhenPacking>true</SuppressDependenciesWhenPacking>
+    <DevelopmentDependency>true</DevelopmentDependency>
+  </PropertyGroup>
+
+  <!--
+    Debug-mode build settings tuned for analyzer attach. Source
+    generators run inside the C# compiler process during build, so
+    "attach to compiler" is the way to step into them - DebugType=full
+    lets that work reliably.
+  -->
+  <PropertyGroup Condition="'$(Configuration)' == 'Debug'">
+    <Optimize>false</Optimize>
+    <DebugSymbols>true</DebugSymbols>
+    <DebugType>full</DebugType>
+    <PublishSingleFile>false</PublishSingleFile>
+    <EnableCompressionInSingleFile>false</EnableCompressionInSingleFile>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!--
+      Microsoft.CodeAnalysis.CSharp 4.4 covers C# 11 + .NET 8 + Roslyn
+      source generators incremental API. Pinning a stable version so a
+      compiler/SDK update doesn't break the generator's source-emit
+      shape under us.
+    -->
+    <PackageReference Include="Microsoft.CodeAnalysis.CSharp" Version="4.4.0" PrivateAssets="all" />
+    <PackageReference Include="Microsoft.CodeAnalysis.Analyzers" Version="3.3.4" PrivateAssets="all" />
+  </ItemGroup>
+
+</Project>

@@ -170,6 +170,7 @@ class CreateScriptDialog(QDialog):
         super().__init__(parent)
         self.project_manager = get_project_manager()
         self.project_path = project_path
+        self._created_class_name = None  # Store fully-qualified name of created class
         self.setup_ui()
         
     def setup_ui(self):
@@ -308,6 +309,7 @@ class CreateScriptDialog(QDialog):
         )
         
         if result["success"]:
+            self._created_class_name = f"{project_data['namespace']}.{class_name}"
             QMessageBox.information(
                 self, "Success",
                 f"Script '{class_name}.cs' created successfully!"
@@ -316,6 +318,15 @@ class CreateScriptDialog(QDialog):
             self.accept()
         else:
             QMessageBox.critical(self, "Error", result["message"])
+    
+    def get_created_class_name(self) -> Optional[str]:
+        """Get the fully qualified class name of the created script.
+        
+        Returns:
+            The fully qualified name (e.g. 'MyGame.PlayerController') or None
+            if no script was created.
+        """
+        return self._created_class_name
 
 
 class ScriptBrowserDialog(QDialog):
@@ -332,7 +343,7 @@ class ScriptBrowserDialog(QDialog):
         
     def setup_ui(self):
         self.setWindowTitle("Select C# Script")
-        self.setMinimumSize(500, 400)
+        self.setMinimumSize(560, 440)
         self.setModal(True)
         
         layout = QVBoxLayout(self)
@@ -343,6 +354,17 @@ class ScriptBrowserDialog(QDialog):
         refresh_btn = QPushButton("↻ Refresh")
         refresh_btn.clicked.connect(self._populate_tree)
         toolbar.addWidget(refresh_btn)
+        
+        self.open_btn = QPushButton("Open in Editor")
+        self.open_btn.setToolTip("Open the selected script file")
+        self.open_btn.setEnabled(False)
+        self.open_btn.clicked.connect(self._open_selected_in_editor)
+        toolbar.addWidget(self.open_btn)
+        
+        build_btn = QPushButton("Build")
+        build_btn.setToolTip("Build the project that contains the selected script")
+        build_btn.clicked.connect(self._build_selected_project)
+        toolbar.addWidget(build_btn)
         
         toolbar.addStretch()
         
@@ -466,10 +488,12 @@ class ScriptBrowserDialog(QDialog):
             if item_data and item_data["type"] == "script":
                 self.selected_label.setText(item_data["data"]["full_name"])
                 self.select_btn.setEnabled(True)
+                self.open_btn.setEnabled(bool(item_data["data"].get("path")))
                 return
                 
         self.selected_label.setText("None")
         self.select_btn.setEnabled(False)
+        self.open_btn.setEnabled(False)
         
     def _on_item_double_clicked(self, item, column):
         item_data = item.data(0, Qt.UserRole)
@@ -514,6 +538,712 @@ class ScriptBrowserDialog(QDialog):
         dialog = CreateScriptDialog(project_path, self)
         dialog.script_created.connect(lambda _: self._populate_tree())
         dialog.exec_()
+    
+    def _open_selected_in_editor(self):
+        """Open the selected script file in the default code editor."""
+        items = self.tree.selectedItems()
+        if not items:
+            return
+        item_data = items[0].data(0, Qt.UserRole)
+        if not item_data or item_data["type"] != "script":
+            return
+        script_path = item_data["data"].get("path", "")
+        if not script_path:
+            return
+        import subprocess as _sp
+        try:
+            _sp.Popen(["code", script_path])
+        except Exception:
+            try:
+                import os
+                os.startfile(script_path)
+            except Exception as e:
+                QMessageBox.warning(self, "Error", f"Could not open script: {e}")
+    
+    def _build_selected_project(self):
+        """Build the project containing the selected item."""
+        items = self.tree.selectedItems()
+        project_path = None
+        if items:
+            item_data = items[0].data(0, Qt.UserRole)
+            if item_data:
+                if item_data["type"] == "project":
+                    project_path = item_data["data"]["path"]
+                elif item_data["type"] == "script":
+                    parent = items[0].parent()
+                    if parent:
+                        parent_data = parent.data(0, Qt.UserRole)
+                        if parent_data and parent_data["type"] == "project":
+                            project_path = parent_data["data"]["path"]
+        
+        if not project_path:
+            QMessageBox.information(self, "Build", "Select a project or script first.")
+            return
+        
+        result = self.project_manager.build_project(project_path)
+        if result["success"]:
+            QMessageBox.information(self, "Build Succeeded", f"Output: {result.get('output_path', 'OK')}")
+        else:
+            QMessageBox.warning(self, "Build Failed", result.get("message", "Unknown error"))
+
+
+# ==================== Recently-Used Cache ====================
+
+class _RecentClassesCache:
+    """Manages a persistent list of recently-selected script classes."""
+    
+    _MAX_RECENT = 8
+    _instance = None
+    
+    def __init__(self):
+        self._recent: List[str] = []
+        self._load()
+    
+    @classmethod
+    def instance(cls) -> '_RecentClassesCache':
+        if cls._instance is None:
+            cls._instance = cls()
+        return cls._instance
+    
+    def _cache_file(self) -> Path:
+        manager = get_project_manager()
+        return manager.project_path / "user" / ".csharp_recent_classes.json"
+    
+    def _load(self):
+        import json
+        try:
+            path = self._cache_file()
+            if path.exists():
+                with open(path, 'r', encoding='utf-8') as f:
+                    data = json.load(f)
+                if isinstance(data, list):
+                    # Earlier versions accidentally added args tuples instead of
+                    # strings to this list (EBus marshaling passes all params as
+                    # a tuple - see comment in connect_ebus_handler about
+                    # callback wrapping). Drop anything that isn't a non-empty
+                    # string so we can recover without forcing the user to
+                    # delete the JSON by hand.
+                    self._recent = [
+                        entry for entry in data[:self._MAX_RECENT]
+                        if isinstance(entry, str) and entry
+                    ]
+        except Exception:
+            self._recent = []
+    
+    def _save(self):
+        import json
+        try:
+            path = self._cache_file()
+            path.parent.mkdir(parents=True, exist_ok=True)
+            with open(path, 'w', encoding='utf-8') as f:
+                json.dump(self._recent, f, indent=2)
+        except Exception:
+            pass
+    
+    def add(self, class_name: str):
+        if not class_name:
+            return
+        # Move to front if already present
+        if class_name in self._recent:
+            self._recent.remove(class_name)
+        self._recent.insert(0, class_name)
+        self._recent = self._recent[:self._MAX_RECENT]
+        self._save()
+    
+    def get(self) -> List[str]:
+        return list(self._recent)
+    
+    def clear(self):
+        self._recent = []
+        self._save()
+
+
+# ==================== Script Class Picker Dialog ====================
+
+class ScriptClassPickerDialog(QDialog):
+    """
+    Streamlined script class picker for the entity component inspector.
+    
+    Features:
+    - Instant search / filter with keyboard focus
+    - Recently-used classes at the top
+    - Grouped by project / namespace
+    - Class info preview panel
+    - Inline "Create New Script" button
+    """
+    
+    class_selected = Signal(str)  # Emits fully qualified class name
+    
+    def __init__(self, current_class: str = "", parent=None):
+        super().__init__(parent)
+        self.project_manager = get_project_manager()
+        self._selected_class: Optional[str] = None
+        self._current_class = current_class
+        self._all_classes: List[dict] = []  # cached flat list
+        self.setup_ui()
+        self._load_classes()
+    
+    # ---- UI ----
+    
+    def setup_ui(self):
+        self.setWindowTitle("Pick Script Class")
+        self.setMinimumSize(520, 480)
+        self.setModal(True)
+        
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(8, 8, 8, 8)
+        layout.setSpacing(6)
+        
+        # ---- Search bar (auto-focused) ----
+        search_layout = QHBoxLayout()
+        search_layout.setSpacing(4)
+        
+        search_icon = QLabel("🔍")
+        search_layout.addWidget(search_icon)
+        
+        self.search_edit = QLineEdit()
+        self.search_edit.setPlaceholderText("Type to search classes…  (Ctrl+F)")
+        self.search_edit.setClearButtonEnabled(True)
+        self.search_edit.textChanged.connect(self._apply_filter)
+        search_layout.addWidget(self.search_edit)
+        
+        layout.addLayout(search_layout)
+        
+        # ---- Filter toggles ----
+        filter_bar = QHBoxLayout()
+        filter_bar.setSpacing(8)
+        
+        self.components_only_cb = QtWidgets.QCheckBox("ScriptComponents only")
+        self.components_only_cb.setChecked(True)
+        self.components_only_cb.stateChanged.connect(self._apply_filter)
+        filter_bar.addWidget(self.components_only_cb)
+        
+        filter_bar.addStretch()
+        
+        refresh_btn = QToolButton()
+        refresh_btn.setText("↻")
+        refresh_btn.setToolTip("Refresh class list")
+        refresh_btn.clicked.connect(self._load_classes)
+        filter_bar.addWidget(refresh_btn)
+        
+        layout.addLayout(filter_bar)
+        
+        # ---- Splitter: list | info ----
+        splitter = QSplitter(Qt.Horizontal)
+        
+        # Left side – class list
+        list_widget = QWidget()
+        list_layout = QVBoxLayout(list_widget)
+        list_layout.setContentsMargins(0, 0, 0, 0)
+        
+        self.class_list = QListWidget()
+        self.class_list.setAlternatingRowColors(True)
+        self.class_list.currentItemChanged.connect(self._on_current_changed)
+        self.class_list.itemDoubleClicked.connect(self._accept_selection)
+        list_layout.addWidget(self.class_list)
+        
+        # "(none)" clear button
+        clear_layout = QHBoxLayout()
+        none_btn = QPushButton("Clear Selection")
+        none_btn.setToolTip("Remove the currently assigned script class")
+        none_btn.clicked.connect(self._select_none)
+        clear_layout.addWidget(none_btn)
+        clear_layout.addStretch()
+        list_layout.addLayout(clear_layout)
+        
+        splitter.addWidget(list_widget)
+        
+        # Right side – info panel
+        info_widget = QWidget()
+        info_layout = QVBoxLayout(info_widget)
+        info_layout.setContentsMargins(4, 0, 0, 0)
+        
+        info_header = QLabel("Class Info")
+        info_header.setStyleSheet("font-weight: bold;")
+        info_layout.addWidget(info_header)
+        
+        self.info_class_label = QLabel("-")
+        self.info_class_label.setWordWrap(True)
+        
+        self.info_project_label = QLabel("-")
+        self.info_base_label = QLabel("-")
+        self.info_path_label = QLabel("-")
+        self.info_path_label.setWordWrap(True)
+        
+        info_form = QFormLayout()
+        info_form.addRow("Class:", self.info_class_label)
+        info_form.addRow("Project:", self.info_project_label)
+        info_form.addRow("Base:", self.info_base_label)
+        info_form.addRow("File:", self.info_path_label)
+        info_layout.addLayout(info_form)
+        
+        info_layout.addStretch()
+        
+        # Quick actions in info panel
+        actions_label = QLabel("Quick Actions")
+        actions_label.setStyleSheet("font-weight: bold; margin-top: 8px;")
+        info_layout.addWidget(actions_label)
+        
+        self.open_script_btn = QPushButton("Open in Editor")
+        self.open_script_btn.setEnabled(False)
+        self.open_script_btn.clicked.connect(self._open_selected_script)
+        info_layout.addWidget(self.open_script_btn)
+        
+        create_btn = QPushButton("+ Create New Script…")
+        create_btn.clicked.connect(self._create_new_script)
+        info_layout.addWidget(create_btn)
+        
+        splitter.addWidget(info_widget)
+        splitter.setSizes([320, 200])
+        
+        layout.addWidget(splitter)
+        
+        # ---- Bottom buttons ----
+        btn_layout = QHBoxLayout()
+        btn_layout.addStretch()
+        
+        cancel_btn = QPushButton("Cancel")
+        cancel_btn.clicked.connect(self.reject)
+        btn_layout.addWidget(cancel_btn)
+        
+        self.ok_btn = QPushButton("OK")
+        self.ok_btn.setEnabled(False)
+        self.ok_btn.setDefault(True)
+        self.ok_btn.clicked.connect(self._accept_selection)
+        btn_layout.addWidget(self.ok_btn)
+        
+        layout.addLayout(btn_layout)
+        
+        # Focus the search bar immediately
+        self.search_edit.setFocus()
+    
+    # ---- Data ----
+    
+    def _load_classes(self):
+        """Reload the master list of classes from all projects."""
+        self._all_classes = []
+        projects = self.project_manager.list_projects()
+        
+        for project in projects:
+            scripts = self.project_manager.list_scripts(project["path"])
+            for script in scripts:
+                script["project_name"] = project["name"]
+                self._all_classes.append(script)
+        
+        self._apply_filter()
+    
+    def _apply_filter(self):
+        """Rebuild the visible list applying the current search text + toggles."""
+        text = self.search_edit.text().strip().lower()
+        components_only = self.components_only_cb.isChecked()
+        
+        self.class_list.clear()
+        
+        recent = _RecentClassesCache.instance().get()
+        
+        # Partition: recent first, then alphabetical
+        recent_items: List[dict] = []
+        other_items: List[dict] = []
+        
+        for cls in self._all_classes:
+            if components_only and not cls.get("is_script_component", False):
+                continue
+            if text and text not in cls.get("full_name", "").lower() and \
+               text not in cls.get("class_name", "").lower():
+                continue
+            if cls.get("full_name", "") in recent:
+                recent_items.append(cls)
+            else:
+                other_items.append(cls)
+        
+        # Sort recent by recency order
+        recent_order = {name: idx for idx, name in enumerate(recent)}
+        recent_items.sort(key=lambda c: recent_order.get(c.get("full_name", ""), 999))
+        other_items.sort(key=lambda c: c.get("full_name", ""))
+        
+        # Add recent header if any
+        if recent_items:
+            header = QListWidgetItem("── Recently Used ──")
+            header.setFlags(Qt.NoItemFlags)
+            header.setForeground(QtGui.QColor("#888"))
+            font = header.font()
+            font.setItalic(True)
+            header.setFont(font)
+            self.class_list.addItem(header)
+            
+            for cls in recent_items:
+                self._add_class_item(cls, is_recent=True)
+        
+        # Add all classes header
+        if other_items:
+            if recent_items:
+                header = QListWidgetItem("── All Classes ──")
+                header.setFlags(Qt.NoItemFlags)
+                header.setForeground(QtGui.QColor("#888"))
+                font = header.font()
+                font.setItalic(True)
+                header.setFont(font)
+                self.class_list.addItem(header)
+            
+            # Group by project
+            by_project: dict = {}
+            for cls in other_items:
+                proj = cls.get("project_name", "Unknown")
+                by_project.setdefault(proj, []).append(cls)
+            
+            for proj_name in sorted(by_project.keys()):
+                proj_header = QListWidgetItem(f"  [{proj_name}]")
+                proj_header.setFlags(Qt.NoItemFlags)
+                proj_header.setForeground(QtGui.QColor("#6A9EDB"))
+                font = proj_header.font()
+                font.setBold(True)
+                proj_header.setFont(font)
+                self.class_list.addItem(proj_header)
+                
+                for cls in by_project[proj_name]:
+                    self._add_class_item(cls)
+        
+        # Pre-select current class if present
+        if self._current_class:
+            for i in range(self.class_list.count()):
+                item = self.class_list.item(i)
+                data = item.data(Qt.UserRole)
+                if data and data.get("full_name") == self._current_class:
+                    self.class_list.setCurrentItem(item)
+                    break
+    
+    def _add_class_item(self, cls: dict, is_recent: bool = False):
+        display = cls.get("full_name", cls.get("class_name", "???"))
+        item = QListWidgetItem(f"  ● {display}" if is_recent else f"    {display}")
+        item.setData(Qt.UserRole, cls)
+        item.setToolTip(
+            f"Class: {cls.get('full_name', '')}\n"
+            f"Base: {cls.get('base_class', 'N/A')}\n"
+            f"Project: {cls.get('project_name', 'N/A')}"
+        )
+        self.class_list.addItem(item)
+    
+    # ---- Selection ----
+    
+    def _on_current_changed(self, current, _previous):
+        if current is None:
+            self._clear_info()
+            return
+        data = current.data(Qt.UserRole)
+        if data is None:
+            self._clear_info()
+            return
+        self.info_class_label.setText(data.get("full_name", "-"))
+        self.info_project_label.setText(data.get("project_name", "-"))
+        self.info_base_label.setText(data.get("base_class", "-") or "-")
+        self.info_path_label.setText(data.get("path", "-"))
+        self.ok_btn.setEnabled(True)
+        self.open_script_btn.setEnabled(bool(data.get("path")))
+    
+    def _clear_info(self):
+        self.info_class_label.setText("-")
+        self.info_project_label.setText("-")
+        self.info_base_label.setText("-")
+        self.info_path_label.setText("-")
+        self.ok_btn.setEnabled(False)
+        self.open_script_btn.setEnabled(False)
+    
+    def _accept_selection(self):
+        item = self.class_list.currentItem()
+        if item is None:
+            return
+        data = item.data(Qt.UserRole)
+        if data is None:
+            return
+        self._selected_class = data.get("full_name", "")
+        _RecentClassesCache.instance().add(self._selected_class)
+        self.class_selected.emit(self._selected_class)
+        self.accept()
+    
+    def _select_none(self):
+        """Clear the selection (unassign script class)."""
+        self._selected_class = ""
+        self.class_selected.emit("")
+        self.accept()
+    
+    def get_selected_class(self) -> Optional[str]:
+        """Return the fully qualified class name chosen by the user, or None."""
+        return self._selected_class
+    
+    # ---- Quick actions ----
+    
+    def _open_selected_script(self):
+        item = self.class_list.currentItem()
+        if item is None:
+            return
+        data = item.data(Qt.UserRole)
+        if data and data.get("path"):
+            import subprocess as _sp
+            try:
+                _sp.Popen(["code", data["path"]])
+            except Exception:
+                try:
+                    import os
+                    os.startfile(data["path"])
+                except Exception as e:
+                    QMessageBox.warning(self, "Error", f"Could not open file: {e}")
+    
+    def _create_new_script(self):
+        """Open the Create Script dialog and optionally select the newly created class."""
+        dialog = CreateScriptDialog(None, self)
+        if dialog.exec_() == QDialog.Accepted:
+            new_class = dialog.get_created_class_name()
+            if new_class:
+                self._selected_class = new_class
+                _RecentClassesCache.instance().add(new_class)
+                self.class_selected.emit(new_class)
+                self.accept()
+
+
+# ==================== Quick Action Prompt ====================
+
+class QuickActionPrompt(QDialog):
+    """
+    Command-palette-style prompt for common C# scripting actions.
+    
+    Shown via a keyboard shortcut or toolbar button. The user types a few
+    characters and picks an action from the filtered list.
+    """
+    
+    action_chosen = Signal(str)  # Emits action id
+    
+    _ACTIONS = [
+        {"id": "create_project",    "label": "Create C# Project",            "icon": "📁", "shortcut": "P"},
+        {"id": "create_script",     "label": "Create C# Script",             "icon": "📝", "shortcut": "S"},
+        {"id": "browse_scripts",    "label": "Browse Scripts",               "icon": "🔍", "shortcut": "B"},
+        {"id": "pick_class",        "label": "Pick Script Class",            "icon": "🎯", "shortcut": "K"},
+        {"id": "build_all",         "label": "Build All Projects",           "icon": "🔨", "shortcut": "A"},
+        {"id": "open_manager",      "label": "Open Project Manager",         "icon": "⚙️", "shortcut": "M"},
+        {"id": "generate_bindings", "label": "Generate Gem Bindings",        "icon": "🔗", "shortcut": "G"},
+        {"id": "deploy_all",        "label": "Deploy Runtime (Coral + Core)","icon": "📦", "shortcut": "D"},
+        {"id": "refresh_classes",   "label": "Refresh Script Class Cache",   "icon": "↻",  "shortcut": "R"},
+    ]
+    
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._chosen_action: Optional[str] = None
+        self.setup_ui()
+    
+    def setup_ui(self):
+        self.setWindowTitle("C# Quick Actions")
+        self.setWindowFlags(Qt.Popup | Qt.FramelessWindowHint)
+        self.setMinimumWidth(380)
+        self.setMaximumHeight(400)
+        
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(4, 4, 4, 4)
+        layout.setSpacing(2)
+        
+        # Search
+        self.search_edit = QLineEdit()
+        self.search_edit.setPlaceholderText("Type to filter actions…")
+        self.search_edit.setClearButtonEnabled(True)
+        self.search_edit.textChanged.connect(self._filter)
+        self.search_edit.returnPressed.connect(self._accept_first)
+        layout.addWidget(self.search_edit)
+        
+        # Action list
+        self.action_list = QListWidget()
+        self.action_list.setAlternatingRowColors(True)
+        self.action_list.itemDoubleClicked.connect(self._on_action_clicked)
+        self.action_list.itemActivated.connect(self._on_action_clicked)
+        layout.addWidget(self.action_list)
+        
+        self._populate()
+        self.search_edit.setFocus()
+    
+    def _populate(self):
+        self.action_list.clear()
+        for action in self._ACTIONS:
+            item = QListWidgetItem(f"  {action['icon']}  {action['label']}   [{action['shortcut']}]")
+            item.setData(Qt.UserRole, action["id"])
+            self.action_list.addItem(item)
+        if self.action_list.count() > 0:
+            self.action_list.setCurrentRow(0)
+    
+    def _filter(self, text: str):
+        text = text.strip().lower()
+        for i in range(self.action_list.count()):
+            item = self.action_list.item(i)
+            action_id = item.data(Qt.UserRole)
+            action = next((a for a in self._ACTIONS if a["id"] == action_id), None)
+            if action is None:
+                item.setHidden(True)
+                continue
+            matches = (
+                text in action["label"].lower()
+                or text in action["id"]
+                or text == action["shortcut"].lower()
+            )
+            item.setHidden(not matches)
+        # Select first visible
+        for i in range(self.action_list.count()):
+            if not self.action_list.item(i).isHidden():
+                self.action_list.setCurrentRow(i)
+                break
+    
+    def _accept_first(self):
+        """Accept the first visible item when Enter is pressed."""
+        for i in range(self.action_list.count()):
+            item = self.action_list.item(i)
+            if not item.isHidden():
+                self._on_action_clicked(item)
+                return
+    
+    def _on_action_clicked(self, item):
+        action_id = item.data(Qt.UserRole)
+        if action_id:
+            self._chosen_action = action_id
+            self.action_chosen.emit(action_id)
+            self.accept()
+    
+    def get_chosen_action(self) -> Optional[str]:
+        return self._chosen_action
+    
+    def keyPressEvent(self, event):
+        """Allow arrow-key navigation between search box and list."""
+        if event.key() == Qt.Key_Escape:
+            self.reject()
+            return
+        if event.key() in (Qt.Key_Down, Qt.Key_Up) and self.search_edit.hasFocus():
+            self.action_list.setFocus()
+            return
+        super().keyPressEvent(event)
+
+
+class _BindingGenerationWorker(QThread):
+    """
+    Runs ClangSharpInvoker.generate_bindings on a background thread so
+    the C# Project Manager's UI stays responsive during the (often
+    multi-second-to-multi-minute) generation run.
+
+    Two signals talk back to the UI thread:
+      - log_line(str): emitted once per stdout/stderr line the tool
+        produces. Qt's queued connection marshals the call from this
+        thread back to whatever slot the UI wired it to (the project-
+        manager's _log helper).
+      - finished_signal(object, str): emitted once at the end with the
+        BindingGeneratorResult and the output directory string. We pass
+        the result as object because PySide2 Signal type erasure for
+        custom Python classes is finicky; the UI handler just dotted
+        attribute access on it.
+
+    The worker owns no UI; it just emits signals. That's the standard
+    "long-running task on a QThread" pattern and avoids any "UI accessed
+    from non-main thread" misuse.
+    """
+
+    log_line = Signal(str)
+    finished_signal = Signal(object, str)  # (BindingGeneratorResult, output_dir)
+
+    def __init__(self, invoker, project_path, config, output_dir):
+        super().__init__()
+        self._invoker = invoker
+        self._project_path = project_path
+        self._config = config
+        self._output_dir = output_dir
+
+    def run(self):
+        try:
+            # output_callback is invoked from this worker thread for
+            # every line the ClangSharp tool emits. Signal.emit is
+            # thread-safe and uses a queued connection to whatever
+            # main-thread slot subscribed (the _log helper).
+            result = self._invoker.generate_bindings(
+                project_path=self._project_path,
+                config=self._config,
+                output_callback=lambda line: self.log_line.emit(line),
+            )
+        except Exception as e:
+            # Never let an exception kill the worker silently - emit a
+            # synthetic failure result so the UI's finish handler still
+            # runs and re-enables the Generate button. The
+            # BindingGeneratorResult import is inside the worker to
+            # keep the module-level import surface small.
+            try:
+                from csharp_binding_generator import BindingGeneratorResult
+            except ImportError:
+                from .csharp_binding_generator import BindingGeneratorResult
+            import traceback
+            result = BindingGeneratorResult(
+                success=False,
+                error_message=f"Worker thread raised: {e}\n{traceback.format_exc()}"
+            )
+        self.finished_signal.emit(result, self._output_dir)
+
+
+class _BindingBuildWorker(QThread):
+    """
+    Phase 18-D: post-generation auto-build worker.
+
+    Runs `dotnet build -c Debug` on each csproj the generator emitted,
+    one at a time (sequential so the log stays readable; the build of
+    one csproj typically takes <5 seconds for a fresh wrapper set, so
+    parallelism wouldn't move the needle much). Streams each line of
+    MSBuild output to log_line; emits finished_signal with (success,
+    failed_csprojs) when done.
+
+    Why Debug not Release: the csproj template's Debug-config
+    PropertyGroup uses DebugType=full + loose-on-disk + PDB shipping,
+    which is what we need for managed-debugger attach to bind line
+    numbers in the wrappers. Release would build smaller DLLs but
+    sacrifice the debug experience for no measurable runtime win
+    (the dispatch path is the cost, not the wrapper indirection).
+
+    Build success criterion: dotnet exit code 0 AND the expected
+    output DLL exists at the typical bin/Debug/net9.0/ location. The
+    DeployToBinScripts target inside each csproj copies the DLL to
+    Bin/Scripts/ which is what the CSharpAssemblyWatcher watches -
+    a successful build automatically triggers hot-reload.
+    """
+
+    log_line = Signal(str)
+    # (success: bool, failed_csprojs: list[str])
+    finished_signal = Signal(bool, list)
+
+    def __init__(self, csprojs):
+        super().__init__()
+        self._csprojs = list(csprojs)
+
+    def run(self):
+        import subprocess
+        from pathlib import Path
+        failed = []
+        for csproj in self._csprojs:
+            self.log_line.emit(f"[Build] {Path(csproj).name} ...")
+            try:
+                # Use Popen + line-streaming so the log scrolls in
+                # real time (same trick the generator wrapper uses).
+                proc = subprocess.Popen(
+                    ["dotnet", "build", csproj, "-c", "Debug", "--nologo"],
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.STDOUT,
+                    text=True,
+                    bufsize=1,
+                )
+                assert proc.stdout is not None
+                for line in proc.stdout:
+                    self.log_line.emit(line.rstrip("\r\n"))
+                rc = proc.wait(timeout=300)
+                if rc != 0:
+                    failed.append(csproj)
+                    self.log_line.emit(f"[Build] {Path(csproj).name}: FAILED (exit {rc})")
+                else:
+                    self.log_line.emit(f"[Build] {Path(csproj).name}: OK")
+            except subprocess.TimeoutExpired:
+                failed.append(csproj)
+                self.log_line.emit(f"[Build] {Path(csproj).name}: TIMEOUT (5 minutes)")
+                try: proc.kill()
+                except Exception: pass
+            except Exception as e:
+                failed.append(csproj)
+                self.log_line.emit(f"[Build] {Path(csproj).name}: EXCEPTION - {e}")
+        self.finished_signal.emit(len(failed) == 0, failed)
 
 
 class CSharpProjectManagerWindow(QDialog):
@@ -746,10 +1476,12 @@ class CSharpProjectManagerWindow(QDialog):
         # Binding action buttons
         binding_buttons_layout = QHBoxLayout()
         
-        generate_bindings_btn = QPushButton("Generate Bindings")
-        generate_bindings_btn.setToolTip("Generate C# bindings from current reflection data")
-        generate_bindings_btn.clicked.connect(self._generate_bindings)
-        binding_buttons_layout.addWidget(generate_bindings_btn)
+        # Stored on self so the worker-thread machinery can disable/
+        # re-enable it while a background generation is running.
+        self.generate_btn = QPushButton("Generate Bindings")
+        self.generate_btn.setToolTip("Generate C# bindings from current reflection data")
+        self.generate_btn.clicked.connect(self._generate_bindings)
+        binding_buttons_layout.addWidget(self.generate_btn)
         
         refresh_gems_btn = QPushButton("Refresh Gems")
         refresh_gems_btn.setToolTip("Refresh the list of available gems")
@@ -1390,197 +2122,296 @@ Status: {status['message']}"""
             self._log(f"Error refreshing gem list: {e}", "ERROR")
     
     def _generate_bindings(self):
-        """Generate C# bindings for the selected gem(s)."""
+        """
+        Generate C# bindings by shelling out to the ClangSharp tool at
+        Code/Tools/BindingGenerator. Runs the tool on a background
+        QThread so the editor UI stays responsive (previously
+        invoker.generate_bindings ran on the UI thread inside one
+        QApplication.processEvents() call, freezing the C# Project
+        Manager for the entire 10-60s+ generation run). Streams the
+        tool's stdout/stderr line-by-line into the log view as it
+        arrives - the user sees real progress instead of a frozen
+        dialog followed by a wall of buffered text at the end.
+        """
+        # Guard against double-start while a previous generation is
+        # still running on its worker thread.
+        if getattr(self, "_binding_worker", None) is not None and self._binding_worker.isRunning():
+            self._log(
+                "Binding generation already in progress; ignoring duplicate request.",
+                "WARNING",
+            )
+            return
         try:
-            # Import binding generator
             try:
-                from generate_bindings import BindingGenerationOrchestrator
+                from csharp_binding_generator import (
+                    BindingGeneratorConfig,
+                    ClangSharpInvoker,
+                )
                 from gem_dependency_resolver import GemDependencyResolver
             except ImportError:
-                from .generate_bindings import BindingGenerationOrchestrator
+                from .csharp_binding_generator import (
+                    BindingGeneratorConfig,
+                    ClangSharpInvoker,
+                )
                 from .gem_dependency_resolver import GemDependencyResolver
-            
+
             selected_gem = self.binding_gems_combo.currentText()
             include_deps = self.binding_include_deps_cb.isChecked()
-            
+
             self._log("========== Starting Binding Generation ==========", "INFO")
             self._log(f"Target: {selected_gem}", "INFO")
             self._log(f"Include dependencies: {include_deps}", "INFO")
-            
-            # Create orchestrator
-            orchestrator = BindingGenerationOrchestrator()
-            
-            # Configure output
+            self._log("Backend: ClangSharp tool (Code/Tools/BindingGenerator)", "INFO")
+
+            project_path = str(self.project_manager.project_path)
             output_dir = str(self.project_manager.project_path / "Generated" / "CSharp")
-            
-            # Determine which gems to generate
-            include_gems = None
-            if selected_gem != "All Active Gems":
+
+            # Determine which gems to generate. "All Active Gems" leaves
+            # include_gems empty so the tool walks every enabled gem in the
+            # project.
+            include_gems = []
+            if selected_gem and selected_gem != "All Active Gems":
                 include_gems = [selected_gem]
                 if include_deps:
-                    # Get gem dependencies
-                    resolver = GemDependencyResolver()
-                    resolver.discover_gems_from_project(str(self.project_manager.project_path))
-                    deps = resolver.get_gem_dependencies(selected_gem)
-                    include_gems.extend(deps)
-                    self._log(f"Including dependencies: {deps}", "INFO")
-            
-            orchestrator.configure(
-                output_directory=output_dir,
-                root_namespace="O3DE.Generated",
-                generate_core=True,
-                generate_gems=True,
-                separate_gem_directories=True,
-                generate_per_gem_projects=True,
-                include_gems=include_gems
-            )
-            
-            # Check for existing reflection data
-            # O3DESharp automatically exports this file when the Editor starts
-            reflection_data_path = self.project_manager.project_path / "Generated" / "reflection_data.json"
-            
-            if not reflection_data_path.exists():
-                # The reflection data should have been auto-generated by O3DESharpSystemComponent
-                # If it doesn't exist, the O3DESharp gem may not have initialized properly
-                self._log("Reflection data not found - O3DESharp should auto-generate this on Editor startup", "WARNING")
-                self.binding_status_label.setText("Waiting for reflection data...")
-                QtWidgets.QApplication.processEvents()
-                
-                # Try to trigger export via EBus as a fallback
-                export_success = False
-                try:
-                    import azlmbr.bus as bus
-                    
-                    # Create output directory
-                    reflection_data_path.parent.mkdir(parents=True, exist_ok=True)
-                    
-                    # Call ReflectionDataExportRequestBus to export now
-                    self._log("Triggering reflection data export via EBus...", "INFO")
-                    export_result = bus.Broadcast(
-                        bus.Event("ExportReflectionData"),
-                        "O3DESharp::ReflectionDataExportRequestBus",
-                        str(reflection_data_path)
-                    )
-                    
-                    if reflection_data_path.exists():
-                        export_success = True
-                        self._log(f"Exported reflection data to: {reflection_data_path}", "SUCCESS")
-                except Exception as e:
-                    self._log(f"EBus export fallback failed: {e}", "WARNING")
-                
-                if not export_success:
-                    # Show user-friendly dialog with options
-                    reply = QMessageBox.question(
-                        self,
-                        "Reflection Data Not Found",
-                        f"Reflection data not found at:\n{reflection_data_path}\n\n"
-                        "This file should be auto-generated by O3DESharp when the Editor starts.\n\n"
-                        "Possible causes:\n"
-                        "• O3DESharp gem hasn't finished initializing\n"
-                        "• The gem failed to initialize (check console for errors)\n"
-                        "• You're using an older version without auto-export\n\n"
-                        "Options:\n"
-                        "• Click 'Yes' to browse for an existing reflection_data.json file\n"
-                        "• Click 'No' to cancel (try restarting the Editor)",
-                        QMessageBox.Yes | QMessageBox.No
-                    )
-                    
-                    if reply == QMessageBox.Yes:
-                        file_path, _ = QFileDialog.getOpenFileName(
-                            self,
-                            "Select Reflection Data JSON",
-                            str(self.project_manager.project_path),
-                            "JSON Files (*.json);;All Files (*.*)"
+                    try:
+                        resolver = GemDependencyResolver()
+                        resolver.discover_gems_from_project(project_path)
+                        deps = resolver.get_gem_dependencies(selected_gem)
+                        include_gems.extend(deps)
+                        self._log(f"Including dependencies: {deps}", "INFO")
+                    except Exception as dep_err:
+                        self._log(
+                            f"Warning: failed to resolve dependencies for {selected_gem}: {dep_err}",
+                            "WARNING",
                         )
-                        if file_path:
-                            reflection_data_path = Path(file_path)
-                        else:
-                            self._log("Binding generation cancelled - no reflection data", "WARNING")
-                            self.binding_status_label.setText("Cancelled - no reflection data")
-                            return
-                    else:
-                        self._log("Binding generation cancelled - no reflection data", "WARNING")
-                        self.binding_status_label.setText("Cancelled - no reflection data")
-                        return
-            else:
-                self._log(f"Using auto-generated reflection data: {reflection_data_path}", "INFO")
-            
-            # Load reflection data
-            self._log(f"Loading reflection data from: {reflection_data_path}", "INFO")
-            self.binding_status_label.setText("Loading reflection data...")
-            QtWidgets.QApplication.processEvents()
-            
-            if not orchestrator.load_reflection_data(str(reflection_data_path)):
-                self._log("Failed to load reflection data", "ERROR")
-                self.binding_status_label.setText("Error: Failed to load reflection data")
-                return
-            
-            # Discover gems
-            self._log("Discovering gems from project...", "INFO")
-            self.binding_status_label.setText("Discovering gems...")
-            QtWidgets.QApplication.processEvents()
-            
-            gem_result = orchestrator.discover_gems_from_project(
-                str(self.project_manager.project_path)
+
+            config = BindingGeneratorConfig()
+            config.output_directory = output_dir
+            config.root_namespace = "O3DE.Generated"
+            config.separate_gem_directories = True
+            config.generate_per_gem_projects = True
+            config.include_gems = include_gems
+            # Default verbose=True for the editor flow so file-level
+            # progress, diagnostic counts, and per-file timing land in
+            # the log view. Without this the only output between
+            # "Processing gem: EMotionFX" and "Generated bindings" is
+            # silence, which makes a normal-but-slow parse (EMotionFX
+            # has ~250 headers) indistinguishable from a hang. CLI
+            # callers can override by setting config.verbose=False.
+            config.verbose = True
+
+            # Default all-gems-include=True for the editor flow.
+            # Many O3DE gems have incomplete gem.json dependency
+            # declarations - EMotionFX includes IAudioSystem.h without
+            # declaring AudioSystem as a dep, and the same pattern
+            # repeats across several first-party gems. In strict-dep
+            # mode those produce "file not found" parse errors that
+            # quietly degrade the generated bindings (the affected
+            # class gets skipped as "no bindable members"). The "I
+            # just want bindings to work" expectation is permissive
+            # mode; users with strict-dep hygiene needs can flip this
+            # off via config.all_gems_on_include_path = False.
+            # (only meaningful in clang mode; reflection backend ignores)
+            config.all_gems_on_include_path = True
+
+            # Backend: reflection by default for the editor flow. The
+            # BehaviorContext JSON path produces wrappers that are
+            # guaranteed callable at runtime (every wrapper dispatches
+            # through NativeReflection, which uses the same
+            # BehaviorContext we generated from). ClangSharp can
+            # produce wrappers for things not in BehaviorContext that
+            # would crash on first call - reflection avoids that
+            # entirely. Set config.source = "clang" to override.
+            config.source = "reflection"
+
+            self._log("Invoking ClangSharp binding generator (background thread, verbose)...", "INFO")
+            self.binding_status_label.setText("Generating bindings (ClangSharp)...")
+            # Disable the button while running so we don't get re-entrant
+            # starts. The done-handler re-enables it.
+            if hasattr(self, "generate_btn") and self.generate_btn is not None:
+                self.generate_btn.setEnabled(False)
+
+            # Spin the actual run onto a worker thread. The worker owns
+            # the invoker + the project_path/config it was given. It
+            # emits log_line for each stdout line and finished_signal
+            # when done, both marshalled back to this widget on the UI
+            # thread via Qt's queued connections.
+            self._binding_worker = _BindingGenerationWorker(
+                invoker=ClangSharpInvoker(),
+                project_path=project_path,
+                config=config,
+                output_dir=output_dir,
             )
-            
-            if not gem_result.success:
-                self._log(f"Warning: Gem discovery issues: {gem_result.error_message}", "WARNING")
-            
-            # Generate bindings
-            self._log("Generating C# bindings...", "INFO")
-            self.binding_status_label.setText("Generating bindings...")
-            QtWidgets.QApplication.processEvents()
-            
-            result = orchestrator.generate()
-            
-            if result.success:
-                # Write generated files to disk
-                self._log("Writing generated files to disk...", "INFO")
-                self.binding_status_label.setText("Writing files...")
-                QtWidgets.QApplication.processEvents()
-                
-                files_written = orchestrator.write_files()
-                
-                self._log(f"========== Binding Generation Complete ==========", "SUCCESS")
-                self._log(f"Classes generated: {result.classes_generated}", "SUCCESS")
-                self._log(f"EBuses generated: {result.ebuses_generated}", "SUCCESS")
-                self._log(f"Files written: {files_written}", "SUCCESS")
-                self._log(f"Output directory: {output_dir}", "INFO")
-                
-                self.binding_status_label.setText(
-                    f"Generated {result.classes_generated} classes, "
-                    f"{result.ebuses_generated} EBuses"
-                )
-                
-                QMessageBox.information(
-                    self,
-                    "Binding Generation Complete",
-                    f"Successfully generated C# bindings:\n\n"
-                    f"• Classes: {result.classes_generated}\n"
-                    f"• EBuses: {result.ebuses_generated}\n"
-                    f"• Files: {files_written}\n\n"
-                    f"Output: {output_dir}"
-                )
-            else:
-                self._log(f"Binding generation failed: {result.error_message}", "ERROR")
-                self.binding_status_label.setText(f"Error: {result.error_message}")
-                QMessageBox.warning(
-                    self,
-                    "Binding Generation Failed",
-                    f"Failed to generate bindings:\n\n{result.error_message}"
-                )
-                
+            self._binding_worker.log_line.connect(
+                lambda line: self._log(line, "INFO"))
+            self._binding_worker.finished_signal.connect(self._on_binding_generation_finished)
+            self._binding_worker.start()
+
         except Exception as e:
             import traceback
             error_details = traceback.format_exc()
-            self._log(f"Error generating bindings: {e}", "ERROR")
+            self._log(f"Error starting binding generation: {e}", "ERROR")
             self._log(error_details, "ERROR")
             self.binding_status_label.setText(f"Error: {str(e)}")
+            if hasattr(self, "generate_btn") and self.generate_btn is not None:
+                self.generate_btn.setEnabled(True)
             QMessageBox.warning(
                 self,
                 "Error",
-                f"An error occurred while generating bindings:\n\n{e}"
+                f"An error occurred while starting binding generation:\n\n{e}",
+            )
+
+    def _on_binding_generation_finished(self, result_obj, output_dir):
+        """
+        UI-thread handler for the binding-generation-worker's finished
+        signal. Renders the same success/failure result the synchronous
+        version used to render, then re-enables the Generate button so
+        the user can kick off another run.
+        """
+        # Re-enable the Generate button before doing anything that can
+        # raise; otherwise an exception in the render path would leave
+        # the UI stuck on "Generating...".
+        if hasattr(self, "generate_btn") and self.generate_btn is not None:
+            self.generate_btn.setEnabled(True)
+        self._binding_worker = None
+
+        result = result_obj
+        if result is None:
+            self._log("Binding worker returned no result.", "ERROR")
+            self.binding_status_label.setText("Error: worker returned no result")
+            return
+
+        if result.success:
+            self._log("========== Binding Generation Complete ==========", "SUCCESS")
+            self._log(f"Classes generated: {result.classes_generated}", "SUCCESS")
+            self._log(f"EBuses generated: {result.ebuses_generated}", "SUCCESS")
+            self._log(f"Files written: {result.files_written}", "SUCCESS")
+            if result.processed_gems:
+                self._log(f"Processed gems: {', '.join(result.processed_gems[:8])}", "INFO")
+                if len(result.processed_gems) > 8:
+                    self._log(f"  ... and {len(result.processed_gems) - 8} more", "INFO")
+            self._log(f"Output directory: {output_dir}", "INFO")
+            for w in (result.warnings or []):
+                self._log(f"Warning: {w}", "WARNING")
+
+            self.binding_status_label.setText(
+                f"Generated {result.classes_generated} classes, "
+                f"{result.ebuses_generated} EBuses"
+            )
+
+            # Phase 18-D: chain into auto-build so the generated
+            # wrappers are actually usable as soon as generation
+            # finishes. Generated .g.cs files are useless on their own -
+            # they need to land in a deployed DLL for Coral to load.
+            # We walk the output directory looking for emitted .csproj
+            # files (one per gem bucket from ReflectionBindingGenerator)
+            # and shell out `dotnet build` on each.
+            #
+            # The csproj's DeployToBinScripts MSBuild target copies the
+            # output DLL + PDB into <Project>/Bin/Scripts/ - where the
+            # CSharpAssemblyWatcher (Phase 13a) is listening with a
+            # FileSystemWatcher. Its OnFileChanged hook fires the
+            # O3DESharpHotReloadNotificationBus, which CSharpScriptComponent
+            # subscribes to and which triggers Coral's AssemblyLoadContext
+            # unload+reload. End result: user clicks "Generate Bindings",
+            # gets working wrappers live in the running editor, no
+            # restart needed.
+            self._start_auto_build_after_generation(output_dir, result)
+        else:
+            self._log(f"Binding generation failed: {result.error_message}", "ERROR")
+            self.binding_status_label.setText(f"Error: {result.error_message}")
+            QMessageBox.warning(
+                self,
+                "Binding Generation Failed",
+                f"Failed to generate bindings:\n\n{result.error_message}",
+            )
+
+    def _start_auto_build_after_generation(self, output_dir, generation_result):
+        """
+        Walk output_dir for emitted .csproj files and dotnet-build each.
+        Runs on a worker QThread so the UI stays responsive; each line
+        of MSBuild output streams to the log view via signals.
+
+        Skip the auto-build if there are no csprojs (the ClangSharp
+        backend emits per-gem projects too, but a misconfigured output
+        directory could produce just .cs files - in that case the user
+        is doing something manual and we shouldn't second-guess them).
+        """
+        import glob
+        csprojs = sorted(glob.glob(str(output_dir) + "/**/*.csproj", recursive=True))
+        if not csprojs:
+            self._log(
+                "No .csproj files emitted under the output directory; skipping auto-build. "
+                "Manually run `dotnet build` on your binding csproj when ready.",
+                "WARNING")
+            # Still show the generation-success dialog so the user knows
+            # the cs files are there even though we didn't auto-build.
+            QMessageBox.information(
+                self,
+                "Binding Generation Complete",
+                f"Successfully generated C# bindings:\n\n"
+                f"• Classes: {generation_result.classes_generated}\n"
+                f"• EBuses: {generation_result.ebuses_generated}\n"
+                f"• Files: {generation_result.files_written}\n\n"
+                f"Output: {output_dir}\n\n"
+                f"No .csproj was emitted; build manually to use the wrappers.",
+            )
+            return
+
+        self._log(
+            f"Auto-building {len(csprojs)} binding csproj(s) so Coral can hot-reload "
+            f"the wrappers without an editor restart...", "INFO")
+
+        # Disable the Generate button while the build runs - re-enabled
+        # when the build worker finishes. Same UX as the generation
+        # phase, so the user doesn't kick off a second regen mid-build
+        # (which would race with the DLL deploy).
+        if hasattr(self, "generate_btn") and self.generate_btn is not None:
+            self.generate_btn.setEnabled(False)
+
+        self._binding_build_worker = _BindingBuildWorker(csprojs)
+        self._binding_build_worker.log_line.connect(
+            lambda line: self._log(line, "INFO"))
+        self._binding_build_worker.finished_signal.connect(
+            lambda success, failed_csprojs: self._on_binding_build_finished(
+                success, failed_csprojs, generation_result, output_dir))
+        self._binding_build_worker.start()
+
+    def _on_binding_build_finished(self, success, failed_csprojs, generation_result, output_dir):
+        """Done-handler for the post-generation auto-build."""
+        if hasattr(self, "generate_btn") and self.generate_btn is not None:
+            self.generate_btn.setEnabled(True)
+        self._binding_build_worker = None
+
+        if success:
+            self._log("========== Binding Auto-Build Complete ==========", "SUCCESS")
+            self._log(
+                "DLLs deployed to Bin/Scripts/. The CSharpAssemblyWatcher should fire "
+                "the hot-reload bus and Coral will pick up the new wrappers within a few "
+                "seconds - no editor restart needed.", "SUCCESS")
+            QMessageBox.information(
+                self,
+                "Binding Generation + Build Complete",
+                f"Successfully generated and built C# bindings:\n\n"
+                f"• Classes: {generation_result.classes_generated}\n"
+                f"• EBuses: {generation_result.ebuses_generated}\n"
+                f"• Files: {generation_result.files_written}\n\n"
+                f"Output: {output_dir}\n\n"
+                f"DLLs deployed to Bin/Scripts/. Hot-reload will pick up the changes.",
+            )
+        else:
+            failed_list = "\n".join(f"  • {Path(p).name}" for p in failed_csprojs)
+            self._log(
+                f"{len(failed_csprojs)} binding csproj(s) failed to build:\n{failed_list}",
+                "ERROR")
+            QMessageBox.warning(
+                self,
+                "Binding Auto-Build Failed",
+                f"Generation succeeded, but {len(failed_csprojs)} csproj(s) failed to build:\n\n"
+                f"{failed_list}\n\n"
+                f"Check the log for MSBuild output. The generated .g.cs files are still in "
+                f"{output_dir} - inspect them, fix any issue (or report a generator bug), "
+                f"and manually run `dotnet build` to retry.",
             )
     
     # ==================== End Binding Generation Methods ====================
@@ -1636,5 +2467,480 @@ def show_script_browser():
     """Show the Script Browser dialog."""
     dialog = ScriptBrowserDialog()
     if dialog.exec_() == QDialog.Accepted:
-        # Return the selected script name
-        pass
+        return dialog.get_selected_class()
+    return None
+
+
+def show_script_class_picker(current_class: str = ""):
+    """Show the ScriptClassPickerDialog and return the selected class.
+    
+    Args:
+        current_class: Fully qualified name to pre-select.
+    
+    Returns:
+        Selected class name, empty string for 'clear', or None if cancelled.
+    """
+    dialog = ScriptClassPickerDialog(current_class=current_class)
+    if dialog.exec_() == QDialog.Accepted:
+        return dialog.get_selected_class()
+    return None
+
+
+def show_quick_actions():
+    """Show the Quick Action command palette and dispatch the chosen action."""
+    dialog = QuickActionPrompt()
+    if dialog.exec_() == QDialog.Accepted:
+        return dialog.get_chosen_action()
+    return None
+
+
+# ============================================================================
+# EBus Handler for direct C++ ↔ Python communication
+# ============================================================================
+
+class CSharpEditorToolsHandler:
+    """
+    Handler for the CSharpEditorToolsBus that provides direct C++ ↔ Python
+    communication without file-based IPC.
+    
+    This replaces the fragile temp file approach with type-safe EBus calls.
+    """
+    
+    def __init__(self):
+        self.project_manager = get_project_manager()
+        self._class_cache = None
+        self._cache_timestamp = 0
+        self._cache_ttl = 5.0  # Cache valid for 5 seconds
+        
+    def GetAvailableScriptClasses(self, scripts_only=True):
+        """
+        Get all available C# script classes with full metadata.
+        
+        Args:
+            scripts_only: If True, only return ScriptComponent subclasses
+            
+        Returns:
+            List of ScriptClassInfo objects
+        """
+        try:
+            import time
+            current_time = time.time()
+            
+            # Check cache validity
+            if self._class_cache is None or (current_time - self._cache_timestamp) > self._cache_ttl:
+                self._refresh_cache()
+            
+            result = []
+            recent_classes = _RecentClassesCache.instance().get()
+            
+            for class_info in self._class_cache:
+                # Filter by scripts_only if requested
+                if scripts_only and not class_info.get("is_script_component", False):
+                    continue
+                
+                # Convert to ScriptClassInfo format for C++
+                info = {
+                    'fullName': class_info.get('full_name', ''),
+                    'className': class_info.get('class_name', ''),
+                    'namespace': class_info.get('namespace', ''),
+                    'projectName': class_info.get('project_name', ''),
+                    'filePath': class_info.get('file_path', ''),
+                    'baseClass': class_info.get('base_class', ''),
+                    'isScriptComponent': class_info.get('is_script_component', False),
+                    'isRecent': class_info.get('full_name', '') in recent_classes
+                }
+                result.append(info)
+            
+            # Sort: recent first, then alphabetical by full name
+            result.sort(key=lambda x: (not x['isRecent'], x['fullName']))
+            
+            return result
+            
+        except Exception as e:
+            print(f"[O3DESharp] Error in GetAvailableScriptClasses: {e}")
+            import traceback
+            traceback.print_exc()
+            return []
+    
+    def GetScriptClassNames(self, scripts_only=True):
+        """
+        Get just the class names for dropdown population.
+        
+        Args:
+            scripts_only: If True, only return ScriptComponent subclasses
+            
+        Returns:
+            List of fully qualified class names (strings)
+        """
+        try:
+            classes = self.GetAvailableScriptClasses(scripts_only)
+            return [cls['fullName'] for cls in classes]
+        except Exception as e:
+            print(f"[O3DESharp] Error in GetScriptClassNames: {e}")
+            return []
+    
+    def ValidateScriptClass(self, class_name):
+        """
+        Validate a script class name.
+        
+        Args:
+            class_name: Fully qualified class name to validate
+            
+        Returns:
+            ScriptValidationResult dict with validation info
+        """
+        try:
+            # Empty class name is valid (means "no script")
+            if not class_name or class_name.strip() == "":
+                return {
+                    'isValid': True,
+                    'message': 'No script class specified',
+                    'filePath': '',
+                    'baseClass': ''
+                }
+            
+            # Basic format check
+            if '.' not in class_name:
+                return {
+                    'isValid': False,
+                    'message': 'Warning: Class should include namespace (e.g., MyGame.MyScript)',
+                    'filePath': '',
+                    'baseClass': ''
+                }
+            
+            # Check if class exists in any project
+            all_classes = self.GetAvailableScriptClasses(scripts_only=False)
+            for cls in all_classes:
+                if cls['fullName'] == class_name:
+                    return {
+                        'isValid': True,
+                        'message': f"Valid script class (base: {cls['baseClass'] or 'none'})",
+                        'filePath': cls['filePath'],
+                        'baseClass': cls['baseClass']
+                    }
+            
+            # Class not found - might be valid but not yet compiled
+            return {
+                'isValid': False,
+                'message': f"Class '{class_name}' not found in any C# project. Ensure it's compiled.",
+                'filePath': '',
+                'baseClass': ''
+            }
+            
+        except Exception as e:
+            print(f"[O3DESharp] Error in ValidateScriptClass: {e}")
+            return {
+                'isValid': False,
+                'message': f'Validation error: {str(e)}',
+                'filePath': '',
+                'baseClass': ''
+            }
+    
+    def OpenScriptPicker(self, current_class):
+        """
+        Open the script class picker dialog.
+
+        Args:
+            current_class: Currently selected class (for pre-selection)
+
+        Returns:
+            Selected class name, or empty string if cancelled
+        """
+        print(f"[O3DESharp] OpenScriptPicker(current_class={current_class!r}) - opening dialog")
+        try:
+            dialog = ScriptClassPickerDialog(current_class=current_class)
+            result = dialog.exec_()
+            print(f"[O3DESharp] ScriptClassPickerDialog closed with result={result} (Accepted={QDialog.Accepted})")
+            if result == QDialog.Accepted:
+                selected = dialog.get_selected_class()
+                print(f"[O3DESharp] Selected class: {selected!r}")
+                if selected is not None:
+                    # Add to recent classes if not empty
+                    if selected:
+                        self.AddToRecentClasses(selected)
+                    return selected
+            return ""  # Cancelled
+        except Exception as e:
+            print(f"[O3DESharp] Error opening script picker: {e}")
+            import traceback
+            traceback.print_exc()
+            return ""
+    
+    def CreateNewScript(self, default_name="", default_namespace=""):
+        """
+        Open the create new script dialog.
+        
+        Args:
+            default_name: Default class name
+            default_namespace: Default namespace
+            
+        Returns:
+            Created class name (fully qualified), or empty string if cancelled
+        """
+        try:
+            dialog = CreateScriptDialog()
+            
+            # Pre-fill defaults if provided
+            if default_name:
+                dialog.class_name_edit.setText(default_name)
+            if default_namespace:
+                dialog.namespace_edit.setText(default_namespace)
+            
+            if dialog.exec_() == QDialog.Accepted:
+                created_class = dialog.get_created_class_name()
+                if created_class:
+                    # Invalidate cache since we created a new script
+                    self.InvalidateCache()
+                    # Add to recent classes
+                    self.AddToRecentClasses(created_class)
+                    return created_class
+            return ""
+        except Exception as e:
+            print(f"[O3DESharp] Error creating script: {e}")
+            import traceback
+            traceback.print_exc()
+            return ""
+    
+    def OpenScriptInEditor(self, class_name):
+        """
+        Open a script file in the default IDE.
+        
+        Args:
+            class_name: Fully qualified class name to open
+            
+        Returns:
+            True if successful, False otherwise
+        """
+        try:
+            if not class_name:
+                return False
+            
+            # Find the script file
+            all_classes = self.GetAvailableScriptClasses(scripts_only=False)
+            for cls in all_classes:
+                if cls['fullName'] == class_name:
+                    file_path = cls['filePath']
+                    if file_path and Path(file_path).exists():
+                        # Open in default editor
+                        import subprocess
+                        if os.name == 'nt':
+                            os.startfile(file_path)
+                        elif os.name == 'posix':
+                            subprocess.run(['xdg-open', file_path])
+                        else:
+                            subprocess.run(['open', file_path])
+                        print(f"[O3DESharp] Opened script: {file_path}")
+                        return True
+            
+            print(f"[O3DESharp] Script file not found for class: {class_name}")
+            return False
+            
+        except Exception as e:
+            print(f"[O3DESharp] Error opening script in editor: {e}")
+            return False
+    
+    def InvalidateCache(self):
+        """Invalidate the script class cache (force refresh on next query)."""
+        self._class_cache = None
+        self._cache_timestamp = 0
+        print("[O3DESharp] Script class cache invalidated")
+    
+    def AddToRecentClasses(self, class_name):
+        """
+        Add a class to the recent classes list.
+        
+        Args:
+            class_name: Fully qualified class name
+        """
+        try:
+            if class_name:
+                _RecentClassesCache.instance().add(class_name)
+        except Exception as e:
+            print(f"[O3DESharp] Error adding to recent classes: {e}")
+    
+    def _refresh_cache(self):
+        """Refresh the internal class cache from all projects."""
+        import time
+        self._class_cache = []
+        projects = self.project_manager.list_projects()
+        
+        for project in projects:
+            scripts = self.project_manager.list_scripts(project["path"])
+            for script in scripts:
+                script["project_name"] = project["name"]
+                self._class_cache.append(script)
+        
+        self._cache_timestamp = time.time()
+
+
+# Global handler instance (the Python implementation of CSharpEditorToolsBus)
+_handler_impl = None
+
+# Bus handler created via azlmbr.object.create - the bridge to C++
+_ebus_handler = None
+
+
+def get_ebus_handler():
+    """Get or create the global handler implementation instance."""
+    global _handler_impl
+    if _handler_impl is None:
+        _handler_impl = CSharpEditorToolsHandler()
+    return _handler_impl
+
+
+_EBUS_EVENTS = [
+    "GetAvailableScriptClasses",
+    "GetScriptClassNames",
+    "ValidateScriptClass",
+    "OpenScriptPicker",
+    "CreateNewScript",
+    "OpenScriptInEditor",
+    "InvalidateCache",
+    "AddToRecentClasses",
+]
+
+
+def connect_ebus_handler(force_reconnect: bool = False):
+    """
+    Connect the Python handler to the CSharpEditorToolsBus.
+
+    The C++ side reflects the bus via
+        behaviorContext->EBus<CSharpEditorToolsBus>("CSharpEditorToolsBus")
+            ->Attribute(Module, "editor")
+            ->Handler<CSharpEditorToolsBusHandler>()
+    Because the EBus is in the "editor" script module, EditorPythonBindings
+    exposes the auto-generated handler factory as
+        azlmbr.editor.CSharpEditorToolsBusHandler()
+    Calling that returns a PythonProxyNotificationHandler bound to our bus,
+    with connect() / disconnect() / add_callback() available.
+
+    Note: do NOT use azlmbr.object.create("CSharpEditorToolsBusHandler") - that
+    looks up BehaviorContext::m_classes (regular class registry), not
+    BehaviorContext::m_ebuses, so it warns "No class by name ..." and returns
+    a plain proxy whose .connect is None. Same pattern as PythonAssetBuilder's
+    azlmbr.asset.builder.PythonBuilderNotificationBusHandler().
+
+    Idempotent: safe to call multiple times. If `force_reconnect` is True,
+    disconnect any existing handler and start over - useful after a hot
+    reload that left the handler in a half-registered state.
+    """
+    global _ebus_handler
+
+    if force_reconnect and _ebus_handler is not None:
+        print("[O3DESharp] connect_ebus_handler: force_reconnect=True, disconnecting current handler")
+        try:
+            _ebus_handler.disconnect()
+        except Exception as e:
+            print(f"[O3DESharp] connect_ebus_handler: disconnect failed (ignored): {e}")
+        _ebus_handler = None
+
+    if _ebus_handler is not None:
+        return _ebus_handler
+
+    try:
+        import azlmbr.editor
+
+        impl = get_ebus_handler()
+        # Factory call - resolves through the EBus reflection, not the class registry.
+        handler = azlmbr.editor.CSharpEditorToolsBusHandler()
+        if handler is None:
+            raise RuntimeError(
+                "azlmbr.editor.CSharpEditorToolsBusHandler() returned None - "
+                "is the O3DESharp Editor gem activated and reflection registered?"
+            )
+        print(f"[O3DESharp] connect_ebus_handler: factory returned handler={handler!r}")
+
+        # PythonProxyNotificationHandler::AddCallback requires a live EBus
+        # connection - it asserts m_handler != nullptr inside Connect() and
+        # rejects callback registration otherwise with "No EBus connection
+        # detected for event ...". So: connect FIRST, then add_callback. Same
+        # ordering as Gem/PythonTests/PythonAssetBuilder/mock_asset_builder.py.
+        connected = handler.connect()
+        print(f"[O3DESharp] connect_ebus_handler: handler.connect() -> {connected}")
+
+        # PythonProxyBus::OnEventGenericHook packs ALL EBus parameters into a
+        # single pybind11 tuple and calls the registered callback with that
+        # one tuple. So our impl methods - which use natural Python signatures
+        # like (self, current_class) - need a thin adapter that unpacks the
+        # tuple with *args. Same shape as mock_asset_builder.py's
+        # `def on_create_jobs(args): request = args[0]` pattern, just expressed
+        # via splat so the impl methods can keep their named parameters.
+        def _unpack(fn):
+            def wrapper(args):
+                return fn(*args)
+            return wrapper
+
+        callback_map = {
+            "GetAvailableScriptClasses": _unpack(impl.GetAvailableScriptClasses),
+            "GetScriptClassNames":       _unpack(impl.GetScriptClassNames),
+            "ValidateScriptClass":       _unpack(impl.ValidateScriptClass),
+            "OpenScriptPicker":          _unpack(impl.OpenScriptPicker),
+            "CreateNewScript":           _unpack(impl.CreateNewScript),
+            "OpenScriptInEditor":        _unpack(impl.OpenScriptInEditor),
+            "InvalidateCache":           _unpack(impl.InvalidateCache),
+            "AddToRecentClasses":        _unpack(impl.AddToRecentClasses),
+        }
+        for event_name, callback in callback_map.items():
+            ok = handler.add_callback(event_name, callback)
+            if not ok:
+                print(f"[O3DESharp] connect_ebus_handler: add_callback({event_name!r}) returned False")
+
+        _ebus_handler = handler
+        print(f"[O3DESharp] CSharpEditorToolsBus handler connected ({len(callback_map)} callbacks)")
+        return handler
+
+    except Exception as e:
+        print(f"[O3DESharp] EBus handler connect failed: {e}")
+        import traceback
+        traceback.print_exc()
+        return None
+
+
+def diagnose_handler():
+    """
+    Print a status report on the CSharpEditorToolsBus Python handler.
+
+    Call from the Editor's Python console:
+        import csharp_editor_tools; csharp_editor_tools.diagnose_handler()
+
+    Use after the editor logs imply the handler is in a bad state (e.g.
+    "BroadcastResult returned ''" with no matching "OpenScriptPicker
+    opening dialog" log).
+    """
+    print("=== CSharpEditorToolsBus handler diagnosis ===")
+    print(f"module file:      {__file__}")
+    print(f"_handler_impl:    {_handler_impl!r}")
+    print(f"_ebus_handler:    {_ebus_handler!r}")
+    if _ebus_handler is not None:
+        try:
+            print(f"is_connected:     {_ebus_handler.is_connected()}")
+        except Exception as e:
+            print(f"is_connected:     <error: {e}>")
+    print("If is_connected is True but BroadcastResult returns '' from C++,")
+    print("the callbacks weren't registered. Run:")
+    print("    csharp_editor_tools.connect_ebus_handler(force_reconnect=True)")
+    print("===============================================")
+
+
+def disconnect_ebus_handler():
+    """Tear down the bus handler. Called on editor shutdown / module reload."""
+    global _ebus_handler
+    if _ebus_handler is not None:
+        try:
+            _ebus_handler.disconnect()
+        except Exception as e:
+            print(f"[O3DESharp] EBus handler disconnect failed: {e}")
+        _ebus_handler = None
+
+
+# Initialize on import. The connect() call requires the BehaviorContext to be up
+# AND CSharpEditorToolsBusHandler reflection to have run - both are true by the
+# time this module is imported from csharp_editor_bootstrap inside the editor.
+print(f"[O3DESharp] csharp_editor_tools loading from {__file__}")
+try:
+    _handler_impl = CSharpEditorToolsHandler()
+    connect_ebus_handler()
+except Exception as e:
+    print(f"[O3DESharp] Handler initialization deferred: {e}")
+    import traceback
+    traceback.print_exc()

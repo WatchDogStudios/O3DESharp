@@ -7,6 +7,18 @@
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
     <LangVersion>latest</LangVersion>
 
+    <!--
+      MSBuild only recognises Debug + Release by default. O3DE's CMake build
+      uses Debug + Profile + Release, and CMake's include_external_msproject
+      writes a "Profile|AnyCPU" entry into the engine solution for this csproj.
+      Without an explicit Configurations list MSBuild rejects the solution
+      with: "The solution file specifies a project configuration ... that does
+      not exist for that project". Declaring Profile here lets the slnx
+      reference it cleanly.
+    -->
+    <Configurations>Debug;Profile;Release</Configurations>
+    <Platforms>AnyCPU</Platforms>
+
     <!-- Assembly Information -->
     <AssemblyName>O3DE.Core</AssemblyName>
     <RootNamespace>O3DE</RootNamespace>
@@ -27,13 +39,36 @@
     <DebugType>portable</DebugType>
     <DebugSymbols>true</DebugSymbols>
 
-    <!-- Optimization -->
+    <!-- Optimization. Profile is a Release-shaped build that keeps debug
+         symbols so profilers can resolve stacks. -->
     <Optimize Condition="'$(Configuration)' == 'Release'">true</Optimize>
+    <Optimize Condition="'$(Configuration)' == 'Profile'">true</Optimize>
     <Optimize Condition="'$(Configuration)' == 'Debug'">false</Optimize>
   </PropertyGroup>
 
   <PropertyGroup Condition="'$(Configuration)' == 'Debug'">
     <DefineConstants>DEBUG;TRACE;O3DE_DEBUG</DefineConstants>
+    <!--
+      vsdbg / Rider / VS managed attach against an embedded CoreCLR
+      (Coral delegate-host mode) was returning E_INVALIDARG from
+      ICorDebug::DebugActiveProcess when this assembly was built with
+      DebugType=portable. Forcing DebugType=full for Debug builds plus
+      explicitly disabling single-file publish was the missing piece
+      that turned attach green across all three IDEs. The non-Debug
+      configs keep portable PDBs (set in the main PropertyGroup
+      above) because Profile/Release don't need full Windows-format
+      symbols and portable is cheaper to ship.
+    -->
+    <Optimize>false</Optimize>
+    <DebugSymbols>true</DebugSymbols>
+    <DebugType>full</DebugType>
+    <!-- Force assemblies to stay loose on disk for the debugger -->
+    <PublishSingleFile>false</PublishSingleFile>
+    <EnableCompressionInSingleFile>false</EnableCompressionInSingleFile>
+  </PropertyGroup>
+
+  <PropertyGroup Condition="'$(Configuration)' == 'Profile'">
+    <DefineConstants>TRACE;O3DE_PROFILE</DefineConstants>
   </PropertyGroup>
 
   <PropertyGroup Condition="'$(Configuration)' == 'Release'">
@@ -47,6 +82,26 @@
       <HintPath>..\..\..\bin\Coral\Coral.Managed.dll</HintPath>
       <Private>false</Private>
     </Reference>
+  </ItemGroup>
+
+  <!--
+    Phase 18-E: O3DESharp source generators. The reference is marked
+    OutputItemType=Analyzer so MSBuild loads the assembly as a Roslyn
+    component rather than a regular reference. ReferenceOutputAssembly=
+    false means O3DE.Core.dll doesn't ship the analyzer assembly inside
+    itself (it's a build-time-only dependency).
+
+    The generator processes [EBus] / [EBusHandler] attributes on user
+    classes that derive from ScriptComponent and emits the
+    ConnectTo<BusName> / DisconnectFrom<BusName> / dispatch-shim
+    methods. End result: a user class with `[EBus("TickBus")]` gets
+    a `ConnectToTickBus()` method generated at compile time, without
+    the user writing any of the Connect/Disconnect/dispatch glue.
+  -->
+  <ItemGroup>
+    <ProjectReference Include="..\..\..\Code\Tools\SourceGenerators\O3DESharp.SourceGenerators.csproj"
+                      OutputItemType="Analyzer"
+                      ReferenceOutputAssembly="false" />
   </ItemGroup>
 
   <!-- 

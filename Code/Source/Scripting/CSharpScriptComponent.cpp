@@ -14,6 +14,9 @@
 #include <AzCore/Serialization/EditContext.h>
 #include <AzCore/RTTI/BehaviorContext.h>
 #include <AzCore/Component/Entity.h>
+#include <AzCore/Settings/SettingsRegistry.h>
+
+#include <cstdlib> // _putenv_s / setenv for the Phase 17b debugger-wait gate
 
 namespace O3DESharp
 {
@@ -32,9 +35,10 @@ namespace O3DESharp
             }
 
             serializeContext->Class<CSharpScriptComponentConfig, AZ::ComponentConfig>()
-                ->Version(1)
+                ->Version(2) // bumped: added m_exposedPropertyValues
                 ->Field("ScriptClassName", &CSharpScriptComponentConfig::m_scriptClassName)
                 ->Field("AssemblyPath", &CSharpScriptComponentConfig::m_assemblyPath)
+                ->Field("ExposedProperties", &CSharpScriptComponentConfig::m_exposedPropertyValues)
                 ;
 
             if (AZ::EditContext* editContext = serializeContext->GetEditContext())
@@ -42,11 +46,20 @@ namespace O3DESharp
                 editContext->Class<CSharpScriptComponentConfig>("C# Script Configuration", "Configuration for a C# script component")
                     ->ClassElement(AZ::Edit::ClassElements::EditorData, "")
                         ->Attribute(AZ::Edit::Attributes::AutoExpand, true)
-                    ->DataElement(AZ::Edit::UIHandlers::Default, &CSharpScriptComponentConfig::m_scriptClassName, 
+                    ->DataElement(AZ::Edit::UIHandlers::Default, &CSharpScriptComponentConfig::m_scriptClassName,
                         "Script Class", "The fully qualified C# class name (e.g., MyGame.PlayerController)")
                         ->Attribute(AZ::Edit::Attributes::ChangeNotify, AZ::Edit::PropertyRefreshLevels::EntireTree)
-                    ->DataElement(AZ::Edit::UIHandlers::Default, &CSharpScriptComponentConfig::m_assemblyPath, 
+                    ->DataElement(AZ::Edit::UIHandlers::Default, &CSharpScriptComponentConfig::m_assemblyPath,
                         "Assembly Path", "Optional: Path to the assembly containing the script (leave empty for default)")
+                    // Phase 7 first slice: exposed [ExposedProperty] values are
+                    // shown as a generic key/value map. Typed per-field widgets
+                    // (sliders, color pickers, ...) are the planned follow-up.
+                    ->DataElement(AZ::Edit::UIHandlers::Default, &CSharpScriptComponentConfig::m_exposedPropertyValues,
+                        "Exposed Properties",
+                        "Values for [ExposedProperty]-decorated fields on the selected script. "
+                        "Edit name->value entries here; they are applied to the managed "
+                        "instance before OnCreate.")
+                        ->Attribute(AZ::Edit::Attributes::AutoExpand, true)
                     ;
             }
         }
@@ -75,9 +88,8 @@ namespace O3DESharp
                     editContext->Class<CSharpScriptComponent>("C# Script", "Attaches a C# script to this entity")
                         ->ClassElement(AZ::Edit::ClassElements::EditorData, "")
                             ->Attribute(AZ::Edit::Attributes::Category, "Scripting")
-                            ->Attribute(AZ::Edit::Attributes::Icon, "Icons/Components/Script.svg")
-                            ->Attribute(AZ::Edit::Attributes::ViewportIcon, "Icons/Components/Viewport/Script.svg")
-                            ->Attribute(AZ::Edit::Attributes::AppearsInAddComponentMenu, AZ_CRC_CE("Game"))
+                            ->Attribute(AZ::Edit::Attributes::Icon, "Icons/Components/csharp.svg")
+                            ->Attribute(AZ::Edit::Attributes::ViewportIcon, "Icons/Components/Viewport/csharp.svg")
                             ->Attribute(AZ::Edit::Attributes::AutoExpand, true)
                             ->Attribute(AZ::Edit::Attributes::HelpPageURL, "")
                         ->DataElement(AZ::Edit::UIHandlers::Default, &CSharpScriptComponent::m_config, "Configuration", "")
@@ -156,6 +168,7 @@ namespace O3DESharp
 
         // Destroy current instance
         DestroyScriptInstance();
+        m_disabledByException = false; // re-arm for the new instance
 
         // Create new instance
         if (CreateScriptInstance())
@@ -164,7 +177,8 @@ namespace O3DESharp
             if (m_scriptInstance.IsValid())
             {
                 SetEntityIdOnScript();
-                m_scriptInstance.InvokeMethod("OnCreate");
+                PushExposedPropertiesToScript();
+                SafeInvokeMethod("OnCreate");
             }
         }
     }
@@ -181,6 +195,7 @@ namespace O3DESharp
             return;
         }
         m_isActivating = true;
+        m_disabledByException = false; // re-arm on (re)activation
 
         AZLOG_INFO("CSharpScriptComponent: Activating script '%s' on entity '%s'",
             m_config.m_scriptClassName.c_str(),
@@ -192,11 +207,52 @@ namespace O3DESharp
             // Pass entity ID to the script
             SetEntityIdOnScript();
 
+            // ===========================================================
+            // Debugger attach is non-blocking. (Was: Phase 17b/17d wait-
+            // for-debugger gate that called O3DE.Debugger.WaitForAttachIfRequested
+            // here, blocking the editor main thread for up to 120s.)
+            //
+            // Rationale for removing the block:
+            //   - The editor freezing for 120s on every Game Mode entry
+            //     was confusing UX. Users hitting Ctrl+G with the auto-
+            //     attach IDE already launched but not yet attached saw the
+            //     editor go non-responsive with no indication of progress.
+            //   - The blocking call was implicitly enabled whenever
+            //     AutoAttachOnPlay was set (the previous "implicit default"
+            //     followed auto-attach), so configuring the seamless flow
+            //     also configured the freeze. Most users didn't realize
+            //     these were coupled.
+            //   - There is no way to "stop a managed script for debugger
+            //     attach" without also stopping the editor; scripts run on
+            //     the editor main thread. So if you genuinely want a break
+            //     in OnCreate, the user-facing path below is more honest
+            //     (you're explicitly choosing to block).
+            //
+            // The supported paths for debugging at script-create time:
+            //   1. ATTACH FIRST, THEN ENTER GAME MODE.
+            //      Attach your IDE to Editor.exe before pressing Ctrl+G.
+            //      OnCreate runs with the debugger already live so any
+            //      breakpoint in OnCreate binds and hits.
+            //   2. RELOAD SCRIPTS AFTER ATTACHING.
+            //      If you forgot step 1, hit Tools > C# Scripting > Reload
+            //      Scripts after the attach completes. That re-runs OnCreate
+            //      under the now-attached debugger.
+            //   3. EXPLICIT IN-SCRIPT BLOCK.
+            //      Add  O3DE.Debugger.WaitForAttach(TimeSpan.FromSeconds(30))
+            //      to the top of your OnCreate. This WILL block the editor
+            //      main thread - that's intentional because YOU asked for
+            //      it in YOUR script; that's a different proposition from
+            //      the gem silently blocking on every Activate.
+            //
+            // We do NOT call WaitForAttachIfRequested here anymore.
+            // ===========================================================
+
+            // Push editor-configured [ExposedProperty] values into the managed
+            // instance BEFORE OnCreate runs so user OnCreate code sees them.
+            PushExposedPropertiesToScript();
+
             // Call OnCreate on the managed instance
-            if (m_scriptInstance.IsValid())
-            {
-                m_scriptInstance.InvokeMethod("OnCreate");
-            }
+            SafeInvokeMethod("OnCreate");
         }
 
         // Connect to tick bus to call OnUpdate
@@ -204,6 +260,20 @@ namespace O3DESharp
 
         // Connect to transform notifications
         AZ::TransformNotificationBus::Handler::BusConnect(GetEntityId());
+
+        // Connect to hot-reload notifications so we tear down + rebuild
+        // our managed state around an assembly-context reload (Phase 13).
+        O3DESharpHotReloadNotificationBus::Handler::BusConnect();
+
+        // Connect to exposed-property-change notifications keyed by THIS
+        // entity's id. The editor-side CSharpExposedPropertiesHandler
+        // broadcasts to this bus when the user edits an [ExposedProperty]
+        // widget in the inspector during Game Mode. Without this connect
+        // the runtime would only see property values at Activate time
+        // (from BuildGameEntity's config copy) and stay stale on every
+        // inspector edit until the next Reload Scripts / Game Mode
+        // re-enter.
+        O3DESharpExposedPropertyNotificationBus::Handler::BusConnect(GetEntityId());
 
         m_isActivating = false;
     }
@@ -215,14 +285,14 @@ namespace O3DESharp
             GetEntity() ? GetEntity()->GetName().c_str() : "Unknown");
 
         // Disconnect from buses
+        O3DESharpExposedPropertyNotificationBus::Handler::BusDisconnect();
+        O3DESharpHotReloadNotificationBus::Handler::BusDisconnect();
         AZ::TransformNotificationBus::Handler::BusDisconnect();
         AZ::TickBus::Handler::BusDisconnect();
 
-        // Call OnDestroy before destroying the instance
-        if (m_scriptInstance.IsValid())
-        {
-            m_scriptInstance.InvokeMethod("OnDestroy");
-        }
+        // Call OnDestroy before destroying the instance. Use the safe wrapper so
+        // a throwing OnDestroy doesn't tear down the rest of the gem shutdown.
+        SafeInvokeMethod("OnDestroy");
 
         // Destroy the managed instance
         DestroyScriptInstance();
@@ -230,17 +300,30 @@ namespace O3DESharp
 
     void CSharpScriptComponent::OnTick(float deltaTime, [[maybe_unused]] AZ::ScriptTimePoint time)
     {
+        if (m_disabledByException)
+        {
+            return;
+        }
+
         if (m_scriptInstance.IsValid() && m_scriptInitialized)
         {
-            // Call OnUpdate on the managed instance
-            m_scriptInstance.InvokeMethod("OnUpdate", deltaTime);
+            // Single managed transition per frame: ScriptComponent.Tick(dt) calls
+            // OnUpdate then ProcessPendingInvocations on the managed side. This
+            // replaces the previous pair of InvokeMethod calls (one of which
+            // was unconditional even when no actions were scheduled).
+            SafeInvokeMethod("Tick", deltaTime);
         }
     }
 
     void CSharpScriptComponent::OnTransformChanged(
-        [[maybe_unused]] const AZ::Transform& local, 
+        [[maybe_unused]] const AZ::Transform& local,
         [[maybe_unused]] const AZ::Transform& world)
     {
+        if (m_disabledByException)
+        {
+            return;
+        }
+
         // Optionally notify the script of transform changes
         // This could be used to call OnTransformChanged on the C# side
         if (m_scriptInstance.IsValid() && m_scriptInitialized)
@@ -248,8 +331,215 @@ namespace O3DESharp
             // The script can query the transform via the Transform API
             // We don't pass the transform data directly to avoid complex marshalling
             // Scripts that need to react to transform changes can override OnTransformChanged
-            m_scriptInstance.InvokeMethod("OnTransformChanged");
+            SafeInvokeMethod("OnTransformChanged");
         }
+    }
+
+    void CSharpScriptComponent::SafeInvokeMethod(const char* methodName) noexcept
+    {
+        if (m_disabledByException || !m_scriptInstance.IsValid())
+        {
+            return;
+        }
+
+        try
+        {
+            m_scriptInstance.InvokeMethod(methodName);
+        }
+        catch (const std::exception& ex)
+        {
+            DisableAfterUnhandledException(methodName, ex.what());
+        }
+        catch (...)
+        {
+            DisableAfterUnhandledException(methodName, "non-std::exception");
+        }
+    }
+
+    void CSharpScriptComponent::SafeInvokeMethod(const char* methodName, float deltaTime) noexcept
+    {
+        if (m_disabledByException || !m_scriptInstance.IsValid())
+        {
+            return;
+        }
+
+        try
+        {
+            m_scriptInstance.InvokeMethod(methodName, deltaTime);
+        }
+        catch (const std::exception& ex)
+        {
+            DisableAfterUnhandledException(methodName, ex.what());
+        }
+        catch (...)
+        {
+            DisableAfterUnhandledException(methodName, "non-std::exception");
+        }
+    }
+
+    void CSharpScriptComponent::PushExposedPropertiesToScript()
+    {
+        if (m_disabledByException || !m_scriptInstance.IsValid())
+        {
+            return;
+        }
+        if (m_config.m_exposedPropertyValues.empty())
+        {
+            return;
+        }
+
+        // Build a flat { "name": "value", ... } JSON object. The values are
+        // already strings (the config map is string->string) so we just need
+        // to handle JSON escaping. Keep the encoder small / inline rather than
+        // pulling in rapidjson for one trivial use - O3DE.Core's
+        // ExposedPropertyHelpers.ParseSimpleStringMap accepts this shape.
+        auto escape = [](const AZStd::string& s) -> AZStd::string
+        {
+            AZStd::string out;
+            out.reserve(s.size() + 2);
+            for (char c : s)
+            {
+                switch (c)
+                {
+                case '"':  out += "\\\""; break;
+                case '\\': out += "\\\\"; break;
+                case '\n': out += "\\n";  break;
+                case '\r': out += "\\r";  break;
+                case '\t': out += "\\t";  break;
+                default:   out += c;      break;
+                }
+            }
+            return out;
+        };
+
+        AZStd::string json = "{";
+        bool first = true;
+        for (const auto& kv : m_config.m_exposedPropertyValues)
+        {
+            if (!first) { json += ","; }
+            first = false;
+            json += "\"";
+            json += escape(kv.first);
+            json += "\":\"";
+            json += escape(kv.second);
+            json += "\"";
+        }
+        json += "}";
+
+        // Hand the JSON to the managed instance. Coral marshals const char* to
+        // a managed string argument. The C# side reparses with its own minimal
+        // parser (ExposedPropertyHelpers.ParseSimpleStringMap) so we don't have
+        // to depend on System.Text.Json being trim-safe.
+        try
+        {
+            m_scriptInstance.InvokeMethod("ApplyExposedProperties", json.c_str());
+        }
+        catch ([[maybe_unused]] const std::exception& ex)
+        {
+            AZ_Warning(
+                "O3DESharp",
+                false,
+                "CSharpScriptComponent: ApplyExposedProperties failed on entity '%s' (script '%s'): %s",
+                GetEntity() ? GetEntity()->GetName().c_str() : "Unknown",
+                m_config.m_scriptClassName.c_str(),
+                ex.what());
+        }
+        catch (...)
+        {
+            AZ_Warning(
+                "O3DESharp",
+                false,
+                "CSharpScriptComponent: ApplyExposedProperties failed on entity '%s' (script '%s')",
+                GetEntity() ? GetEntity()->GetName().c_str() : "Unknown",
+                m_config.m_scriptClassName.c_str());
+        }
+    }
+
+    void CSharpScriptComponent::OnBeforeUserAssemblyReload()
+    {
+        // The Coral context is about to be unloaded; m_scriptType and
+        // m_scriptInstance will be dangling pointers in a moment. Tear them
+        // down BEFORE that happens. Calling OnDestroy is intentional - it
+        // mirrors what Deactivate does, giving user code a chance to clean
+        // up state, but we use the safe wrapper so an exception inside
+        // OnDestroy doesn't prevent the rest of the teardown.
+        if (m_scriptInstance.IsValid())
+        {
+            SafeInvokeMethod("OnDestroy");
+        }
+        DestroyScriptInstance();
+
+        // Detach from TickBus so we don't try to dispatch into the now-
+        // invalid context before OnAfterUserAssemblyReload reconstructs us.
+        AZ::TickBus::Handler::BusDisconnect();
+    }
+
+    void CSharpScriptComponent::OnAfterUserAssemblyReload()
+    {
+        // The user assemblies have been reloaded and internal calls are
+        // re-registered. Rebuild the managed instance, push exposed
+        // properties, and fire OnCreate - matching the Activate flow.
+        m_disabledByException = false;
+
+        if (CreateScriptInstance())
+        {
+            SetEntityIdOnScript();
+            PushExposedPropertiesToScript();
+            SafeInvokeMethod("OnCreate");
+        }
+
+        // Re-attach to TickBus so OnUpdate resumes firing.
+        AZ::TickBus::Handler::BusConnect();
+    }
+
+    void CSharpScriptComponent::DisableAfterUnhandledException(
+        [[maybe_unused]] const char* methodName,
+        [[maybe_unused]] const char* what)
+    {
+        m_disabledByException = true;
+
+        AZ_Error(
+            "O3DESharp",
+            false,
+            "CSharpScriptComponent: unhandled exception in '%s' on entity '%s' (script '%s'): %s. "
+            "Disabling this component for the rest of the session to avoid per-frame spam. "
+            "Reactivate the entity (or hot-reload the assembly) to retry.",
+            methodName,
+            GetEntity() ? GetEntity()->GetName().c_str() : "Unknown",
+            m_config.m_scriptClassName.c_str(),
+            what ? what : "<no message>");
+
+        // Detach from TickBus so we don't pay the dispatch cost every frame for
+        // a component we'll just no-op anyway.
+        AZ::TickBus::Handler::BusDisconnect();
+    }
+
+    void CSharpScriptComponent::OnExposedPropertyChanged(
+        const AZStd::unordered_map<AZStd::string, AZStd::string>& newValues)
+    {
+        // Inspector edits flow through here during Game Mode. The editor
+        // component on the same entity-id broadcasts to this bus from
+        // CSharpExposedPropertiesHandler::WriteGUIValuesIntoProperty
+        // whenever the user commits a value change.
+        //
+        // We replace the local map wholesale (the editor side sends the
+        // full map, not a delta) and re-push to the managed instance.
+        // Push is no-op if m_disabledByException or the script isn't
+        // valid, so no extra guard needed here.
+        if (m_disabledByException)
+        {
+            return;
+        }
+
+        AZLOG_INFO(
+            "CSharpScriptComponent: Live-updating %zu exposed properties on entity '%s' "
+            "(script '%s') from inspector edit.",
+            newValues.size(),
+            GetEntity() ? GetEntity()->GetName().c_str() : "Unknown",
+            m_config.m_scriptClassName.c_str());
+
+        m_config.m_exposedPropertyValues = newValues;
+        PushExposedPropertiesToScript();
     }
 
     bool CSharpScriptComponent::CreateScriptInstance()
@@ -324,7 +614,7 @@ namespace O3DESharp
         // Set the EntityId field on the script base class
         // The C# ScriptComponent base class has an EntityId property
         AZ::u64 entityId = static_cast<AZ::u64>(GetEntityId());
-        
+
         try
         {
             // The C# ScriptComponent class has a field "m_entityId" that stores the native entity ID

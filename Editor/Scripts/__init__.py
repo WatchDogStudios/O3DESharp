@@ -7,25 +7,23 @@
 """
 O3DESharp Editor Scripts Package
 
-This package provides Python utilities for generating C# bindings from O3DE's
-BehaviorContext reflection data.
+This package provides Python utilities for the O3DESharp editor integration.
 
-Main modules:
-    - gem_dependency_resolver: Discovers gems and resolves dependencies
-    - csharp_binding_generator: Generates C# wrapper classes from reflection data
-    - generate_bindings: Main entry point for binding generation
+Main entry points:
+    - ClangSharpInvoker (from csharp_binding_generator):
+        thin wrapper around `dotnet run` on Code/Tools/BindingGenerator,
+        the C# / libclang-based generator. This is the only generator;
+        the previous Python BehaviorContext flow has been removed.
+    - GemDependencyResolver (from gem_dependency_resolver):
+        gem discovery + dependency walking used by the editor UI.
+    - csharp_editor_tools / csharp_editor_bootstrap:
+        Qt UI and Python entry points registered with the editor menu.
 
-Usage:
-    # From command line
-    python -m generate_bindings --reflection-data data.json --project /path/to/project
-
-    # From O3DE Editor Python console
-    import csharp_editor_bootstrap
-    csharp_editor_bootstrap.open_csharp_project_manager()
-
-    # Using individual modules
-    import gem_dependency_resolver
-    import csharp_binding_generator
+If you're looking for the pre-Phase-12 legacy classes
+(CSharpBindingGenerator, ReflectionData/ReflectedClass and friends,
+BindingGenerationOrchestrator, load_reflection_data_from_json,
+TypeMapper), they have been removed. The C# tool reads C++ headers
+directly and no longer needs the reflection_data.json intermediate.
 """
 
 import sys
@@ -39,15 +37,7 @@ if str(_PACKAGE_DIR) not in sys.path:
 from .csharp_binding_generator import (
     BindingGeneratorConfig,
     BindingGeneratorResult,
-    CSharpBindingGenerator,
-    ReflectedClass,
-    ReflectedEBus,
-    ReflectedEBusEvent,
-    ReflectedMethod,
-    ReflectedParameter,
-    ReflectedProperty,
-    ReflectionData,
-    load_reflection_data_from_json,
+    ClangSharpInvoker,
 )
 from .gem_dependency_resolver import (
     GemDependencyResolver,
@@ -56,14 +46,6 @@ from .gem_dependency_resolver import (
     GemResolutionResult,
     discover_engine_gems,
     discover_project_gems,
-)
-from .generate_bindings import (
-    BindingGenerationOrchestrator,
-    generate_all_bindings,
-    generate_core_bindings,
-    generate_gem_bindings,
-    get_gem_dependencies,
-    list_available_gems,
 )
 
 # Editor tools for C# script project management
@@ -79,25 +61,11 @@ __all__ = [
     "GemMappingConfig",
     "discover_project_gems",
     "discover_engine_gems",
-    # C# binding generator
-    "CSharpBindingGenerator",
+    # C# binding generator (canonical: the ClangSharp invoker shells out
+    # to Code/Tools/BindingGenerator).
+    "ClangSharpInvoker",
     "BindingGeneratorConfig",
     "BindingGeneratorResult",
-    "ReflectionData",
-    "ReflectedClass",
-    "ReflectedMethod",
-    "ReflectedProperty",
-    "ReflectedEBus",
-    "ReflectedEBusEvent",
-    "ReflectedParameter",
-    "load_reflection_data_from_json",
-    # Main orchestrator
-    "BindingGenerationOrchestrator",
-    "generate_all_bindings",
-    "generate_gem_bindings",
-    "generate_core_bindings",
-    "list_available_gems",
-    "get_gem_dependencies",
     # C# project management
     "csharp_project_manager",
     "csharp_editor_tools",

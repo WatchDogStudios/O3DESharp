@@ -153,21 +153,12 @@ namespace Examples
         private void HandleMovement(float deltaTime)
         {
             // Build movement vector from input
-            // Note: Input system integration is TODO - this is a placeholder
             Vector3 moveDirection = Vector3.Zero;
 
-            // In a real implementation, you would check:
-            // if (Input.IsKeyDown(KeyCode.W)) moveDirection += Transform.Forward;
-            // if (Input.IsKeyDown(KeyCode.S)) moveDirection -= Transform.Forward;
-            // if (Input.IsKeyDown(KeyCode.A)) moveDirection -= Transform.Right;
-            // if (Input.IsKeyDown(KeyCode.D)) moveDirection += Transform.Right;
-
-            // For now, let's just rotate and move forward automatically as a demo
-            // Rotate the player slowly
-            Transform.Rotate(new Vector3(0, 0, rotationSpeed * deltaTime * 0.5f));
-
-            // Move forward constantly (demo movement)
-            moveDirection = Transform.Forward;
+            if (Input.IsKeyDown(KeyCode.W)) moveDirection += Transform.Forward;
+            if (Input.IsKeyDown(KeyCode.S)) moveDirection -= Transform.Forward;
+            if (Input.IsKeyDown(KeyCode.A)) moveDirection -= Transform.Right;
+            if (Input.IsKeyDown(KeyCode.D)) moveDirection += Transform.Right;
 
             // Normalize if we have movement
             if (moveDirection.SqrMagnitude > 0.01f)
@@ -185,11 +176,11 @@ namespace Examples
         /// </summary>
         private void HandleJump(float deltaTime)
         {
-            // Check for jump input (placeholder - would use Input system)
-            // if (Input.IsKeyPressed(KeyCode.Space) && isGrounded)
-            // {
-            //     Jump();
-            // }
+            // Check for jump input
+            if (Input.IsKeyPressed(KeyCode.Space) && isGrounded)
+            {
+                Jump();
+            }
 
             // Apply vertical velocity
             if (verticalVelocity != 0)

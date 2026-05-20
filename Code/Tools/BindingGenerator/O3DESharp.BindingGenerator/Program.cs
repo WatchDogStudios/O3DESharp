@@ -1,0 +1,485 @@
+/*
+ * Copyright (c) Contributors to the Open 3D Engine Project.
+ * For complete copyright and license terms please see the LICENSE at the root of this distribution.
+ *
+ * SPDX-License-Identifier: Apache-2.0 OR MIT
+ *
+ */
+
+using System;
+using System.Collections.Generic;
+using System.CommandLine;
+using System.CommandLine.Invocation;
+using System.IO;
+using System.Linq;
+using O3DESharp.BindingGenerator.Configuration;
+using O3DESharp.BindingGenerator.GemDiscovery;
+using O3DESharp.BindingGenerator.Generation;
+
+namespace O3DESharp.BindingGenerator
+{
+    class Program
+    {
+        static int Main(string[] args)
+        {
+            // ============================================================
+            // Force line-buffered stdout/stderr so callers that pipe our
+            // output (the editor's C# Project Manager, CI, etc.) see
+            // progress lines as we emit them - not "silent for 3 minutes
+            // then a wall of buffered text at the end".
+            //
+            // .NET's default behavior when stdout is redirected to a pipe
+            // is block-buffering (typically 4KB). Console.WriteLine adds
+            // the line to the buffer but doesn't flush; the buffer only
+            // drains when it fills, the process exits, or someone calls
+            // Flush() explicitly. That's exactly what was making the
+            // generator look stuck: 11 gems' worth of "Processing gem:
+            // X" lines were piling up in the buffer, and the editor's
+            // log only refreshed when generation finished and the
+            // child's exit flushed the pipe.
+            //
+            // Wrapping Console.Out in a StreamWriter with AutoFlush=true
+            // makes every WriteLine call flush the underlying pipe, so
+            // each line appears in the editor log as it's emitted.
+            // Cheap (the writer is wrapping an already-open stream;
+            // AutoFlush just toggles a bool on each call) but
+            // transformative for the live-progress UX.
+            // ============================================================
+            Console.SetOut(new StreamWriter(Console.OpenStandardOutput()) { AutoFlush = true });
+            Console.SetError(new StreamWriter(Console.OpenStandardError()) { AutoFlush = true });
+
+            var rootCommand = new RootCommand("O3DE C# Binding Generator - Generates C# bindings from C++ headers using ClangSharp");
+
+            // Global options
+            var projectOption = new Option<string>(
+                aliases: new[] { "--project", "-p" },
+                getDefaultValue: () => ".",
+                description: "Path to O3DE project.json or project directory");
+
+            var engineOption = new Option<string?>(
+                aliases: new[] { "--engine", "-e" },
+                description: "Path to O3DE engine root. Auto-detected from project.json, ~/.o3de/o3de_manifest.json, or O3DE_ENGINE_PATH env var if not specified.");
+
+            var configOption = new Option<string>(
+                aliases: new[] { "--config", "-c" },
+                getDefaultValue: () => "binding_config.json",
+                description: "Path to binding configuration JSON file");
+
+            var gemsOption = new Option<string[]>(
+                aliases: new[] { "--gems", "-g" },
+                description: "Specific gems to generate bindings for (comma-separated). If not specified, generates for all enabled gems.")
+            {
+                AllowMultipleArgumentsPerToken = true
+            };
+
+            var verboseOption = new Option<bool>(
+                aliases: new[] { "--verbose", "-v" },
+                description: "Enable verbose logging");
+
+            var incrementalOption = new Option<bool>(
+                aliases: new[] { "--incremental", "-i" },
+                getDefaultValue: () => true,
+                description: "Enable incremental builds (skip unchanged files)");
+
+            var forceOption = new Option<bool>(
+                aliases: new[] { "--force", "-f" },
+                description: "Force regeneration of all bindings (ignore cache)");
+
+            var requireAttributeOption = new Option<bool>(
+                aliases: new[] { "--require-attribute" },
+                getDefaultValue: () => false,
+                description: "Only export declarations with O3DE_EXPORT_CSHARP attribute");
+
+            var csharpOutputOption = new Option<string?>(
+                aliases: new[] { "--output", "-o" },
+                description: "Output directory for generated C# bindings. If specified, all gem bindings are written under this directory instead of each gem's own directory.");
+
+            // Permissive include-path mode: when set, every discovered gem
+            // (not just declared dependencies) gets its include surface
+            // added to libclang's search path. Trades parse cost for
+            // resilience to incomplete dep declarations in gem.json -
+            // useful when generating against gems whose authors didn't
+            // declare every transitive include source (e.g. EMotionFX
+            // pulling IAudioSystem.h without declaring AudioSystem as a
+            // dep). Default off: strict mode catches missing-dep bugs at
+            // generation time, which is usually what you want for
+            // first-party gems. Editor flow defaults it on for the
+            // "just give me bindings" UX.
+            var allGemsIncludeOption = new Option<bool>(
+                aliases: new[] { "--all-gems-include" },
+                getDefaultValue: () => false,
+                description: "ClangSharp only. Add every discovered gem's include surface to the parse path, not just declared dependencies. Fixes cross-gem 'file not found' errors when gem.json doesn't declare every transitive include.");
+
+            // Generator backend selector: "reflection" (default) uses
+            // ReflectionDataExporter's JSON output (the BehaviorContext
+            // public-API surface; same data Lua / ScriptCanvas / Python
+            // bindings consume). "clang" uses the ClangSharp header
+            // parser - heavier, has to fight MSVC compat / cross-gem
+            // include paths, generates wrappers that might not have a
+            // BehaviorContext dispatch path (so they crash at runtime).
+            // Reflection backend is the recommended choice for everything
+            // a C# script would actually want to call.
+            var sourceOption = new Option<string>(
+                aliases: new[] { "--source" },
+                getDefaultValue: () => "reflection",
+                description: "Generator backend: 'reflection' (default, consumes reflection_data.json) or 'clang' (ClangSharp header parser).");
+
+            // Path to the reflection JSON. Defaults to
+            // <project>/Cache/pc/generated/reflection_data.json which is
+            // where the editor's AutoExportReflectionData writes it.
+            var reflectionDataOption = new Option<string?>(
+                aliases: new[] { "--reflection-data" },
+                getDefaultValue: () => null,
+                description: "Reflection backend only. Path to reflection_data.json. Defaults to <project>/Cache/pc/generated/reflection_data.json.");
+
+            // List gems command
+            var listGemsCommand = new Command("list-gems", "List all discovered gems in the project");
+            listGemsCommand.AddOption(projectOption);
+            listGemsCommand.AddOption(engineOption);
+            listGemsCommand.AddOption(verboseOption);
+            listGemsCommand.SetHandler((context) =>
+            {
+                var project = context.ParseResult.GetValueForOption(projectOption) ?? ".";
+                var engine = context.ParseResult.GetValueForOption(engineOption);
+                var verbose = context.ParseResult.GetValueForOption(verboseOption);
+                context.ExitCode = ListGems(project, engine, verbose);
+            });
+
+            // Generate command
+            var generateCommand = new Command("generate", "Generate C# bindings for gems");
+            generateCommand.AddOption(projectOption);
+            generateCommand.AddOption(engineOption);
+            generateCommand.AddOption(configOption);
+            generateCommand.AddOption(gemsOption);
+            generateCommand.AddOption(verboseOption);
+            generateCommand.AddOption(incrementalOption);
+            generateCommand.AddOption(forceOption);
+            generateCommand.AddOption(requireAttributeOption);
+            generateCommand.AddOption(csharpOutputOption);
+            generateCommand.AddOption(allGemsIncludeOption);
+            generateCommand.AddOption(sourceOption);
+            generateCommand.AddOption(reflectionDataOption);
+            generateCommand.SetHandler((context) =>
+            {
+                var project = context.ParseResult.GetValueForOption(projectOption) ?? ".";
+                var engine = context.ParseResult.GetValueForOption(engineOption);
+                var config = context.ParseResult.GetValueForOption(configOption) ?? "binding_config.json";
+                var gems = context.ParseResult.GetValueForOption(gemsOption) ?? Array.Empty<string>();
+                var verbose = context.ParseResult.GetValueForOption(verboseOption);
+                var incremental = context.ParseResult.GetValueForOption(incrementalOption);
+                var force = context.ParseResult.GetValueForOption(forceOption);
+                var requireAttribute = context.ParseResult.GetValueForOption(requireAttributeOption);
+                var csharpOutput = context.ParseResult.GetValueForOption(csharpOutputOption);
+                var allGemsInclude = context.ParseResult.GetValueForOption(allGemsIncludeOption);
+                var source = context.ParseResult.GetValueForOption(sourceOption) ?? "reflection";
+                var reflectionData = context.ParseResult.GetValueForOption(reflectionDataOption);
+                if (string.Equals(source, "reflection", StringComparison.OrdinalIgnoreCase))
+                {
+                    context.ExitCode = GenerateBindingsFromReflection(project, gems, verbose, csharpOutput, reflectionData);
+                }
+                else
+                {
+                    context.ExitCode = GenerateBindings(project, engine, config, gems, verbose, incremental, force, requireAttribute, csharpOutput, allGemsInclude);
+                }
+            });
+
+            // Init config command
+            var outputOption = new Option<string>(
+                aliases: new[] { "--output", "-o" },
+                getDefaultValue: () => "binding_config.json",
+                description: "Output path for the configuration file");
+            
+            var initConfigCommand = new Command("init-config", "Create a default binding_config.json file");
+            initConfigCommand.AddOption(outputOption);
+            initConfigCommand.SetHandler((context) =>
+            {
+                var output = context.ParseResult.GetValueForOption(outputOption) ?? "binding_config.json";
+                BindingConfigLoader.CreateDefaultFile(output);
+                context.ExitCode = 0;
+            });
+
+            rootCommand.AddCommand(listGemsCommand);
+            rootCommand.AddCommand(generateCommand);
+            rootCommand.AddCommand(initConfigCommand);
+
+            // Default action is generate
+            rootCommand.AddOption(projectOption);
+            rootCommand.AddOption(engineOption);
+            rootCommand.AddOption(configOption);
+            rootCommand.AddOption(gemsOption);
+            rootCommand.AddOption(verboseOption);
+            rootCommand.AddOption(incrementalOption);
+            rootCommand.AddOption(forceOption);
+            rootCommand.AddOption(requireAttributeOption);
+            rootCommand.AddOption(csharpOutputOption);
+            rootCommand.AddOption(allGemsIncludeOption);
+            rootCommand.AddOption(sourceOption);
+            rootCommand.AddOption(reflectionDataOption);
+
+            rootCommand.SetHandler((context) =>
+            {
+                var project = context.ParseResult.GetValueForOption(projectOption) ?? ".";
+                var engine = context.ParseResult.GetValueForOption(engineOption);
+                var config = context.ParseResult.GetValueForOption(configOption) ?? "binding_config.json";
+                var gems = context.ParseResult.GetValueForOption(gemsOption) ?? Array.Empty<string>();
+                var verbose = context.ParseResult.GetValueForOption(verboseOption);
+                var incremental = context.ParseResult.GetValueForOption(incrementalOption);
+                var force = context.ParseResult.GetValueForOption(forceOption);
+                var requireAttribute = context.ParseResult.GetValueForOption(requireAttributeOption);
+                var csharpOutput = context.ParseResult.GetValueForOption(csharpOutputOption);
+                var allGemsInclude = context.ParseResult.GetValueForOption(allGemsIncludeOption);
+                var source = context.ParseResult.GetValueForOption(sourceOption) ?? "reflection";
+                var reflectionData = context.ParseResult.GetValueForOption(reflectionDataOption);
+                if (string.Equals(source, "reflection", StringComparison.OrdinalIgnoreCase))
+                {
+                    context.ExitCode = GenerateBindingsFromReflection(project, gems, verbose, csharpOutput, reflectionData);
+                }
+                else
+                {
+                    context.ExitCode = GenerateBindings(project, engine, config, gems, verbose, incremental, force, requireAttribute, csharpOutput, allGemsInclude);
+                }
+            });
+
+            return rootCommand.Invoke(args);
+        }
+
+        static int ListGems(string projectPath, string? enginePath, bool verbose)
+        {
+            try
+            {
+                Console.WriteLine("Discovering gems...\n");
+
+                var discoveryService = new GemDiscoveryService(verbose, enginePath);
+                var gems = discoveryService.DiscoverGems(projectPath);
+
+                Console.WriteLine($"\nFound {gems.Count} gems:");
+                Console.WriteLine(new string('-', 80));
+                Console.WriteLine($"{"Gem Name",-30} {"Version",-10} {"Type",-10} {"Enabled",-10}");
+                Console.WriteLine(new string('-', 80));
+
+                foreach (var gem in gems.Values.OrderBy(g => g.GemName))
+                {
+                    var enabled = gem.IsEnabled ? "Yes" : "No";
+                    Console.WriteLine($"{gem.GemName,-30} {gem.Version,-10} {gem.Type,-10} {enabled,-10}");
+                }
+
+                Console.WriteLine(new string('-', 80));
+                Console.WriteLine($"Total: {gems.Count}, Enabled: {gems.Values.Count(g => g.IsEnabled)}");
+
+                return 0;
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"Error: {ex.Message}");
+                if (verbose)
+                {
+                    Console.WriteLine(ex.StackTrace);
+                }
+                return 1;
+            }
+        }
+
+        /// <summary>
+        /// Default backend (--source reflection). Reads the JSON produced
+        /// at runtime by the C++ ReflectionDataExporter and emits C#
+        /// wrappers that dispatch through NativeReflection. No header
+        /// parsing, no MSVC compat, no cross-gem include walking.
+        /// </summary>
+        static int GenerateBindingsFromReflection(string projectPath, string[] specificGems, bool verbose, string? csharpOutputDir, string? reflectionDataOverride)
+        {
+            try
+            {
+                Console.WriteLine("O3DE C# Binding Generator - Reflection backend");
+                Console.WriteLine("==============================================\n");
+
+                // Resolve where to read the JSON from. Editor's
+                // AutoExportReflectionData writes to:
+                //   <project>/Cache/pc/generated/reflection_data.json
+                // so unless the caller overrides it, derive that path.
+                var projectAbs = Path.GetFullPath(projectPath);
+                if (!Directory.Exists(projectAbs))
+                {
+                    projectAbs = Path.GetDirectoryName(projectAbs) ?? projectAbs;
+                }
+                var reflectionPath = !string.IsNullOrEmpty(reflectionDataOverride)
+                    ? Path.GetFullPath(reflectionDataOverride!)
+                    : Path.Combine(projectAbs, "Cache", "pc", "generated", "reflection_data.json");
+
+                Console.WriteLine($"Project:        {projectAbs}");
+                Console.WriteLine($"Reflection JSON: {reflectionPath}");
+                Console.WriteLine($"Verbose:        {verbose}");
+
+                if (specificGems != null && specificGems.Length > 0)
+                {
+                    Console.WriteLine($"Gem filter:     {string.Join(", ", specificGems)}");
+                }
+                Console.WriteLine();
+
+                // Resolve output directory.
+                string outputDir;
+                if (!string.IsNullOrEmpty(csharpOutputDir))
+                {
+                    outputDir = Path.GetFullPath(csharpOutputDir);
+                }
+                else
+                {
+                    outputDir = Path.Combine(projectAbs, "Generated", "CSharp");
+                }
+                Console.WriteLine($"Output:         {outputDir}\n");
+
+                // Parse gem filter (comma-separated, like --gems Foo,Bar).
+                ISet<string>? gemFilter = null;
+                if (specificGems != null && specificGems.Length > 0)
+                {
+                    gemFilter = new HashSet<string>(
+                        specificGems.SelectMany(g => g.Split(',')).Select(g => g.Trim()),
+                        StringComparer.OrdinalIgnoreCase);
+                }
+
+                var generator = new ReflectionBindingGenerator(rootNamespace: "O3DE.Generated", verbose: verbose);
+                var result = generator.Generate(reflectionPath, outputDir, gemFilter);
+
+                if (!result.Success)
+                {
+                    Console.WriteLine($"Error: {result.ErrorMessage}");
+                    return 1;
+                }
+
+                Console.WriteLine();
+                Console.WriteLine($"========== Reflection Backend Complete ==========");
+                Console.WriteLine($"Classes:        {result.ClassFilesWritten}/{result.TotalClasses}");
+                Console.WriteLine($"EBuses:         {result.BusFilesWritten}/{result.TotalEBuses}");
+                Console.WriteLine($"Globals files:  {result.GlobalsFilesWritten} (covering {result.TotalGlobals} items)");
+                Console.WriteLine($"Project files:  {result.CsprojFilesWritten}");
+                Console.WriteLine($"Output:         {outputDir}");
+                Console.WriteLine();
+                Console.WriteLine($"To build: cd {outputDir}/<GemBucket> && dotnet build");
+                Console.WriteLine($"The built DLL auto-deploys to <Project>/Bin/Scripts/ where Coral picks it up.");
+                return 0;
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"Error: {ex.Message}");
+                if (verbose)
+                {
+                    Console.WriteLine(ex.StackTrace);
+                }
+                return 1;
+            }
+        }
+
+        static int GenerateBindings(string projectPath, string? enginePath, string configPath, string[] specificGems, bool verbose, bool incremental, bool force, bool requireAttribute, string? csharpOutputDir, bool allGemsIncludePath = false)
+        {
+            try
+            {
+                Console.WriteLine("O3DE C# Binding Generator");
+                Console.WriteLine("=========================\n");
+
+                // Resolve a relative --config against the project path so the
+                // lookup is stable regardless of CWD. This eliminates a class
+                // of "looks in the wrong place" bug we used to paper over with
+                // a duplicate binding_config.json under the tool directory.
+                if (!Path.IsPathRooted(configPath))
+                {
+                    var projectAbs = Path.GetFullPath(projectPath);
+                    var projectRoot = Directory.Exists(projectAbs)
+                        ? projectAbs
+                        : Path.GetDirectoryName(projectAbs) ?? projectAbs;
+                    configPath = Path.Combine(projectRoot, configPath);
+                }
+
+                // Load configuration
+                var config = BindingConfigLoader.Load(configPath);
+                config.Global.Verbose = verbose;
+                config.Global.IncrementalBuild = incremental;
+
+                // Override require attribute setting if specified
+                if (requireAttribute)
+                {
+                    config.Global.RequireExportAttribute = requireAttribute;
+                }
+
+                // Override C# output path if --output is specified
+                if (!string.IsNullOrEmpty(csharpOutputDir))
+                {
+                    // When --output is specified, write each gem's bindings to a subdirectory
+                    var absOutput = Path.GetFullPath(csharpOutputDir);
+                    config.Global.CSharpOutputPath = Path.Combine(absOutput, "{GemName}");
+                }
+
+                Console.WriteLine($"Configuration: {(File.Exists(configPath) ? configPath : "default")}");
+                Console.WriteLine($"Require O3DE_EXPORT_CSHARP attribute: {config.Global.RequireExportAttribute}");
+                Console.WriteLine($"Verbose: {verbose}");
+                Console.WriteLine($"Incremental: {incremental}");
+                Console.WriteLine($"Force rebuild: {force}");
+                Console.WriteLine($"All-gems-include: {allGemsIncludePath}\n");
+
+                // Discover gems
+                var discoveryService = new GemDiscoveryService(verbose, enginePath);
+                var allGems = discoveryService.DiscoverGems(projectPath);
+
+                // Filter to specific gems if requested
+                if (specificGems != null && specificGems.Length > 0)
+                {
+                    var requestedGems = specificGems.SelectMany(g => g.Split(',')).Select(g => g.Trim()).ToHashSet();
+                    foreach (var gem in allGems.Values)
+                    {
+                        if (requestedGems.Contains(gem.GemName))
+                        {
+                            gem.IsEnabled = true;
+                        }
+                        else
+                        {
+                            gem.IsEnabled = false;
+                        }
+                    }
+
+                    // Warn about requested gems that weren't found
+                    var foundGemNames = allGems.Values.Where(g => g.IsEnabled).Select(g => g.GemName).ToHashSet();
+                    foreach (var requested in requestedGems)
+                    {
+                        if (!foundGemNames.Contains(requested))
+                        {
+                            Console.WriteLine($"Warning: Requested gem '{requested}' was not found in discovered gems.");
+                        }
+                    }
+
+                    Console.WriteLine($"Filtering to specific gems: {string.Join(", ", requestedGems)}\n");
+                }
+
+                // Build dependency order
+                var sortedGems = discoveryService.BuildDependencyOrder(allGems, enabledOnly: true);
+
+                if (sortedGems.Count == 0)
+                {
+                    Console.WriteLine("No enabled gems found to generate bindings for.");
+                    return 0;
+                }
+
+                Console.WriteLine($"Generating bindings for {sortedGems.Count} gems:\n");
+                foreach (var gem in sortedGems)
+                {
+                    Console.WriteLine($"  - {gem.GemName}");
+                }
+                Console.WriteLine();
+
+                // Generate bindings
+                var generator = new MultiGemBindingGenerator(config, verbose, force, discoveryService.ResolvedEnginePath, allGemsIncludePath);
+                var projectDir = Path.GetDirectoryName(Path.GetFullPath(projectPath)) ?? projectPath;
+                generator.GenerateAll(allGems, sortedGems, projectDir);
+
+                Console.WriteLine("\n✓ Binding generation complete!");
+                return 0;
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"\n✗ Error: {ex.Message}");
+                if (verbose)
+                {
+                    Console.WriteLine(ex.StackTrace);
+                }
+                return 1;
+            }
+        }
+    }
+}

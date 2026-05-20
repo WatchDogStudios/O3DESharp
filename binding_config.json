@@ -1,0 +1,33 @@
+{
+  "global": {
+    "cSharpNamespace": "O3DE",
+    "cSharpOutputPath": "Assets/Scripts/{GemName}",
+    "cppOutputPath": "Code/Source/Scripting/Generated",
+    "includePaths": [
+      "${O3DE_ENGINE_PATH}/Code",
+      "${O3DE_ENGINE_PATH}/Gems"
+    ],
+    "defines": [
+      "O3DE_EXPORT_CSHARP=__attribute__((annotate(\"export_csharp\")))",
+      "AZ_COMPILER_CLANG=1"
+    ],
+    "verbose": false,
+    "incrementalBuild": true,
+    "requireExportAttribute": false
+  },
+  "gems": {
+    "O3DESharp": {
+      "enabled": true,
+      "headerPatterns": [
+        "Code/Include/**/*.h",
+        "Code/Source/Scripting/**/*.h"
+      ],
+      "excludePatterns": [
+        "**/Platform/**",
+        "**/Tests/**",
+        "**/Reflection/**"
+      ],
+      "requireExportAttribute": false
+    }
+  }
+}

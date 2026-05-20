@@ -7,6 +7,27 @@
  */
 
 #include "CoralHostManager.h"
+#include "ScriptBindings.h"
+
+#include <O3DESharp/O3DESharpHotReloadBus.h>
+
+namespace Coral
+{
+    class ManagedAssembly;
+}
+
+namespace O3DESharp::Generated
+{
+    // Forward declarations of the entry points emitted into
+    // Code/Source/Scripting/Generated/BindingRegistration.g.cpp by the
+    // binding generator. The placeholder version of the .g.cpp is a no-op;
+    // once the generator runs against the gem headers it overwrites the
+    // bodies with real AddInternalCall registrations + stub function
+    // implementations.
+    void RegisterBindings(Coral::ManagedAssembly* assembly);
+    void UnregisterBindings(Coral::ManagedAssembly* assembly);
+    bool HotReload(Coral::ManagedAssembly* oldAssembly, Coral::ManagedAssembly* newAssembly);
+}
 
 #include <AzCore/Console/ILogger.h>
 #include <AzCore/IO/FileIO.h>
@@ -106,6 +127,38 @@ namespace O3DESharp
 
         m_config = config;
 
+        // Phase 18-debug: force-enable .NET diagnostics IPC channels before
+        // the runtime spins up. The CLR reads these env vars during
+        // Debugger::Startup, which fires inside hostfxr_initialize_for_runtime_config -
+        // setting them after Coral's HostInstance::Initialize is too late.
+        //
+        // Why we set them at all when the runtime defaults are already "1":
+        // some hosting contexts (corporate-policy GPOs, IIS-style hosts,
+        // certain CI runners that proxy through a launcher) inherit
+        // DOTNET_EnableDiagnostics=0 from their parent process, which
+        // silently disables managed-debugger attach. Forcing them on here
+        // makes the editor's debuggability invariant under the host's
+        // environment - external attach from vsdbg, JetBrains, or Visual
+        // Studio always works the same way regardless of who launched us.
+        //
+        // overwrite=false so a developer who explicitly disabled
+        // diagnostics for a perf-test run (DOTNET_EnableDiagnostics=0 in
+        // their shell) still wins; we only flip the unset case.
+        AZ::Utils::SetEnv("DOTNET_EnableDiagnostics",          "1", /*overwrite=*/false);
+        AZ::Utils::SetEnv("DOTNET_EnableDiagnostics_IPC",      "1", /*overwrite=*/false);
+        AZ::Utils::SetEnv("DOTNET_EnableDiagnostics_Debugger", "1", /*overwrite=*/false);
+        AZ::Utils::SetEnv("DOTNET_EnableDiagnostics_Profiler", "1", /*overwrite=*/false);
+
+        // Positive confirmation in the editor log that this code path
+        // actually executed. Useful when triaging future attach failures:
+        // if this line is MISSING from the log, the env-var setup didn't
+        // run (something earlier crashed or the binary is stale); if it's
+        // present, the runtime came up with diagnostics enabled and
+        // attach failures are happening for OTHER reasons (PIX hooks,
+        // anti-cheat drivers, kernel debug-port collisions, etc).
+        AZLOG_INFO("CoralHostManager: Forced DOTNET_EnableDiagnostics{,_IPC,_Debugger,_Profiler}=1 "
+                   "to ensure external managed-debugger attach works regardless of parent env.");
+
         // Setup Coral host settings
         Coral::HostSettings settings;
         settings.CoralDirectory = std::string(m_config.coralDirectory.c_str());
@@ -175,13 +228,14 @@ namespace O3DESharp
         // Register internal calls (C++ functions exposed to C#)
         RegisterInternalCalls();
 
-        // Load user assembly if specified
-        if (!m_config.userAssemblyPath.empty())
+        // Load every configured user assembly (multi-assembly), or the legacy single one.
+        // Not loading any user assembly is OK - the user can call LoadAssembly later.
+        if (!m_config.userAssemblyPaths.empty() || !m_config.userAssemblyPath.empty())
         {
-            if (!LoadUserAssembly())
+            if (!LoadUserAssemblies())
             {
-                AZLOG_WARN("CoralHostManager: Failed to load user assembly: %s", m_config.userAssemblyPath.c_str());
-                // Not a fatal error - user can load it later
+                AZLOG_WARN("CoralHostManager: One or more user assemblies failed to load");
+                // Non-fatal.
             }
         }
 
@@ -205,11 +259,12 @@ namespace O3DESharp
         m_userTypeCache.clear();
 
         // Unload the unified context (contains both O3DE.Core and user assemblies)
-        if (m_coreAssembly != nullptr || m_userAssembly != nullptr)
+        if (m_coreAssembly != nullptr || !m_userAssemblies.empty())
         {
             m_hostInstance->UnloadAssemblyLoadContext(m_coreContext);
             m_coreAssembly = nullptr;
             m_userAssembly = nullptr;
+            m_userAssemblies.clear();
         }
 
         // Shutdown the .NET runtime
@@ -262,6 +317,15 @@ namespace O3DESharp
 
         AZLOG_INFO("CoralHostManager: Reloading user assemblies...");
 
+        // Broadcast OnBeforeUserAssemblyReload so every CSharpScriptComponent
+        // (and anything else that caches Coral handles) can release its
+        // managed state BEFORE the context unload below. Without this, every
+        // cached Coral::Type* / Coral::ManagedObject becomes a dangling
+        // pointer the instant UnloadAssemblyLoadContext runs and the next
+        // dispatch through them crashes.
+        O3DESharpHotReloadNotificationBus::Broadcast(
+            &O3DESharpHotReloadNotifications::OnBeforeUserAssemblyReload);
+
         // Clear type caches - both need to be cleared since we're reloading everything
         m_userTypeCache.clear();
         m_coreTypeCache.clear();
@@ -270,6 +334,7 @@ namespace O3DESharp
         m_hostInstance->UnloadAssemblyLoadContext(m_coreContext);
         m_coreAssembly = nullptr;
         m_userAssembly = nullptr;
+        m_userAssemblies.clear();
 
         // Create a new unified context
         m_coreContext = m_hostInstance->CreateAssemblyLoadContext("O3DEContext");
@@ -285,15 +350,21 @@ namespace O3DESharp
         // Re-register internal calls for the new context
         RegisterInternalCalls();
 
-        // Reload the user assembly
-        if (!m_config.userAssemblyPath.empty())
+        // Reload all user assemblies
+        if (!m_config.userAssemblyPaths.empty() || !m_config.userAssemblyPath.empty())
         {
-            if (!LoadUserAssembly())
+            if (!LoadUserAssemblies())
             {
-                AZLOG_ERROR("CoralHostManager: Failed to reload user assembly");
+                AZLOG_ERROR("CoralHostManager: Failed to reload user assemblies");
                 return false;
             }
         }
+
+        // Broadcast OnAfterUserAssemblyReload so every script component
+        // re-resolves its Coral::Type and reconstructs its managed instance
+        // against the freshly-loaded user assemblies.
+        O3DESharpHotReloadNotificationBus::Broadcast(
+            &O3DESharpHotReloadNotifications::OnAfterUserAssemblyReload);
 
         AZLOG_INFO("CoralHostManager: User assemblies reloaded successfully");
         return true;
@@ -328,7 +399,7 @@ namespace O3DESharp
 
     Coral::Type* CoralHostManager::GetUserType(const AZStd::string& fullTypeName)
     {
-        if (!m_initialized || m_userAssembly == nullptr)
+        if (!m_initialized || m_userAssemblies.empty())
         {
             return nullptr;
         }
@@ -340,17 +411,25 @@ namespace O3DESharp
             return it->second;
         }
 
-        // Look up the type
-        Coral::Type& type = m_userAssembly->GetLocalType(std::string_view(fullTypeName.c_str(), fullTypeName.size()));
-        if (!type)
+        // Search every loaded user assembly. First match wins.
+        const std::string_view typeNameView(fullTypeName.c_str(), fullTypeName.size());
+        for (Coral::ManagedAssembly* assembly : m_userAssemblies)
         {
-            AZLOG_WARN("CoralHostManager: User type not found: %s", fullTypeName.c_str());
-            return nullptr;
+            if (assembly == nullptr)
+            {
+                continue;
+            }
+
+            Coral::Type& type = assembly->GetLocalType(typeNameView);
+            if (type)
+            {
+                m_userTypeCache[fullTypeName] = &type;
+                return &type;
+            }
         }
 
-        // Cache and return
-        m_userTypeCache[fullTypeName] = &type;
-        return &type;
+        AZLOG_WARN("CoralHostManager: User type not found in any loaded assembly: %s", fullTypeName.c_str());
+        return nullptr;
     }
 
     Coral::ManagedObject CoralHostManager::CreateInstance(Coral::Type& type)
@@ -436,39 +515,93 @@ namespace O3DESharp
         return true;
     }
 
+    bool CoralHostManager::LoadUserAssemblies()
+    {
+        // Build a deduplicated, ordered list of assemblies to load. The legacy
+        // userAssemblyPath (if set) goes last so it doesn't override the explicit list.
+        AZStd::vector<AZStd::string> toLoad;
+        toLoad.reserve(m_config.userAssemblyPaths.size() + 1);
+
+        auto alreadyQueued = [&toLoad](const AZStd::string& path) -> bool
+        {
+            for (const auto& existing : toLoad)
+            {
+                if (existing == path)
+                {
+                    return true;
+                }
+            }
+            return false;
+        };
+
+        for (const auto& path : m_config.userAssemblyPaths)
+        {
+            if (!path.empty() && !alreadyQueued(path))
+            {
+                toLoad.push_back(path);
+            }
+        }
+        if (!m_config.userAssemblyPath.empty() && !alreadyQueued(m_config.userAssemblyPath))
+        {
+            toLoad.push_back(m_config.userAssemblyPath);
+        }
+
+        if (toLoad.empty())
+        {
+            AZLOG_INFO("CoralHostManager: No user assemblies configured");
+            return true; // no-op success
+        }
+
+        size_t loaded = 0;
+        size_t failed = 0;
+        for (const AZStd::string& assemblyPath : toLoad)
+        {
+            AZLOG_INFO("CoralHostManager: Loading user assembly: %s", assemblyPath.c_str());
+
+            if (!AZ::IO::FileIOBase::GetInstance()->Exists(assemblyPath.c_str()))
+            {
+                AZLOG_ERROR("CoralHostManager: User assembly not found: %s", assemblyPath.c_str());
+                ++failed;
+                continue;
+            }
+
+            // NOTE: O3DE.Core.dll is already loaded in the same unified context
+            // (m_userContext == m_coreContext), so the user assembly can resolve
+            // its O3DE.Core dependency automatically.
+            Coral::ManagedAssembly& assembly = m_userContext.LoadAssembly(std::string(assemblyPath.c_str()));
+
+            if (assembly.GetLoadStatus() != Coral::AssemblyLoadStatus::Success)
+            {
+                AZLOG_ERROR("CoralHostManager: Failed to load user assembly: %s", assemblyPath.c_str());
+                ++failed;
+                continue;
+            }
+
+            m_userAssemblies.push_back(&assembly);
+            AZLOG_INFO("CoralHostManager: User assembly loaded: %s", assembly.GetName().data());
+            ++loaded;
+        }
+
+        // Keep m_userAssembly pointing at the first loaded assembly for back-compat
+        // with anything that still calls GetUserAssembly().
+        m_userAssembly = m_userAssemblies.empty() ? nullptr : m_userAssemblies.front();
+
+        AZLOG_INFO("CoralHostManager: Loaded %zu user assembly(ies), %zu failed", loaded, failed);
+        return loaded > 0 || failed == 0;
+    }
+
     bool CoralHostManager::LoadUserAssembly()
     {
-        if (m_config.userAssemblyPath.empty())
+        // Legacy single-assembly entry point. Delegate to the multi-assembly loader
+        // by temporarily routing the legacy path through it. This keeps the public
+        // API stable while ensuring the same logic (existence check, log lines,
+        // context routing) runs in one place.
+        if (m_config.userAssemblyPath.empty() && m_config.userAssemblyPaths.empty())
         {
             AZLOG_INFO("CoralHostManager: No user assembly path specified");
             return false;
         }
-
-        AZLOG_INFO("CoralHostManager: Loading user assembly: %s", m_config.userAssemblyPath.c_str());
-
-        // Check if file exists
-        if (!AZ::IO::FileIOBase::GetInstance()->Exists(m_config.userAssemblyPath.c_str()))
-        {
-            AZLOG_ERROR("CoralHostManager: User assembly not found: %s", m_config.userAssemblyPath.c_str());
-            return false;
-        }
-
-        // NOTE: O3DE.Core.dll is already loaded in the same unified context (m_userContext == m_coreContext)
-        // so the user assembly can resolve its O3DE.Core dependency automatically.
-        // We don't need to pre-load it separately.
-
-        Coral::ManagedAssembly& assembly = m_userContext.LoadAssembly(std::string(m_config.userAssemblyPath.c_str()));
-
-        if (assembly.GetLoadStatus() != Coral::AssemblyLoadStatus::Success)
-        {
-            AZLOG_ERROR("CoralHostManager: Failed to load user assembly");
-            return false;
-        }
-
-        m_userAssembly = &assembly;
-        AZLOG_INFO("CoralHostManager: User assembly loaded: %s", assembly.GetName().data());
-
-        return true;
+        return LoadUserAssemblies();
     }
 
     void CoralHostManager::RegisterInternalCalls()
@@ -481,17 +614,20 @@ namespace O3DESharp
 
         AZLOG_INFO("CoralHostManager: Registering internal calls...");
 
-        // Internal calls are registered in ScriptBindings.cpp
-        // This method is called after the core assembly is loaded to allow
-        // ScriptBindings to register all the C++ functions exposed to C#
+        // Register all hand-written C++ functions exposed to C# via ScriptBindings.
+        // This sets the static function pointer fields in O3DE.InternalCalls (C#).
+        // Must happen BEFORE user assemblies are loaded, in case loading triggers
+        // type initialization that calls into O3DE.Core.
+        ScriptBindings::RegisterAll(m_coreAssembly);
 
-        // The actual registration happens via:
-        // m_coreAssembly->AddInternalCall("O3DE.InternalCalls", "FunctionName", &FunctionPtr);
-        // m_coreAssembly->UploadInternalCalls();
+        // Register any auto-generated bindings emitted by the binding
+        // generator into Code/Source/Scripting/Generated/. The placeholder
+        // version of this function is a no-op; once the generator has run
+        // it adds one AddInternalCall per [O3DE_EXPORT_CSHARP] method.
+        // Phase 15 wired this in - same assembly object so both registries
+        // populate the same InternalCalls field set on the C# side.
+        Generated::RegisterBindings(m_coreAssembly);
 
-        // For now, we defer to ScriptBindings::RegisterAll() which should be called
-        // after this manager is fully initialized
-
-        AZLOG_INFO("CoralHostManager: Internal calls will be registered by ScriptBindings");
+        AZLOG_INFO("CoralHostManager: Internal calls registered successfully");
     }
 } // namespace O3DESharp

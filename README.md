@@ -1,21 +1,76 @@
 # O3DESharp - C# Scripting for O3DE
 
-O3DESharp is a Gem that adds C# scripting support to the Open 3D Engine (O3DE) using the [Coral](https://github.com/StudioCherno/Coral) .NET host library.
+O3DESharp is a Gem that adds C# scripting support to the Open 3D Engine (O3DE) using the [Coral](https://github.com/WatchDogStudios/Coral) .NET host library (a fork of [StudioCherno/Coral](https://github.com/StudioCherno/Coral) with WD-Studios-specific fixes).
 
 ## Overview
 
 O3DESharp enables game developers to write gameplay logic in C# instead of (or alongside) C++ and Lua. It provides:
 
-- **Full .NET 8.0 Support**: Write scripts using modern C# features
+- **Full .NET 9.0 Support**: Write scripts using modern C# features
 - **Hot Reload**: Recompile and reload C# assemblies without restarting the editor
 - **Native Interop**: Seamless communication between C++ and C# code
 - **Familiar API**: Entity/Component model similar to other popular engines
 - **Automated Reflection**: Automatic access to any type reflected to O3DE's BehaviorContext
 
+## What's New (Phase 16 → Phase 18-E)
+
+Recent iterations added the editor + workflow polish that was always
+the missing half of "hot reload", and most recently the second half of
+EBus support — C# can now both send and *receive* EBus events:
+
+- **First-class EBus handlers** (Phase 18-E). Decorate any partial
+  `ScriptComponent` subclass with `[EBus("BusName")]` and individual
+  methods with `[EBusHandler("EventName")]`; a Roslyn source generator
+  (`O3DESharp.SourceGenerators`) emits the `ConnectTo<BusName>` /
+  `DisconnectFrom<BusName>` / dispatch glue at compile time. The C++
+  side installs a `BehaviorEBusHandler` with a generic hook that
+  marshals args back into managed code, so user methods see typed
+  parameters. See [SCRIPTING_GUIDE.md §9 — Receiving EBus Events](SCRIPTING_GUIDE.md#9-calling-ebus-events-from-c)
+  for the authoring pattern.
+- **Auto-reload on file change** (Phase 16a). The editor watches
+  `<ProjectPath>/Bin/Scripts/` and reloads user assemblies automatically
+  when a DLL is rebuilt. Toggle via Tools → C# Scripting → "Reload
+  Scripts on File Change".
+- **MSBuild post-build deploy** (Phase 16b). New `.csproj`s from the
+  template carry a `DeployToBinScripts` target that copies the build
+  output to the engine's load path — so IDE builds (Rider / Visual
+  Studio / `dotnet build`) all auto-reload without going through the
+  editor's Build menu. Existing csprojs: run Tools → C# Scripting →
+  "Migrate C# Project Files" once.
+- **`[ExposedProperty]` typed widgets** for `bool` / `int` / `float` /
+  `string`. Phase 14 flipped the `EditContext` to the
+  `CSharpExposedProperties` handler.
+- **Script picker UX**: dropdown + Browse / Create / Edit buttons on the
+  Script Class field, with recently-used classes pinned to the top.
+- Build for users other than the maintainer was fixed: the binding
+  generator's `Metadata.g.cs` no longer embeds the maintainer's drive
+  letter; user-project csproj template now declares net9.0 to match
+  `O3DE.Core`; the Coral Python EBus handler creation pattern was
+  corrected to use `azlmbr.editor.CSharpEditorToolsBusHandler()` instead
+  of `azlmbr.object.create`.
+
+For installed-engine projects: `cmake --install` doesn't currently copy
+`Code/Tools/BindingGenerator/` into the install tree, so the
+ClangSharpInvoker falls back to the engine source path via
+`azlmbr.paths.engroot`. Either keep the source clone reachable or copy
+the tool dir into the install location.
+
 ## Requirements
 
-- **.NET 8.0 SDK**: Download from [https://dotnet.microsoft.com/download](https://dotnet.microsoft.com/download)
-- **Supported Platforms**: Windows x64, Linux x64 (JIT & AOT), iOS, Mac, A *very popular* blue gaming console, Xbox, Switch 1 & 2 (AOT Only)
+- **.NET 9.0 SDK**: Download from [https://dotnet.microsoft.com/download](https://dotnet.microsoft.com/download)
+- **.NET 9.0 Runtime** (required for any machine running the editor,
+  whether or not it builds C#). On Windows, install both packages from
+  the link above — the SDK includes a runtime, but if you only install
+  the runtime on a player's machine, Coral.Managed's
+  `runtimeconfig.json` (`tfm: net9.0`, `rollForward: LatestMinor`)
+  will require a 9.x runtime specifically.
+- **Supported Platforms**: Windows x64, Linux x64 (JIT only today).
+
+> **Roadmap, not yet implemented:** macOS, iOS, Android, and console platforms
+> (PlayStation, Xbox, Nintendo Switch) are targets we'd like to support. They
+> require NativeAOT-friendly bindings and platform-specific Coral hosting that
+> are not in this gem yet. `gem.json` currently declares only Linux and Windows
+> as supported.
 
 ## Installation
 
@@ -25,15 +80,17 @@ O3DESharp enables game developers to write gameplay logic in C# instead of (or a
    o3de enable-gem --gem-name O3DESharp --project-path /path/to/your/project
    ```
 
-2. Rebuild your project
+2. Rebuild your project. CMake's `O3DESharp.StageCoral` and
+   `O3DESharp.StageO3DECore` custom targets stage `Coral.Managed.dll`,
+   `O3DE.Core.dll`, and their runtimeconfig/deps next to the engine
+   binaries automatically — no manual copy step.
 
-3. Build the C# Core API:
+3. (Optional) Build the C# Core API standalone, e.g. for IDE intellisense
+   when working on the API itself:
    ```bash
    cd Gems/O3DESharp/Assets/Scripts/O3DE.Core
    dotnet build -c Release
    ```
-
-4. Copy the built assemblies to your project's script directory
 
 ## Quick Start
 
@@ -41,7 +98,7 @@ O3DESharp enables game developers to write gameplay logic in C# instead of (or a
 
 1. Create a new C# class library project:
    ```bash
-   dotnet new classlib -n MyGameScripts -f net8.0
+   dotnet new classlib -n MyGameScripts -f net9.0
    ```
 
 2. Add a reference to O3DE.Core.dll
@@ -86,6 +143,35 @@ namespace MyGame
    - Set the "Script Class" field to `MyGame.PlayerController`
    - Run the game!
 
+### Exposing Fields to the Inspector — `[ExposedProperty]`
+
+Decorate any public field or public auto-property on a `ScriptComponent`
+subclass with `[ExposedProperty]` to make it editable in the inspector and
+serialized with the entity / prefab:
+
+```csharp
+public class PlayerController : ScriptComponent
+{
+    [ExposedProperty]
+    public float Speed = 10.0f;
+
+    [ExposedProperty("Maximum Health")]
+    public int MaxHealth = 100;
+
+    [ExposedProperty] public bool CanJump = true;
+}
+```
+
+The component config keeps a `name → value` map (`Exposed Properties` in the
+inspector). Values are applied to the managed instance before `OnCreate`
+runs, so your initialization code sees the editor-configured values.
+
+Supported types in the current slice: `bool`, integer types (`byte` /
+`sbyte` / `short` / `ushort` / `int` / `uint` / `long` / `ulong`),
+`float`, `double`, and `string`. Typed inspector widgets (sliders, color
+pickers, `Vector3` / `Quaternion` / enum support) are a planned follow-up;
+today the inspector shows a generic key/value editor.
+
 ## Two API Approaches
 
 O3DESharp provides two complementary approaches for accessing O3DE functionality:
@@ -102,7 +188,18 @@ Hand-written bindings for frequently used functionality. These provide the best 
 
 ### 2. Automated Reflection API (For Everything Else)
 
-Dynamic access to **any** type reflected to O3DE's BehaviorContext. This allows you to call methods, access properties, and send EBus events without compile-time bindings:
+Dynamic access to **any** type reflected to O3DE's BehaviorContext. This
+allows you to call methods, access properties, and send EBus events
+without compile-time bindings.
+
+EBus *handling* (receiving events) uses a third path: the
+`O3DESharp.SourceGenerators` Roslyn generator picks up
+`[EBus]` / `[EBusHandler]` attributes on your `ScriptComponent` partial
+class and emits the Connect/Disconnect/dispatch glue at compile time.
+See [SCRIPTING_GUIDE.md §9 — Receiving EBus Events](SCRIPTING_GUIDE.md#9-calling-ebus-events-from-c)
+for the authoring pattern.
+
+
 
 ```csharp
 using O3DE.Reflection;
@@ -376,358 +473,123 @@ using (NativeObject obj = NativeReflection.CreateInstance("SomeClass"))
 
 ## Configuration
 
-The O3DESharp system can be configured via the Settings Registry:
+The O3DESharp system can be configured via the Settings Registry. Drop a
+`.setreg` file under `<ProjectPath>/Registry/`:
 
 ```json
 {
     "O3DE": {
         "O3DESharp": {
-            "CoralDirectory": "path/to/Coral",
-            "CoreApiAssemblyPath": "path/to/O3DE.Core.dll",
-            "UserAssemblyPath": "path/to/GameScripts.dll"
+            "CoralDirectory":       "path/to/Coral",
+            "CoreApiAssemblyPath":  "path/to/O3DE.Core.dll",
+
+            "UserAssemblies": [
+                { "AssemblyName": "MyGameScripts.dll" },
+                { "AssemblyName": "MyPhysicsHelpers.dll" }
+            ],
+
+            "AutoReload":              true,
+            "AutoReloadDebounceMs":    500
         }
     }
 }
 ```
 
+Field reference:
+
+- `UserAssemblies` — preferred form. Array of `{ "AssemblyName": "..." }`.
+  Each entry is resolved relative to `<ProjectPath>/Bin/Scripts/`, so the
+  `AssemblyName` field is just the filename. The runtime loads every entry
+  into a single shared assembly load context (so they can reference each
+  other freely).
+- `UserAssemblyPath` (single string) — legacy fallback for projects that
+  only ship one user assembly. Still honored, but new projects should
+  use the array form.
+- `AutoReload` (Phase 16) — when true, the editor watches
+  `<ProjectPath>/Bin/Scripts/` for DLL changes and triggers
+  `ReloadUserAssemblies` automatically. Defaults to true in Debug / Profile
+  builds, false in Release. Toggle via the menu (see below) instead of
+  editing the setreg for one-off testing.
+- `AutoReloadDebounceMs` — milliseconds of inactivity to wait before
+  firing the reload. Default 500 (sized so a typical `dotnet build`'s
+  multi-chunk write coalesces into one reload).
+
 ## Hot Reload
 
 O3DESharp supports hot-reloading of C# assemblies during development:
 
-1. Make changes to your C# code
-2. Rebuild the assembly
-3. In the Editor, trigger a reload (exact mechanism TBD)
+1. Edit your C# script in your IDE (Rider / VS / VS Code).
+2. Build the project (MSBuild's `DeployToBinScripts` target — baked into
+   the user csproj template — copies the output to
+   `<ProjectPath>/Bin/Scripts/`).
+3. Either:
+   - **Auto:** the editor's file watcher (Phase 16a) notices the DLL
+     change, waits out the debounce window, and dispatches
+     `O3DESharpRequestBus::ReloadUserAssemblies`. Live components on
+     active entities drop their refs through
+     `O3DESharpHotReloadNotificationBus`, the assembly load context is
+     torn down and recreated, and components rebind to the new types.
+     Inspector `[ExposedProperty]` fields re-reflect from the new
+     assembly too. No editor action required.
+   - **Manual:** Tools → C# Scripting → **Reload Scripts** triggers the
+     same code path immediately. Useful when auto-reload is off or you
+     want to be explicit.
 
-**Note**: Hot reload is only available in Debug and Profile builds.
+To disable auto-reload for a session: Tools → C# Scripting → uncheck
+**Reload Scripts on File Change**.
+
+**Limitations**:
+- Hot reload is only available in Debug and Profile builds. Release sets
+  `CoralHostConfig::enableHotReload = false` and `ReloadUserAssemblies`
+  becomes a no-op.
+- Existing `.csproj` files written before Phase 16b don't have the
+  `DeployToBinScripts` target. Run Tools → C# Scripting → **Migrate C#
+  Project Files** once per project to add it; the existing csproj is
+  backed up to `*.csproj.pre-deploy-target.bak`.
 
 ## Architecture
 
 See the gems [Technical Design Document (In Progress).](https://hackmd.io/@MWD09WiVQ1O6VGcMVslq8w/rJHN3HjNZg/edit)
 
-## C# Binding Generation Workflow (Automated Through C# Project Manager!)
+## C# Binding Generation Workflow
 
-Steps
+The canonical binding generator is a **C# tool that uses ClangSharp / libclang
+to parse C++ headers directly** — it lives at
+`Code/Tools/BindingGenerator/O3DESharp.BindingGenerator/`. For each enabled
+gem it emits `.g.cs` C# wrappers, an `InternalCalls.g.cs` interop stub, a
+`BindingRegistration.g.cpp` Coral registration file, and a `metadata.json`
+hot-reload manifest.
 
-1. **C++ Reflection** (Runtime): The `BehaviorContextReflector` extracts metadata from O3DE's BehaviorContext
-2. **JSON Export** (Runtime/Build): The `ReflectionDataExporter` exports this metadata to JSON
-3. **Python Generation** (Build): Python scripts generate C# source files from the JSON
-4. **Compilation**: The generated C# files are compiled into assemblies
+> **Note:** Earlier versions of this gem shipped a separate Python binding
+> generator under `Editor/Scripts/` that consumed a BehaviorContext JSON dump.
+> That generator is deprecated. The Python files under `Editor/Scripts/` that
+> remain are thin orchestrators that shell out to the C# tool.
 
-### Step 1: Export Reflection Data from C++
+### Quick start
 
-In your O3DE application or Editor, export the reflection data:
-
-```cpp
-#include <Scripting/Reflection/BehaviorContextReflector.h>
-#include <Scripting/Reflection/ReflectionDataExporter.h>
-
-// Get the behavior context
-AZ::BehaviorContext* behaviorContext = nullptr;
-AZ::ComponentApplicationBus::BroadcastResult(
-    behaviorContext, &AZ::ComponentApplicationRequests::GetBehaviorContext);
-
-// Reflect all types
-O3DESharp::BehaviorContextReflector reflector;
-reflector.ReflectFromContext(behaviorContext);
-
-// Export to JSON
-O3DESharp::ReflectionDataExporter exporter;
-O3DESharp::ReflectionExportConfig config;
-config.outputPath = "reflection_data.json";
-config.prettyPrint = true;
-
-auto result = exporter.Export(reflector, config);
-if (result.success)
-{
-    AZ_Printf("O3DESharp", "Exported %zu classes, %zu EBuses",
-        result.classesExported, result.ebusesExported);
-}
-```
-
-### Step 2: Generate C# Bindings with Python
-
-Run the Python binding generator:
-
-```bash
-# Generate all bindings for a project
-python Editor/Scripts/generate_bindings.py \
-    --reflection-data reflection_data.json \
-    --project /path/to/project \
-    --output Generated/CSharp
-
-# Generate bindings for specific gems only
-python Editor/Scripts/generate_bindings.py \
-    --reflection-data reflection_data.json \
-    --project /path/to/project \
-    --gems PhysX Atom ScriptCanvas
-
-# Generate core bindings only (no gem organization)
-python Editor/Scripts/generate_bindings.py \
-    --reflection-data reflection_data.json \
-    --core-only
-
-# Generate with separate .csproj per gem
-python Editor/Scripts/generate_bindings.py \
-    --reflection-data reflection_data.json \
-    --project /path/to/project \
-    --per-gem-projects
-```
-
-### Step 3: Build Generated Assemblies
-
-```bash
-cd Generated/CSharp
+```powershell
+# 1. Build the tool (first time only)
+cd Gems/O3DESharp/Code/Tools/BindingGenerator/O3DESharp.BindingGenerator
 dotnet build -c Release
+
+# 2. Generate bindings for every enabled gem in your project
+dotnet run -- generate --project <path-to-your-O3DE-project>
+
+# 3. Generate bindings for specific gems only
+dotnet run -- generate --project <path-to-your-O3DE-project> --gems PhysX,Atom
+
+# 4. Force a full regeneration (skip the incremental cache)
+dotnet run -- generate --project <path-to-your-O3DE-project> --verbose --force
 ```
 
-### Output Structure
+The generator is also wired into CMake as the `O3DESharp.GenerateBindings`
+target and runs automatically when `O3DESHARP_AUTO_GENERATE_BINDINGS=ON`
+(the default). Configuration lives in `binding_config.json` at the repo root.
 
-The generator creates an organized structure:
-
-```
-Generated/CSharp/
-├── O3DE.Generated.sln           # Visual Studio solution
-├── Core/                        # Core O3DE bindings
-│   ├── O3DE.Core.csproj
-│   ├── AssemblyInfo.cs
-│   ├── Math.cs                  # Vector3, Quaternion, Transform
-│   ├── Entity.cs                # Entity, EntityId, Component
-│   ├── Core.cs                  # Debug, Time, etc.
-│   └── Core.EBus.cs             # TransformBus, EntityBus
-├── Atom/                        # Atom gem bindings
-│   ├── Atom.csproj
-│   ├── Rendering.cs
-│   ├── Materials.cs
-│   └── Rendering.EBus.cs
-├── PhysX/                       # PhysX gem bindings
-│   ├── PhysX.csproj
-│   ├── RigidBody.cs
-│   ├── Collision.cs
-│   └── Physics.EBus.cs
-├── ScriptCanvas/                # ScriptCanvas bindings
-│   └── ...
-└── InternalCalls.cs             # Native method declarations
-```
-
-## Gem-Aware Binding Generation
-
-O3DESharp can automatically generate C# bindings organized by source gem, allowing you to see which classes come from which gems and generate per-gem assemblies.
-
-### Enabling Gem-Aware Generation
-
-```cpp
-#include <Scripting/Reflection/BehaviorContextReflector.h>
-#include <Scripting/Reflection/ReflectionDataExporter.h>
-
-// 1. Reflect from BehaviorContext
-BehaviorContextReflector reflector;
-reflector.ReflectFromContext(behaviorContext);
-
-// 2. Export to JSON for the Python generator
-ReflectionDataExporter exporter;
-ReflectionExportConfig config;
-config.outputPath = "reflection_data.json";
-config.prettyPrint = true;
-
-auto result = exporter.Export(reflector, config);
-if (result.success)
-{
-    AZ_Printf("O3DESharp", "Exported %zu classes, %zu EBuses",
-        result.classesExported, result.ebusesExported);
-}
-
-// 3. Run Python generator (via command line or script)
-// python Editor/Scripts/generate_bindings.py \
-//     --reflection-data reflection_data.json \
-//     --project /path/to/project \
-//     --output Generated/CSharp
-```
-
-### Generating Bindings for Specific Gems
-
-You can generate bindings for specific gems and their dependencies using Python:
-
-```bash
-# Generate bindings for a single gem (and its dependencies)
-python Editor/Scripts/generate_bindings.py \
-    --reflection-data reflection_data.json \
-    --project /path/to/project \
-    --gems MyGem
-
-# Generate bindings for multiple specific gems
-python Editor/Scripts/generate_bindings.py \
-    --reflection-data reflection_data.json \
-    --project /path/to/project \
-    --gems PhysX Atom ScriptCanvas
-```
-
-### Configuration Options
-
-| Option | Default | Description |
-|--------|---------|-------------|
-| `organizeByGem` | `true` | Group generated classes by source gem |
-| `separateGemDirectories` | `true` | Create separate directories for each gem |
-| `generatePerGemAssemblies` | `false` | Generate separate .csproj for each gem |
-| `includeGems` | empty | List of gems to include (empty = all active) |
-| `excludeGems` | empty | List of gems to exclude |
-| `includeGemDependencies` | `true` | Include dependent gems in generation |
-| `generateInterGemReferences` | `true` | Add using statements for dependent gems |
-
-### Output Structure
-
-With `separateGemDirectories = true`, the generated structure looks like:
-
-```
-Generated/CSharp/
-├── Atom/
-│   ├── Core.cs
-│   ├── Rendering.cs
-│   ├── Core.EBus.cs
-│   ├── AssemblyInfo.cs
-│   └── Atom.csproj (if generatePerGemAssemblies = true)
-├── PhysX/
-│   ├── Core.cs
-│   ├── Collision.cs
-│   ├── Core.EBus.cs
-│   └── PhysX.csproj
-├── ScriptCanvas/
-│   └── ...
-└── InternalCalls.cs
-```
-
-### Gem Dependency Resolution
-
-The Python `GemDependencyResolver` class provides utilities for working with gem dependencies:
-
-```python
-from gem_dependency_resolver import GemDependencyResolver
-
-resolver = GemDependencyResolver()
-resolver.discover_gems_from_project("/path/to/project")
-
-# Get all dependencies for a gem
-deps = resolver.get_gem_dependencies("MyGem", include_transitive=True)
-
-# Get gems that depend on a gem
-dependents = resolver.get_gem_dependents("AzCore", include_transitive=True)
-
-# Get gems in topological order (dependencies first)
-ordered = resolver.get_gems_in_dependency_order()
-
-# Check if one gem depends on another
-depends = resolver.depends_on("PhysX", "AzCore")
-
-# Map a class to its source gem
-gem_name = resolver.resolve_gem_for_class("RigidBody", "Physics")
-```
-
-### Custom Class-to-Gem Mappings
-
-You can configure how classes are mapped to gems in Python:
-
-```python
-from gem_dependency_resolver import GemDependencyResolver, GemMappingConfig
-
-config = GemMappingConfig()
-config.use_category_attribute = True   # Use BehaviorContext category
-config.use_name_prefixes = True        # Use class name prefixes
-config.default_gem_name = "O3DE.Core"  # Fallback gem name
-
-# Add custom prefix mappings
-config.prefix_mappings["MyPrefix"] = "MyGem"
-
-# Add custom category mappings
-config.category_mappings["MyCategory"] = "MyGem"
-
-resolver = GemDependencyResolver(mapping_config=config)
-
-# Register explicit class mappings
-resolver.register_class_mapping("MySpecialClass", "MyGem")
-```
-
-### Python API Reference
-
-The Python binding generator provides several modules:
-
-#### gem_dependency_resolver.py
-
-```python
-from gem_dependency_resolver import GemDependencyResolver
-
-resolver = GemDependencyResolver()
-
-# Discover gems from a project
-result = resolver.discover_gems_from_project("/path/to/project")
-
-# Get all active gems
-gems = resolver.get_active_gems()
-
-# Get gem dependencies
-deps = resolver.get_gem_dependencies("PhysX", include_transitive=True)
-
-# Get gems in dependency order
-ordered = resolver.get_gems_in_dependency_order()
-
-# Resolve which gem a class belongs to
-gem_name = resolver.resolve_gem_for_class("RigidBody", "Physics")
-```
-
-#### csharp_binding_generator.py
-
-```python
-from csharp_binding_generator import (
-    CSharpBindingGenerator, 
-    BindingGeneratorConfig,
-    load_reflection_data_from_json
-)
-
-# Load reflection data
-reflection_data = load_reflection_data_from_json("reflection_data.json")
-
-# Configure generator
-config = BindingGeneratorConfig()
-config.output_directory = "Generated/CSharp"
-config.root_namespace = "O3DE.Generated"
-config.generate_core_bindings = True
-config.generate_gem_bindings = True
-config.separate_gem_directories = True
-
-# Generate bindings
-generator = CSharpBindingGenerator(config)
-result = generator.generate_from_reflection_data(reflection_data, gem_resolver)
-
-# Write to disk
-files_written = generator.write_files()
-```
-
-#### generate_bindings.py (Main Entry Point)
-
-```python
-from generate_bindings import (
-    generate_all_bindings,
-    generate_gem_bindings,
-    generate_core_bindings,
-    list_available_gems
-)
-
-# Generate everything
-result = generate_all_bindings(
-    output_directory="Generated/CSharp",
-    reflection_data_path="reflection_data.json",
-    project_path="/path/to/project"
-)
-
-# Generate for a specific gem
-result = generate_gem_bindings(
-    gem_name="PhysX",
-    output_directory="Generated/CSharp",
-    reflection_data_path="reflection_data.json",
-    project_path="/path/to/project"
-)
-
-# List available gems
-gems = list_available_gems("/path/to/project")
-```
+For the end-to-end workflow — including how to compile the generated `.g.cs`
+files into a per-gem DLL that your game scripts reference, MSBuild
+design-time generation, and registering bindings on the C++ side — see
+[GENERATED_BINDINGS_GUIDE.md](GENERATED_BINDINGS_GUIDE.md).
 
 ## Reflection System Details
 
@@ -755,17 +617,28 @@ This approach means that:
 
 ## Known Limitations
 
+- **Template Instantiations**: C++ template types (e.g., `AZStd::vector<AZ::Vector3>`, `AZ::RHI::Handle<uint>`) are automatically skipped during binding generation since they cannot be meaningfully represented as standalone C# classes. Use a `typedef` alias and reflect that instead.
 - **Input System**: Direct input access is not yet fully implemented. Use O3DE's Input component with BehaviorContext for now.
-- **EBus Handlers**: Creating C# EBus handlers (receiving events) is not yet supported. Only sending/broadcasting is available.
+- **EBus Handler param marshaling**: Phase 18-E ships first-class
+  managed handlers via `[EBus]` / `[EBusHandler]` (see
+  [SCRIPTING_GUIDE.md §9](SCRIPTING_GUIDE.md#9-calling-ebus-events-from-c)).
+  The arg-unmarshal table covers primitives, `string`, `Vector2`,
+  `Vector3`, `Quaternion`, and EntityId-shaped IDs. `Transform`,
+  `Vector4`, `Color`, `Aabb`, `Matrix3x3` / `Matrix4x4`, and arbitrary
+  user-defined structs currently arrive as `default(T)` with a warning
+  in the console; extend `EBusHandlerRegistry.UnmarshalArg<T>` and the
+  matching C++ marshal table to add coverage. Buses without a
+  `Handler<>()` reflection (rare; emit-only buses) refuse `Register`
+  with a clear log message.
 - **Generics**: Generic types in BehaviorContext are not fully supported.
-- **Editor Integration**: Script class selection is currently a text field. A dropdown picker is planned.
 - **Performance**: The reflection API is slower than direct bindings. Use direct APIs for performance-critical code.
+- **Asset references in `[ExposedProperty]`**: typed widgets exist for `bool`, integer types, `float`, `double`, and `string`. `Vector3` / `Quaternion` / `Color` / `EntityId` / `AssetReference<T>` are planned. The inspector falls back to a generic key/value editor for those.
 
 ## Troubleshooting
 
 ### ".NET runtime not found"
 
-Ensure the .NET 8.0 SDK is installed and available in your PATH:
+Ensure the .NET 9.0 SDK is installed and available in your PATH:
 ```bash
 dotnet --version
 ```
@@ -833,6 +706,127 @@ See the `Assets/Scripts/Examples/` folder for complete examples:
 
 - **PlayerController.cs**: Basic script demonstrating direct API usage
 - **ReflectionExample.cs**: Demonstrates the automated reflection system
+
+## Deploying and Exporting Projects
+
+When exporting your O3DE project for distribution, O3DESharp automatically includes all necessary C# runtime DLLs and builds your user assemblies.
+
+### Quick Export
+
+For projects with C# scripts, use the O3DESharp export script:
+
+```bash
+o3de.py export-project \
+  --export-script Gems/O3DESharp/ExportScripts/export_project_with_csharp.py \
+  --project-path /path/to/your/project \
+  --output-path /path/to/export \
+  --config profile
+```
+
+This automatically:
+1. Builds all user C# assemblies (Release configuration)
+2. Deploys them to `Bin/Scripts/` in the export package
+3. Includes Coral.Managed.dll and O3DE.Core.dll
+4. Creates a complete, runnable game package
+
+### Configuring User Assemblies
+
+By default, O3DESharp auto-discovers all `.csproj` files in `Assets/Scripts/` (excluding O3DE.Core and Examples). For explicit control, create a Settings Registry configuration:
+
+**File**: `<ProjectPath>/Registry/o3desharp.setreg`
+
+```json
+{
+  "O3DE": {
+    "O3DESharp": {
+      "UserAssemblies": [
+        {
+          "ProjectPath": "Assets/Scripts/MyGame/MyGame.csproj",
+          "AssemblyName": "MyGame.dll"
+        },
+        {
+          "ProjectPath": "Assets/Scripts/Abilities/Abilities.csproj",
+          "AssemblyName": "Abilities.dll"
+        }
+      ]
+    }
+  }
+}
+```
+
+**Fields:**
+- `ProjectPath`: Relative path from project root to `.csproj` file
+- `AssemblyName`: Output DLL name (optional, defaults to project name + .dll)
+
+### Export Package Structure
+
+The exported launcher package includes all C# runtime files in the correct locations:
+
+```
+<ProjectName>GamePackage/
+├── <ProjectName>.GameLauncher.exe
+└── Bin/
+    └── Scripts/
+        ├── Coral/
+        │   ├── Coral.Managed.dll
+        │   ├── Coral.Managed.runtimeconfig.json
+        │   └── Coral.Managed.deps.json
+        ├── O3DE.Core.dll
+        ├── O3DE.Core.deps.json
+        ├── MyGame.dll              # Your user assemblies
+        └── MyGame.deps.json
+```
+
+### Development Workflow vs Export
+
+**During Development:**
+- Use the C# Script Manager tool to deploy DLLs to your project's `Bin/Scripts/` directory
+- Iterate quickly by rebuilding C# projects and using hot reload
+
+**For Export:**
+- Use the custom export script (automatically builds and deploys everything)
+- Produces a complete, distributable package with all dependencies
+
+### Troubleshooting Export Issues
+
+**Error: ".NET SDK not found"**
+
+Install the .NET SDK from [https://dotnet.microsoft.com/download](https://dotnet.microsoft.com/download) and restart your terminal.
+
+```bash
+# Verify installation
+dotnet --version
+```
+
+**Error: "Failed to build [ProjectName].csproj"**
+
+Check the export log for C# compilation errors. Build manually to see detailed errors:
+
+```bash
+cd Assets/Scripts/MyGame
+dotnet build -c Release
+```
+
+Common causes:
+- Missing package references
+- Syntax errors in C# code
+- Incorrect O3DE.Core.dll reference path
+
+**Export succeeds but launcher crashes on startup**
+
+Verify all DLLs are present in the export package:
+
+```bash
+# Check for required DLLs
+ls <ExportPath>/<Project>GamePackage/Bin/Scripts/
+# Should show: Coral/, O3DE.Core.dll, and your user DLLs
+```
+
+**User assemblies not included**
+
+- Check Settings Registry syntax (must be valid JSON)
+- Verify `.csproj` paths are relative to project root
+- Review export logs for "O3DESharp: Auto-discovered user project" messages
 
 ## Contributing
 

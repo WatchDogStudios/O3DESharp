@@ -31,7 +31,23 @@ set(FILES
     Source/Scripting/Reflection/BehaviorContextReflector.cpp
     Source/Scripting/Reflection/GenericDispatcher.h
     Source/Scripting/Reflection/GenericDispatcher.cpp
+
+    # Phase 18-A: BehaviorContext <-> JSON marshaling. Shared utility
+    # used by GenericDispatcher's EBus dispatch path and the upcoming
+    # 18-B managed-handler bridge. Kept independent of EditorPythonBindings
+    # so the runtime gem doesn't pull in the EPB Static dependency just
+    # to reuse a converter.
+    Source/Scripting/Marshaling/BehaviorContextMarshaling.h
+    Source/Scripting/Marshaling/BehaviorContextMarshaling.cpp
     # Exports reflection data to JSON for the Python binding generator
     Source/Scripting/Reflection/ReflectionDataExporter.h
     Source/Scripting/Reflection/ReflectionDataExporter.cpp
+
+    # Generator output (Phase 15). The binding generator overwrites these as
+    # part of its normal run; placeholder versions are committed so the gem
+    # links on fresh clones. RegisterBindings is called from
+    # CoralHostManager::RegisterInternalCalls alongside the hand-written
+    # ScriptBindings::RegisterAll.
+    Source/Scripting/Generated/BindingRegistration.g.cpp
+    Source/Scripting/Generated/O3DESharp_HotReload.g.h
 )

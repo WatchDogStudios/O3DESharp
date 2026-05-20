@@ -25,11 +25,74 @@ if(NOT PAL_TRAIT_O3DESHARP_SUPPORTED)
     return()
 endif()
 
+# Locate (or install) a .NET SDK before we try to build C# projects.
+# Sets DOTNET_EXECUTABLE in this scope, used by binding generator and C# test custom targets below.
+o3de_sharp_netverify()
+
 # CORAL CLONE INFO
 # ===========================
 # NOTE(Mikael A.): Stay on main, do not change to internal coral branch!
+#
+# Tracks the tip of WatchDogStudios/Coral main rather than pinning a
+# specific commit. Trade-off: dev builds are reproducible only as long
+# as the upstream history isn't rewritten - in practice that's fine
+# because we control the fork. The win is that GIT_SHALLOW=TRUE works
+# correctly (it only fetches the tip of the configured branch; pinning
+# an older SHA together with GIT_SHALLOW intermittently fails with
+# "unable to read tree <sha>" when the shallow window doesn't include
+# that commit), and so does iterating on Coral - push to main, re-run
+# CMake, get the new code.
+#
+# Keep this branch name in lockstep with the value embedded in the
+# install-code block below (search for "O3DE_SUBDIRECTORY_INSTALL_CODE").
 set(CORAL_GIT_REPO "https://github.com/WatchDogStudios/Coral.git")
 set(CORAL_GIT_TAG "main")
+
+# Local-checkout override: if O3DESHARP_CORAL_SOURCE_DIR is set (cache
+# variable, env var, or auto-detected next to the gem) and points at a
+# Coral working tree, FetchContent uses that path instead of the
+# GIT_REPOSITORY clone. Lets developers iterate on Coral changes (the
+# debugger-attach support added for the managed-debug initiative, for
+# instance) without pushing to the fork + bumping the pinned SHA on
+# every rebuild.
+#
+# Three ways to set it, in priority order:
+#   1. -DO3DESHARP_CORAL_SOURCE_DIR=<path>  on the cmake command line,
+#      or set as a CMake cache variable in your IDE's CMake settings.
+#      (Highest priority; sticks across configures.)
+#   2. set the O3DESHARP_CORAL_SOURCE_DIR environment variable before
+#      configuring. Re-evaluated every configure - changing the env
+#      var and re-running CMake takes effect without nuking the cache.
+#   3. Convention auto-detect: a Coral fork checkout at
+#      ../Coral-O3DESharp next to the gem (no machine-specific paths
+#      committed - just a sibling-directory convention).
+#
+# The variable is FORCED into the cache each configure, so the env var
+# wins over a previously-cached empty value (a footgun in the first
+# version of this block: once an empty value got cached, env-var
+# changes couldn't update it).
+if(DEFINED ENV{O3DESHARP_CORAL_SOURCE_DIR} AND NOT "$ENV{O3DESHARP_CORAL_SOURCE_DIR}" STREQUAL "")
+    set(O3DESHARP_CORAL_SOURCE_DIR "$ENV{O3DESHARP_CORAL_SOURCE_DIR}" CACHE PATH
+        "Optional local Coral fork checkout. When set, used instead of the GIT_REPOSITORY clone." FORCE)
+elseif(NOT O3DESHARP_CORAL_SOURCE_DIR)
+    set(_o3desharp_coral_candidate "${CMAKE_CURRENT_LIST_DIR}/../../Coral-O3DESharp")
+    if(IS_DIRECTORY "${_o3desharp_coral_candidate}"
+            AND EXISTS "${_o3desharp_coral_candidate}/Coral.Native/Source/Coral/HostInstance.cpp")
+        set(O3DESHARP_CORAL_SOURCE_DIR "${_o3desharp_coral_candidate}" CACHE PATH
+            "Optional local Coral fork checkout. When set, used instead of the GIT_REPOSITORY clone." FORCE)
+    endif()
+    unset(_o3desharp_coral_candidate)
+endif()
+
+# Forward to FetchContent's per-content override variable. This is the
+# CMake-supported way to redirect a FetchContent_Declare(... GIT_REPOSITORY
+# ...) at a local path, and it works around any cache staleness in the
+# regular GIT_REPOSITORY + FetchContent_MakeAvailable flow. Setting it
+# with FORCE so an empty cache value from a prior run can't shadow it.
+if(O3DESHARP_CORAL_SOURCE_DIR AND IS_DIRECTORY "${O3DESHARP_CORAL_SOURCE_DIR}")
+    set(FETCHCONTENT_SOURCE_DIR_CORAL "${O3DESHARP_CORAL_SOURCE_DIR}" CACHE PATH
+        "FetchContent override for Coral - mirrors O3DESHARP_CORAL_SOURCE_DIR" FORCE)
+endif()
 
 # Disable Coral examples and tests before FetchContent to speed up configuration
 set(CORAL_EXAMPLE OFF CACHE BOOL "" FORCE)
@@ -37,8 +100,11 @@ set(CORAL_TESTING OFF CACHE BOOL "" FORCE)
 
 include(FetchContent)
 
-# Use GIT_SHALLOW to only fetch the latest commit (much faster than full clone)
-# FIND_PACKAGE_ARGS allows using a pre-installed Coral if available
+# Single FetchContent_Declare regardless of local override - the
+# FETCHCONTENT_SOURCE_DIR_CORAL cache variable set just above is the
+# CMake-supported way to redirect the GIT_REPOSITORY at a local path
+# when present, so we don't need separate Declare calls. GIT_SHALLOW
+# keeps the fetch fast for the non-override case.
 FetchContent_Declare(
     Coral
     GIT_REPOSITORY ${CORAL_GIT_REPO}
@@ -48,18 +114,46 @@ FetchContent_Declare(
     SOURCE_SUBDIR cmake
 )
 
-# please always be really clear about what third parties your gem uses.
-message(STATUS "O3DESharp Gem uses ${CORAL_GIT_REPO} (License: MIT)")
-
-# Check if already populated to avoid redundant work
-FetchContent_GetProperties(Coral)
-if(NOT coral_POPULATED)
-    message(STATUS "O3DESharp: Fetching Coral (this may take a moment on first run)...")
-    FetchContent_Populate(Coral)
-    add_subdirectory(${coral_SOURCE_DIR}/cmake ${coral_BINARY_DIR})
+# Loud status so a stale-cache footgun (the symptom that prompted this
+# whole rewrite: O3DESHARP_CORAL_SOURCE_DIR cached as empty + a stale
+# _deps/coral-src/ that FetchContent thought was already populated)
+# can't go unnoticed. Logs the actual source path that's about to be
+# used so a developer can sanity-check it matches their intent.
+if(O3DESHARP_CORAL_SOURCE_DIR AND IS_DIRECTORY "${O3DESHARP_CORAL_SOURCE_DIR}")
+    message(STATUS "O3DESharp: Using local Coral checkout at ${O3DESHARP_CORAL_SOURCE_DIR}")
+    message(STATUS "  (forwarded to FETCHCONTENT_SOURCE_DIR_CORAL; GIT_REPOSITORY is bypassed)")
+else()
+    message(STATUS "O3DESharp: Using upstream ${CORAL_GIT_REPO}@${CORAL_GIT_TAG} (License: MIT)")
+    message(STATUS "  Set O3DESHARP_CORAL_SOURCE_DIR (env var or -D...) to point at a local Coral fork checkout.")
 endif()
 
-FetchContent_GetProperties(Coral)
+# Use FetchContent_MakeAvailable instead of the older
+# FetchContent_GetProperties + FetchContent_Populate + add_subdirectory
+# dance. CMake 4.0 set policy CMP0169 to NEW by default, which
+# deprecates calling FetchContent_Populate with a content name.
+#
+# FetchContent_MakeAvailable populates the content (cloning if needed,
+# or using FETCHCONTENT_SOURCE_DIR_CORAL as-is when set) and runs
+# add_subdirectory on the SOURCE_SUBDIR (Coral's `cmake/` subfolder).
+FetchContent_MakeAvailable(Coral)
+
+# Defensive sanity check: if MakeAvailable returned but Coral.Native
+# isn't a real target, we're in the stale-cache wedge state where
+# _deps/coral-src/ exists as an empty stub and FetchContent thought
+# "already populated" and skipped the clone. Fail loud with the
+# recovery command instead of falling through to the dozen confusing
+# "target not found" errors that follow.
+if(NOT TARGET Coral.Native)
+    message(FATAL_ERROR
+        "O3DESharp: Coral.Native target was not created by FetchContent_MakeAvailable. "
+        "This usually means _deps/coral-src exists as an empty stub from a previous "
+        "failed configure. Recovery:\n"
+        "  1. Delete F:/engine/Workspace/_deps/coral-src, coral-build, coral-tmp.\n"
+        "  2. Delete F:/engine/Workspace/CMakeCache.txt (or pass --fresh to cmake).\n"
+        "  3. Re-run CMake. If using a local fork, ensure O3DESHARP_CORAL_SOURCE_DIR "
+        "is set (env var or -D)."
+    )
+endif()
 
 # ============================================================
 # Coral.Managed Deployment Target
@@ -79,24 +173,33 @@ if(TARGET Coral.Managed)
     get_property(gem_root_for_staging GLOBAL PROPERTY "@GEMROOT:${gem_name}@")
     set(CORAL_STAGING_DIR "${gem_root_for_staging}/bin/Coral")
     
-    # Create a custom target to stage Coral.Managed files
+    # Create a custom target to stage Coral.Managed files. Includes the
+    # portable PDB - without it sitting alongside the DLL, vsdbg /
+    # Rider / Visual Studio can attach to the runtime but cannot bind
+    # source-level breakpoints in Coral.Managed methods, and stack
+    # traces from there land as `<unknown source>`. The PDB is small
+    # (a few hundred KB) and shipping it has zero cost for users who
+    # never debug into Coral.
     add_custom_target(${gem_name}.StageCoral ALL
         COMMENT "O3DESharp: Staging Coral.Managed files for deployment"
         COMMAND ${CMAKE_COMMAND} -E make_directory "${CORAL_STAGING_DIR}"
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different 
-            "${CORAL_MANAGED_OUTPUT}/Coral.Managed.dll" 
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "${CORAL_MANAGED_OUTPUT}/Coral.Managed.dll"
             "${CORAL_STAGING_DIR}/Coral.Managed.dll"
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different 
-            "${CORAL_MANAGED_OUTPUT}/Coral.Managed.runtimeconfig.json" 
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "${CORAL_MANAGED_OUTPUT}/Coral.Managed.pdb"
+            "${CORAL_STAGING_DIR}/Coral.Managed.pdb"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "${CORAL_MANAGED_OUTPUT}/Coral.Managed.runtimeconfig.json"
             "${CORAL_STAGING_DIR}/Coral.Managed.runtimeconfig.json"
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different 
-            "${CORAL_MANAGED_OUTPUT}/Coral.Managed.deps.json" 
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "${CORAL_MANAGED_OUTPUT}/Coral.Managed.deps.json"
             "${CORAL_STAGING_DIR}/Coral.Managed.deps.json"
         DEPENDS Coral.Managed
     )
     
     set_property(TARGET ${gem_name}.StageCoral PROPERTY FOLDER "${relative_o3desharp_gem_root}/Deploy")
-    
+
     message(STATUS "O3DESharp: Coral.Managed will be staged to ${CORAL_STAGING_DIR}")
 endif()
 
@@ -113,24 +216,31 @@ set(O3DE_CORE_SCRIPTS_DIR "${gem_root_for_o3de_core}/Assets/Scripts/O3DE.Core")
 set(O3DE_CORE_STAGING_DIR "${gem_root_for_o3de_core}/bin/O3DE.Core")
 
 # Determine O3DE.Core build output path (Release build preferred, fallback to Debug)
-# The C# project builds to bin/<Configuration>/net8.0/
-set(O3DE_CORE_BUILD_OUTPUT_RELEASE "${O3DE_CORE_SCRIPTS_DIR}/bin/Release/net8.0")
-set(O3DE_CORE_BUILD_OUTPUT_DEBUG "${O3DE_CORE_SCRIPTS_DIR}/bin/Debug/net8.0")
+# The C# project builds to bin/<Configuration>/net9.0/
+set(O3DE_CORE_BUILD_OUTPUT_RELEASE "${O3DE_CORE_SCRIPTS_DIR}/bin/Release/net9.0")
+set(O3DE_CORE_BUILD_OUTPUT_DEBUG "${O3DE_CORE_SCRIPTS_DIR}/bin/Debug/net9.0")
 
 # Use generator expression to pick the right config, with Release as fallback
 # For C# projects, we typically want Release for deployment
 set(O3DE_CORE_BUILD_OUTPUT "${O3DE_CORE_BUILD_OUTPUT_RELEASE}")
 
 if(EXISTS "${O3DE_CORE_BUILD_OUTPUT}/O3DE.Core.dll")
-    # Create custom target to stage O3DE.Core files
+    # Create custom target to stage O3DE.Core files. Includes the
+    # portable PDB so external debuggers (vsdbg / Rider / VS) can bind
+    # source-level breakpoints in O3DE.Core methods - without the PDB
+    # next to the DLL, attach succeeds but stepping into framework
+    # code shows up as `<unknown source>`.
     add_custom_target(${gem_name}.StageO3DECore ALL
         COMMENT "O3DESharp: Staging O3DE.Core files for deployment"
         COMMAND ${CMAKE_COMMAND} -E make_directory "${O3DE_CORE_STAGING_DIR}"
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different 
-            "${O3DE_CORE_BUILD_OUTPUT}/O3DE.Core.dll" 
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "${O3DE_CORE_BUILD_OUTPUT}/O3DE.Core.dll"
             "${O3DE_CORE_STAGING_DIR}/O3DE.Core.dll"
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different 
-            "${O3DE_CORE_BUILD_OUTPUT}/O3DE.Core.deps.json" 
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "${O3DE_CORE_BUILD_OUTPUT}/O3DE.Core.pdb"
+            "${O3DE_CORE_STAGING_DIR}/O3DE.Core.pdb"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "${O3DE_CORE_BUILD_OUTPUT}/O3DE.Core.deps.json"
             "${O3DE_CORE_STAGING_DIR}/O3DE.Core.deps.json"
     )
     
@@ -145,11 +255,103 @@ if(EXISTS "${O3DE_CORE_BUILD_OUTPUT}/O3DE.Core.dll")
     endif()
     
     set_property(TARGET ${gem_name}.StageO3DECore PROPERTY FOLDER "${relative_o3desharp_gem_root}/Deploy")
-    
+
     message(STATUS "O3DESharp: O3DE.Core will be staged to ${O3DE_CORE_STAGING_DIR}")
 else()
     message(STATUS "O3DESharp: O3DE.Core.dll not found at ${O3DE_CORE_BUILD_OUTPUT}/O3DE.Core.dll")
     message(STATUS "O3DESharp: Build O3DE.Core C# project first (dotnet build -c Release)")
+endif()
+
+# ============================================================
+# ClangSharp Binding Generator Tool
+# ============================================================
+# Build the ClangSharp-based C# binding generator tool.
+# This tool performs static analysis of C++ headers to generate C# bindings.
+
+# Option to control automatic binding generation
+option(O3DESHARP_AUTO_GENERATE_BINDINGS "Automatically generate C# bindings during build" ON)
+
+get_property(gem_root_for_bindings GLOBAL PROPERTY "@GEMROOT:${gem_name}@")
+set(BINDING_GENERATOR_SOURCE_DIR "${gem_root_for_bindings}/Code/Tools/BindingGenerator")
+set(BINDING_GENERATOR_BINARY_DIR "${CMAKE_BINARY_DIR}/Gems/O3DESharp/BindingGenerator")
+set(BINDING_GENERATOR_OUTPUT_DIR "${CMAKE_BINARY_DIR}/bin/BindingGenerator")
+
+# Check if the binding generator source exists
+if(EXISTS "${BINDING_GENERATOR_SOURCE_DIR}/O3DESharp.BindingGenerator/O3DESharp.BindingGenerator.csproj")
+    # Use ExternalProject to build the ClangSharp binding generator
+    include(ExternalProject)
+    
+    # Determine build configuration
+    set(BINDING_GENERATOR_CONFIG "Release")
+    if(CMAKE_BUILD_TYPE MATCHES "Debug")
+        set(BINDING_GENERATOR_CONFIG "Debug")
+    endif()
+    
+    ExternalProject_Add(
+        O3DESharp.BindingGenerator
+        SOURCE_DIR "${BINDING_GENERATOR_SOURCE_DIR}"
+        BINARY_DIR "${BINDING_GENERATOR_BINARY_DIR}"
+        CONFIGURE_COMMAND ""
+        BUILD_COMMAND ${DOTNET_EXECUTABLE} build "${BINDING_GENERATOR_SOURCE_DIR}/O3DESharp.BindingGenerator/O3DESharp.BindingGenerator.csproj"
+            -c ${BINDING_GENERATOR_CONFIG}
+            -o "${BINDING_GENERATOR_OUTPUT_DIR}"
+        INSTALL_COMMAND ""
+        BUILD_ALWAYS OFF
+        BUILD_BYPRODUCTS "${BINDING_GENERATOR_OUTPUT_DIR}/O3DESharp.BindingGenerator.dll"
+    )
+    
+    # Export the path to the binding generator for Python scripts
+    set(O3DESHARP_BINDING_GENERATOR_PATH "${BINDING_GENERATOR_OUTPUT_DIR}" CACHE PATH 
+        "Path to O3DESharp binding generator tool" FORCE)
+    
+    message(STATUS "O3DESharp: Binding generator will be built to ${BINDING_GENERATOR_OUTPUT_DIR}")
+    
+    # ============================================================
+    # Automatic Binding Generation Target
+    # ============================================================
+    # Generate C# bindings automatically during build if enabled.
+    # The ClangSharp tool has built-in incremental build support via file hash caching.
+    
+    if(O3DESHARP_AUTO_GENERATE_BINDINGS)
+        set(BINDINGS_OUTPUT_DIR "${CMAKE_BINARY_DIR}/Gems/O3DESharp/Generated/Bindings")
+        set(BINDINGS_MARKER_FILE "${CMAKE_BINARY_DIR}/.o3desharp_bindings_generated")
+        set(BINDING_CONFIG_FILE "${gem_root_for_bindings}/binding_config.json")
+        
+        # Create binding generation target
+        add_custom_target(${gem_name}.GenerateBindings
+            COMMENT "O3DESharp: Generating C# bindings with ClangSharp tool"
+            COMMAND ${CMAKE_COMMAND} -E echo "Checking if C# bindings need regeneration..."
+            COMMAND ${CMAKE_COMMAND} -E make_directory "${BINDINGS_OUTPUT_DIR}"
+            COMMAND ${DOTNET_EXECUTABLE} run
+                --project "${BINDING_GENERATOR_SOURCE_DIR}/O3DESharp.BindingGenerator/O3DESharp.BindingGenerator.csproj"
+                -- generate
+                --project "${CMAKE_SOURCE_DIR}"
+                --output "${BINDINGS_OUTPUT_DIR}"
+                --incremental
+            COMMAND ${CMAKE_COMMAND} -E touch "${BINDINGS_MARKER_FILE}"
+            DEPENDS O3DESharp.BindingGenerator
+            WORKING_DIRECTORY "${gem_root_for_bindings}"
+            VERBATIM
+        )
+        
+        # Make the binding generation target part of the default build
+        # but only if the config file exists (prevents errors in fresh checkouts)
+        if(EXISTS "${BINDING_CONFIG_FILE}")
+            set_property(TARGET ${gem_name}.BindingGenerator PROPERTY FOLDER "${relative_o3desharp_gem_root}/Bindings")
+            set_property(TARGET ${gem_name}.GenerateBindings PROPERTY FOLDER "${relative_o3desharp_gem_root}/Bindings")
+            message(STATUS "O3DESharp: Automatic binding generation ENABLED (output: ${BINDINGS_OUTPUT_DIR})")
+            message(STATUS "O3DESharp:   Set O3DESHARP_AUTO_GENERATE_BINDINGS=OFF to disable")
+        else()
+            message(STATUS "O3DESharp: Automatic binding generation DISABLED (binding_config.json not found)")
+            message(STATUS "O3DESharp:   Create ${BINDING_CONFIG_FILE} to enable automatic generation")
+        endif()
+    else()
+        message(STATUS "O3DESharp: Automatic binding generation DISABLED by user")
+        message(STATUS "O3DESharp:   Set O3DESHARP_AUTO_GENERATE_BINDINGS=ON to enable")
+    endif()
+else()
+    message(WARNING "O3DESharp: Binding generator source not found at ${BINDING_GENERATOR_SOURCE_DIR}")
+    message(WARNING "O3DESharp: C# binding generation will not be available")
 endif()
 
 # CREDIT Olex A. (Amazon, ReactNavagation)
@@ -170,8 +372,12 @@ endforeach()
 # that gets included in installers.  This is why we need to duplicate the github repo from above
 # and cannot reuse the variables above.  The rest of this file won't be there to refer to.
 set_property(DIRECTORY APPEND PROPERTY O3DE_SUBDIRECTORY_INSTALL_CODE [[
-    set(CORAL_GIT_REPO "https://github.com/StudioCherno/Coral.git")
-    set(CORAL_GIT_TAG "25437c915b452a08949d636d154a766d6c65601a")
+    # NOTE: Keep this repo + branch in sync with the dev-side CORAL_GIT_REPO /
+    # CORAL_GIT_TAG above. Different values here mean dev builds and exported
+    # installer builds will fetch different Coral sources and cannot produce
+    # bit-identical binaries.
+    set(CORAL_GIT_REPO "https://github.com/WatchDogStudios/Coral.git")
+    set(CORAL_GIT_TAG "main")
     message(STATUS "O3DESharp Gem uses ${CORAL_GIT_REPO} (License: MIT)")
 
     set(coralLibraries Coral.Native)
@@ -311,6 +517,44 @@ ly_create_alias(NAME ${gem_name}.Clients.API NAMESPACE Gem TARGETS Gem::${gem_na
 ly_create_alias(NAME ${gem_name}.Servers.API NAMESPACE Gem TARGETS Gem::${gem_name}.API)
 ly_create_alias(NAME ${gem_name}.Unified.API NAMESPACE Gem TARGETS Gem::${gem_name}.API)
 
+# ============================================================
+# Deploy Coral and O3DE.Core files to launcher targets
+# ============================================================
+# Now that the launcher target aliases exist, we can deploy runtime files to them
+
+# Deploy Coral.Managed files if the staging target exists. Ships the
+# portable PDB alongside the DLL so external managed debuggers can
+# resolve sources for Coral methods (vsdbg / Rider / VS look for a
+# matching .pdb next to the .dll on attach; without it, stack frames
+# from Coral.Managed show `<unknown source>`).
+if(TARGET ${gem_name}.StageCoral)
+    ly_add_target_files(
+        TARGETS ${gem_name}.Clients ${gem_name}.Servers ${gem_name}.Unified
+        FILES
+            "${CORAL_STAGING_DIR}/Coral.Managed.dll"
+            "${CORAL_STAGING_DIR}/Coral.Managed.pdb"
+            "${CORAL_STAGING_DIR}/Coral.Managed.runtimeconfig.json"
+            "${CORAL_STAGING_DIR}/Coral.Managed.deps.json"
+        OUTPUT_SUBDIRECTORY "Bin/Scripts/Coral"
+    )
+    message(STATUS "O3DESharp: Coral will be deployed to Bin/Scripts/Coral/ for runtime and export")
+endif()
+
+# Deploy O3DE.Core files if the staging target exists. Includes the
+# PDB so external debuggers can step into O3DE.Core methods (Debugger,
+# Reflection, EBus, etc.) with source-level resolution.
+if(TARGET ${gem_name}.StageO3DECore)
+    ly_add_target_files(
+        TARGETS ${gem_name}.Clients ${gem_name}.Servers ${gem_name}.Unified
+        FILES
+            "${O3DE_CORE_STAGING_DIR}/O3DE.Core.dll"
+            "${O3DE_CORE_STAGING_DIR}/O3DE.Core.pdb"
+            "${O3DE_CORE_STAGING_DIR}/O3DE.Core.deps.json"
+        OUTPUT_SUBDIRECTORY "Bin/Scripts"
+    )
+    message(STATUS "O3DESharp: O3DE.Core will be deployed to Bin/Scripts/ for runtime and export")
+endif()
+
 # Add in CMake dependencies for each gem dependency listed in this gem's gem.json file
 # for the Clients, Servers and Unified gem variants
 o3de_add_variant_dependencies_for_gem_dependencies(GEM_NAME ${gem_name} VARIANTS Clients Servers Unified)
@@ -335,9 +579,16 @@ if(PAL_TRAIT_BUILD_HOST_TOOLS)
     # The ${gem_name}.Editor.Private.Object target is an internal target
     # which is only to be used by this gems CMakeLists.txt and any subdirectories
     # Other gems should not use this target
+    #
+    # AUTOMOC is enabled here because Phase 16's CSharpAssemblyWatcher uses
+    # Q_OBJECT (it owns a QFileSystemWatcher and connects to its signals via
+    # QObject::connect). The existing CSharpExposedPropertiesHandler only uses
+    # QWidget without Q_OBJECT, so AUTOMOC wasn't needed previously - but the
+    # new watcher trips MOC's "Q_OBJECT without moc'd output" error without it.
     ly_add_target(
         NAME ${gem_name}.Editor.Private.Object STATIC
         NAMESPACE Gem
+        AUTOMOC
         FILES_CMAKE
             o3desharp_editor_private_files.cmake
         TARGET_PROPERTIES
@@ -349,10 +600,22 @@ if(PAL_TRAIT_BUILD_HOST_TOOLS)
         BUILD_DEPENDENCIES
             PUBLIC
                 AZ::AzToolsFramework
+                AZ::AzQtComponents
                 ${gem_name}.Private.Object
                 Gem::Atom_Utils.Static
                 Gem::Atom_Feature_Common.Public
                 Gem::CommonFeaturesAtom.Static
+                # Needed for EditorPythonBindings::EditorPythonBindingsNotificationBus,
+                # which O3DESharpEditorSystemComponent connects to so its
+                # OnPostInitialize() hook can import csharp_editor_bootstrap as soon
+                # as the Python VM is ready (instead of waiting for the first menu
+                # click).
+                Gem::EditorPythonBindings.Static
+                # Phase 16: CSharpAssemblyWatcher uses QFileSystemWatcher / QTimer
+                # to debounce and react to Bin/Scripts/ changes. AzQtComponents
+                # already brings Qt6Widgets transitively, but listing Qt6::Core
+                # explicitly makes the dependency intent obvious.
+                3rdParty::Qt::Core
     )
 
     ly_add_target(
@@ -399,6 +662,26 @@ if(PAL_TRAIT_BUILD_HOST_TOOLS)
     # Add in CMake dependencies for each gem dependency listed in this gem's gem.json file
     # for the Tools and Builders gem variants
     o3de_add_variant_dependencies_for_gem_dependencies(GEM_NAME ${gem_name} VARIANTS Tools Builders)
+
+    # Deploy the C# Script component icons next to the Editor exe so the
+    # EditContext "Icon" / "ViewportIcon" attributes resolve. The editor
+    # warns "Unable to find icon path 'Icons/Components/csharp.svg' for
+    # component type: C# Script" otherwise, because SandboxIntegration
+    # searches paths relative to bin/<config>/ and the asset processor
+    # doesn't deploy these editor-time icons on its own.
+    get_property(gem_root_for_icons GLOBAL PROPERTY "@GEMROOT:${gem_name}@")
+    ly_add_target_files(
+        TARGETS ${gem_name}.Editor
+        FILES
+            "${gem_root_for_icons}/Assets/Editor/Icons/Components/csharp.svg"
+        OUTPUT_SUBDIRECTORY "Icons/Components"
+    )
+    ly_add_target_files(
+        TARGETS ${gem_name}.Editor
+        FILES
+            "${gem_root_for_icons}/Assets/Editor/Icons/Components/Viewport/csharp.svg"
+        OUTPUT_SUBDIRECTORY "Icons/Components/Viewport"
+    )
 endif()
 
 ################################################################################
@@ -458,6 +741,87 @@ if(PAL_TRAIT_BUILD_TESTS_SUPPORTED)
             ly_add_googletest(
                 NAME Gem::${gem_name}.Editor.Tests
             )
+        endif()
+    endif()
+
+    # ============================================================
+    # Python Binding Generator Tests
+    # ============================================================
+    # Add pytest tests for Python binding generator orchestration scripts
+    if(PAL_TRAIT_BUILD_HOST_TOOLS)
+        get_property(gem_root_for_python_tests GLOBAL PROPERTY "@GEMROOT:${gem_name}@")
+        set(PYTHON_TESTS_DIR "${gem_root_for_python_tests}/Editor/Tests")
+
+        if(EXISTS "${PYTHON_TESTS_DIR}/conftest.py")
+            # Create custom target to run Python tests with pytest
+            add_custom_target(${gem_name}.Tests.Python
+                COMMAND ${CMAKE_COMMAND} -E echo "Running O3DESharp Python tests..."
+                COMMAND pytest "${PYTHON_TESTS_DIR}" -v --tb=short
+                WORKING_DIRECTORY "${gem_root_for_python_tests}"
+                COMMENT "Running O3DESharp Python binding generator tests with pytest"
+                VERBATIM
+            )
+
+            # Add to test folder
+            set_property(TARGET ${gem_name}.Tests.Python PROPERTY FOLDER "${relative_o3desharp_gem_root}/Tests")
+
+            # Register with CTest if available
+            if(BUILD_TESTING)
+                add_test(
+                    NAME O3DESharp.Tests.Python
+                    COMMAND pytest "${PYTHON_TESTS_DIR}" -v --tb=short
+                    WORKING_DIRECTORY "${gem_root_for_python_tests}"
+                )
+                set_tests_properties(O3DESharp.Tests.Python PROPERTIES
+                    LABELS "python;bindings;unit"
+                    TIMEOUT 300
+                )
+            endif()
+
+            message(STATUS "O3DESharp: Python tests target created (run with: cmake --build . --target ${gem_name}.Tests.Python)")
+        else()
+            message(STATUS "O3DESharp: Python tests not found at ${PYTHON_TESTS_DIR}")
+        endif()
+    endif()
+
+    # ============================================================
+    # C# Binding Generator Tests
+    # ============================================================
+    # Add xUnit tests for ClangSharp binding generator tool
+    if(PAL_TRAIT_BUILD_HOST_TOOLS)
+        get_property(gem_root_for_csharp_tests GLOBAL PROPERTY "@GEMROOT:${gem_name}@")
+        set(CSHARP_TESTS_DIR "${gem_root_for_csharp_tests}/Code/Tools/BindingGenerator.Tests")
+
+        if(EXISTS "${CSHARP_TESTS_DIR}/BindingGenerator.Tests.csproj")
+            # Create custom target to run C# tests with dotnet test
+            add_custom_target(${gem_name}.Tests.BindingGenerator
+                COMMAND ${CMAKE_COMMAND} -E echo "Running O3DESharp C# Binding Generator tests..."
+                COMMAND ${DOTNET_EXECUTABLE} test "${CSHARP_TESTS_DIR}/BindingGenerator.Tests.csproj" --verbosity normal
+                WORKING_DIRECTORY "${CSHARP_TESTS_DIR}"
+                COMMENT "Running O3DESharp ClangSharp binding generator tests with xUnit"
+                DEPENDS O3DESharp.BindingGenerator
+                VERBATIM
+            )
+
+            # Add to test folder
+            set_property(TARGET ${gem_name}.Tests.BindingGenerator PROPERTY FOLDER "${relative_o3desharp_gem_root}/Tests")
+
+            # Register with CTest if available
+            if(BUILD_TESTING)
+                add_test(
+                    NAME O3DESharp.Tests.BindingGenerator
+                    COMMAND ${DOTNET_EXECUTABLE} test "${CSHARP_TESTS_DIR}/BindingGenerator.Tests.csproj" --verbosity normal
+                    WORKING_DIRECTORY "${CSHARP_TESTS_DIR}"
+                )
+                set_tests_properties(O3DESharp.Tests.BindingGenerator PROPERTIES
+                    LABELS "csharp;bindings;unit"
+                    TIMEOUT 600
+                )
+            endif()
+
+            message(STATUS "O3DESharp: C# Binding Generator tests target created (run with: cmake --build . --target ${gem_name}.Tests.BindingGenerator)")
+        else()
+            message(STATUS "O3DESharp: C# Binding Generator tests not found at ${CSHARP_TESTS_DIR}")
         endif()
     endif()
 endif()

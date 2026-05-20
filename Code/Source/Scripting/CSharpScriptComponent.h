@@ -14,12 +14,16 @@
 #include <AzCore/Component/TickBus.h>
 #include <AzCore/Component/TransformBus.h>
 #include <AzCore/std/string/string.h>
+#include <AzCore/std/containers/unordered_map.h>
 #include <AzCore/RTTI/RTTI.h>
 #include <AzCore/Memory/SystemAllocator.h>
 #include <AzCore/Serialization/SerializeContext.h>
 #include <AzCore/Serialization/EditContext.h>
 
 #include <Coral/ManagedObject.hpp>
+
+#include <O3DESharp/O3DESharpHotReloadBus.h>
+#include <O3DESharp/O3DESharpExposedPropertyBus.h>
 
 namespace O3DESharp
 {
@@ -48,6 +52,19 @@ namespace O3DESharp
          * If empty, uses the default user assembly
          */
         AZStd::string m_assemblyPath;
+
+        /**
+         * Values for the script's [ExposedProperty]-decorated public fields,
+         * keyed by the C# field/property name. The values are stored as
+         * strings and parsed back into the field type on the managed side -
+         * see O3DE.ExposedPropertyHelpers in O3DE.Core.
+         *
+         * Edits in the inspector populate this map; CSharpScriptComponent::
+         * Activate serializes it to JSON and hands it to the managed
+         * instance via ScriptComponent::ApplyExposedProperties before
+         * OnCreate runs.
+         */
+        AZStd::unordered_map<AZStd::string, AZStd::string> m_exposedPropertyValues;
     };
 
     /**
@@ -90,6 +107,8 @@ namespace O3DESharp
         : public AZ::Component
         , public AZ::TickBus::Handler
         , public AZ::TransformNotificationBus::Handler
+        , public O3DESharpHotReloadNotificationBus::Handler
+        , public O3DESharpExposedPropertyNotificationBus::Handler
     {
     public:
         AZ_COMPONENT(CSharpScriptComponent, "{05918223-7DEF-48F6-8963-53BA48371E1D}");
@@ -157,6 +176,18 @@ namespace O3DESharp
         // AZ::TransformNotificationBus::Handler
         void OnTransformChanged(const AZ::Transform& local, const AZ::Transform& world) override;
 
+        // O3DESharpHotReloadNotificationBus::Handler - tear down + rebuild the
+        // managed instance around a Coral assembly-context reload so we don't
+        // dereference stale handles. See O3DESharpHotReloadBus.h.
+        void OnBeforeUserAssemblyReload() override;
+        void OnAfterUserAssemblyReload() override;
+
+        // O3DESharpExposedPropertyNotificationBus::Handler - inspector edits
+        // during Game Mode reach the running script via this bus. See
+        // O3DESharpExposedPropertyBus.h for the editor-side trigger.
+        void OnExposedPropertyChanged(
+            const AZStd::unordered_map<AZStd::string, AZStd::string>& newValues) override;
+
     private:
         /**
          * Create the managed script instance from the configured class name
@@ -173,6 +204,29 @@ namespace O3DESharp
          */
         void SetEntityIdOnScript();
 
+        /**
+         * Serialize CSharpScriptComponentConfig::m_exposedPropertyValues to JSON
+         * and hand it to the managed instance via ScriptComponent::ApplyExposedProperties.
+         * Called once per managed-instance lifetime, between SetEntityIdOnScript
+         * and OnCreate, so user code in OnCreate sees the editor-configured values.
+         * No-op if the map is empty or the instance is invalid.
+         */
+        void PushExposedPropertiesToScript();
+
+    private:
+        // Invoke a managed method, catching any exception thrown across the
+        // interop boundary. If a script's lifecycle method throws (e.g. an
+        // unhandled NullReferenceException in OnUpdate), this disables the
+        // component instead of re-throwing every frame. The first exception
+        // is logged via AZ_Error; subsequent ones are dropped silently.
+        void SafeInvokeMethod(const char* methodName) noexcept;
+        void SafeInvokeMethod(const char* methodName, float deltaTime) noexcept;
+
+        // Once a managed exception has propagated out of a lifecycle hook we
+        // detach from TickBus and treat the component as inert. This avoids
+        // the "every entity throws once per frame in Release" failure mode.
+        void DisableAfterUnhandledException(const char* methodName, const char* what);
+
     private:
         CSharpScriptComponentConfig m_config;
 
@@ -187,6 +241,10 @@ namespace O3DESharp
 
         // Flag to prevent re-entrant activation
         bool m_isActivating = false;
+
+        // Set after an unhandled exception in a lifecycle hook. Once true the
+        // component stops dispatching to the managed instance.
+        bool m_disabledByException = false;
     };
 
     // Template implementations
