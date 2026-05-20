@@ -10,9 +10,17 @@
 
 #include <AzCore/Component/ComponentApplicationBus.h>
 #include <AzCore/Console/ILogger.h>
+#include <AzCore/Math/Vector2.h>
 #include <AzCore/Math/Vector3.h>
+#include <AzCore/Math/Vector4.h>
 #include <AzCore/Math/Quaternion.h>
 #include <AzCore/Math/Transform.h>
+#include <AzCore/Math/Color.h>
+#include <AzCore/Math/Aabb.h>
+#include <AzCore/Math/Matrix3x3.h>
+#include <AzCore/Math/Matrix4x4.h>
+#include <AzCore/Math/Crc.h>
+#include <AzCore/Math/Uuid.h>
 #include <AzCore/Component/EntityId.h>
 #include <AzCore/JSON/rapidjson.h>
 #include <AzCore/JSON/document.h>
@@ -20,6 +28,12 @@
 #include <AzCore/JSON/writer.h>
 #include <AzCore/std/parallel/mutex.h>
 #include <AzCore/std/containers/unordered_map.h>
+#include <AzCore/std/smart_ptr/unique_ptr.h>
+#include <AzCore/std/smart_ptr/make_shared.h>
+#include <AzCore/RTTI/BehaviorContext.h>
+
+#include <Scripting/CoralHostManager.h>
+#include <Coral/Type.hpp>
 
 #include <Coral/Assembly.hpp>
 
@@ -871,6 +885,12 @@ namespace O3DESharp
 
         // EBus
         assembly->AddInternalCall("O3DE.Reflection.ReflectionInternalCalls", "Reflection_BroadcastEBusEvent", reinterpret_cast<void*>(&GenericDispatcherInternalCalls::BroadcastEBusEvent));
+
+        // Phase 18-E2: managed EBus handler authoring. RegisterEBusHandler
+        // spins up a BehaviorEBusHandler with a generic hook that forwards
+        // every event back into managed via Coral.
+        assembly->AddInternalCall("O3DE.Reflection.ReflectionInternalCalls", "Reflection_RegisterEBusHandler", reinterpret_cast<void*>(&GenericDispatcherInternalCalls::RegisterEBusHandler));
+        assembly->AddInternalCall("O3DE.Reflection.ReflectionInternalCalls", "Reflection_UnregisterEBusHandler", reinterpret_cast<void*>(&GenericDispatcherInternalCalls::UnregisterEBusHandler));
         assembly->AddInternalCall("O3DE.Reflection.ReflectionInternalCalls", "Reflection_SendEBusEvent", reinterpret_cast<void*>(&GenericDispatcherInternalCalls::SendEBusEvent));
 
         // Object lifecycle
@@ -1264,8 +1284,93 @@ namespace O3DESharp
         Coral::String GetGlobalProperty(Coral::String propertyName);
         bool SetGlobalProperty(Coral::String propertyName, Coral::String valueJson);
 
+        // Phase 18-E2: managed EBus handler bridge entry points.
+        int64_t RegisterEBusHandler(Coral::String busName, uint64_t address, int64_t managedToken);
+        void UnregisterEBusHandler(int64_t managedToken);
+
         namespace
         {
+            // Storage requirements for a reflected BehaviorContext type.
+            // BehaviorMethod::Call(result*) writes the return value
+            // through result->m_value via operator=, which assumes
+            // m_value already points at storage sized to fit the actual
+            // return type. A default-constructed BehaviorArgument has
+            // m_value == nullptr, so the first dispatcher that tries
+            // to write into it crashes with a null-deref. Phase 18-A's
+            // result-marshal path now allocates storage explicitly,
+            // and this helper is how we know how much to allocate.
+            struct ResultStorageRequirements
+            {
+                size_t size = 0;
+                size_t alignment = 0;
+            };
+
+            // Returns size + alignment for any TypeId BehaviorContext
+            // can return. Hardcoded primitive table first because
+            // primitives are not always registered as BehaviorClasses;
+            // falls back to ctx->m_typeToClassMap for everything
+            // user-reflected. Returns {0, 0} only for types neither
+            // we nor BehaviorContext recognize - the caller fails
+            // the dispatch with a clear error in that case rather than
+            // guess at a fallback size.
+            static ResultStorageRequirements ComputeResultStorageRequirements(
+                const AZ::Uuid& typeId, AZ::BehaviorContext* ctx)
+            {
+                ResultStorageRequirements r;
+                auto match = [&](const AZ::Uuid& t, size_t sz, size_t al)
+                {
+                    if (typeId == t) { r.size = sz; r.alignment = al; return true; }
+                    return false;
+                };
+
+                // Primitives - shape mirrors BehaviorContextMarshaling.cpp.
+                if (match(azrtti_typeid<bool>(),    sizeof(bool),    alignof(bool)))    return r;
+                if (match(azrtti_typeid<AZ::s8>(),  sizeof(AZ::s8),  alignof(AZ::s8)))  return r;
+                if (match(azrtti_typeid<AZ::u8>(),  sizeof(AZ::u8),  alignof(AZ::u8)))  return r;
+                if (match(azrtti_typeid<AZ::s16>(), sizeof(AZ::s16), alignof(AZ::s16))) return r;
+                if (match(azrtti_typeid<AZ::u16>(), sizeof(AZ::u16), alignof(AZ::u16))) return r;
+                if (match(azrtti_typeid<AZ::s32>(), sizeof(AZ::s32), alignof(AZ::s32))) return r;
+                if (match(azrtti_typeid<AZ::u32>(), sizeof(AZ::u32), alignof(AZ::u32))) return r;
+                if (match(azrtti_typeid<AZ::s64>(), sizeof(AZ::s64), alignof(AZ::s64))) return r;
+                if (match(azrtti_typeid<AZ::u64>(), sizeof(AZ::u64), alignof(AZ::u64))) return r;
+                if (match(azrtti_typeid<float>(),   sizeof(float),   alignof(float)))   return r;
+                if (match(azrtti_typeid<double>(),  sizeof(double),  alignof(double)))  return r;
+
+                // O3DE math + identifier types - all trivially
+                // copyable, so operator= into zero-initialised
+                // storage is safe.
+                if (match(azrtti_typeid<AZ::Vector2>(),    sizeof(AZ::Vector2),    alignof(AZ::Vector2)))    return r;
+                if (match(azrtti_typeid<AZ::Vector3>(),    sizeof(AZ::Vector3),    alignof(AZ::Vector3)))    return r;
+                if (match(azrtti_typeid<AZ::Vector4>(),    sizeof(AZ::Vector4),    alignof(AZ::Vector4)))    return r;
+                if (match(azrtti_typeid<AZ::Quaternion>(), sizeof(AZ::Quaternion), alignof(AZ::Quaternion))) return r;
+                if (match(azrtti_typeid<AZ::Color>(),      sizeof(AZ::Color),      alignof(AZ::Color)))      return r;
+                if (match(azrtti_typeid<AZ::Aabb>(),       sizeof(AZ::Aabb),       alignof(AZ::Aabb)))       return r;
+                if (match(azrtti_typeid<AZ::Matrix3x3>(),  sizeof(AZ::Matrix3x3),  alignof(AZ::Matrix3x3)))  return r;
+                if (match(azrtti_typeid<AZ::Matrix4x4>(),  sizeof(AZ::Matrix4x4),  alignof(AZ::Matrix4x4)))  return r;
+                if (match(azrtti_typeid<AZ::Transform>(),  sizeof(AZ::Transform),  alignof(AZ::Transform)))  return r;
+                if (match(azrtti_typeid<AZ::EntityId>(),   sizeof(AZ::EntityId),   alignof(AZ::EntityId)))   return r;
+                if (match(azrtti_typeid<AZ::Crc32>(),      sizeof(AZ::Crc32),      alignof(AZ::Crc32)))      return r;
+                if (match(azrtti_typeid<AZ::Uuid>(),       sizeof(AZ::Uuid),       alignof(AZ::Uuid)))       return r;
+
+                // Strings and user-reflected types we look up in the
+                // BehaviorContext registry. Note non-trivial types
+                // (AZStd::string) will need destructor-after-marshal
+                // tracking when we add return-marshaling for them;
+                // for now, this branch is reached only for trivially
+                // copyable user POD types reflected with size in
+                // BehaviorClass.
+                if (ctx != nullptr)
+                {
+                    auto it = ctx->m_typeToClassMap.find(typeId);
+                    if (it != ctx->m_typeToClassMap.end() && it->second != nullptr)
+                    {
+                        r.size = it->second->m_size;
+                        r.alignment = it->second->m_alignment;
+                    }
+                }
+                return r;
+            }
+
             // Phase 18-A: shared helper used by BroadcastEBusEvent and
             // SendEBusEvent. Both flows look up the bus + event, marshal
             // args, dispatch through the BehaviorMethod, marshal the
@@ -1416,6 +1521,12 @@ namespace O3DESharp
 
                 AZ::BehaviorArgument result;
                 const bool hasReturn = method->HasResult();
+
+                // Heap fallback for return values that don't fit in
+                // BehaviorArgument::m_tempData (a 32-byte static
+                // buffer). Sized below once we know the return type.
+                AZStd::vector<AZ::u8> resultHeapBuffer;
+
                 if (hasReturn)
                 {
                     // Pre-populate the result BehaviorArgument's type
@@ -1431,12 +1542,71 @@ namespace O3DESharp
                     //   "result marshal: unsupported return type 0x{00000000-...}"
                     // even though the storage actually does contain the
                     // float result.
-                    if (const auto* resultParam = method->GetResult())
+                    const AZ::BehaviorParameter* resultParam = method->GetResult();
+                    if (resultParam == nullptr)
                     {
-                        result.m_typeId = resultParam->m_typeId;
-                        result.m_name = resultParam->m_name;
-                        result.m_traits = resultParam->m_traits;
+                        return makeError(
+                            "method '%s.%s' has HasResult()==true but GetResult() returned null",
+                            busNameStr.c_str(), eventNameStr.c_str());
                     }
+                    result.m_typeId = resultParam->m_typeId;
+                    result.m_name = resultParam->m_name;
+                    result.m_traits = resultParam->m_traits;
+                    result.m_azRtti = resultParam->m_azRtti;
+
+                    // Allocate storage for the return value. Without
+                    // this step the dispatcher's operator= path
+                    // (AZ::SetResult::Set in BehaviorContext.h) writes
+                    // to result.m_value, which is null on a default-
+                    // constructed BehaviorArgument - crash inside
+                    // AzCore.dll instead of a clean error here.
+                    const auto storage = ComputeResultStorageRequirements(
+                        resultParam->m_typeId, behaviorContext);
+                    if (storage.size == 0)
+                    {
+                        return makeError(
+                            "result type 0x%s for '%s.%s' has unknown storage requirements; "
+                            "neither a primitive nor a reflected BehaviorClass",
+                            resultParam->m_typeId.ToString<AZStd::string>().c_str(),
+                            busNameStr.c_str(), eventNameStr.c_str());
+                    }
+
+                    if (storage.size <= 32)
+                    {
+                        // Fits in BehaviorArgument's inline 32-byte
+                        // m_tempData buffer - free path, no heap.
+                        result.m_value = result.m_tempData.allocate(
+                            storage.size, storage.alignment, /*flags*/ 0);
+                    }
+                    else
+                    {
+                        // Heap fallback for AZ::Matrix3x3 / Matrix4x4 /
+                        // Transform / large user types. Over-allocate
+                        // by alignment so we can align up inside the
+                        // buffer; resultHeapBuffer outlives the Call
+                        // so the storage stays valid through the
+                        // marshal-to-JSON step below.
+                        resultHeapBuffer.resize(storage.size + storage.alignment);
+                        result.m_value = AZ::PointerAlignUp(
+                            resultHeapBuffer.data(), storage.alignment);
+                    }
+                    if (result.m_value == nullptr)
+                    {
+                        return makeError(
+                            "result storage allocation returned null for type 0x%s ('%s.%s', size=%zu align=%zu)",
+                            resultParam->m_typeId.ToString<AZStd::string>().c_str(),
+                            busNameStr.c_str(), eventNameStr.c_str(),
+                            storage.size, storage.alignment);
+                    }
+
+                    // Zero the buffer so a result-bus event with no
+                    // connected handlers (the dispatcher skips writing
+                    // in that case) marshals back a deterministic
+                    // zero value instead of stack garbage. For trivially
+                    // copyable types (every primitive + every math type
+                    // in the table above), zero is a valid initial state
+                    // that operator= can safely overwrite.
+                    memset(result.m_value, 0, storage.size);
                 }
                 const bool ok = method->Call(
                     flatArgs.data(),
@@ -1567,6 +1737,179 @@ namespace O3DESharp
             // singleton (via s_dispatcherInstance) and the handle space
             // doesn't need to be per-context.
             static InstanceHandleTable s_instanceTable;
+
+            // ============================================================
+            // Phase 18-E2: Managed EBus handler bridge.
+            // ============================================================
+            // A ManagedEBusProxy wraps an AZ::BehaviorEBusHandler bound to
+            // a specific bus and forwards every event the bus fires back
+            // into managed code via Coral. The managed side keys events
+            // by an opaque int64 token (the value
+            // EBusHandlerRegistry.Register handed out); when an event
+            // fires here, we marshal the event's BehaviorArguments into
+            // a JSON args array, then invoke
+            // O3DE.Reflection.EBusHandlerRegistry.DispatchEvent(token,
+            // eventName, argsJson) through Coral's Coral::Type::
+            // InvokeStaticMethod with the token as the first parameter.
+            //
+            // Lifecycle:
+            //   - RegisterEBusHandler(busName, address, token):
+            //       1. Look up bus in BehaviorContext.
+            //       2. Call bus->m_createHandler to spawn a
+            //          BehaviorEBusHandler.
+            //       3. For each event on the handler, InstallGenericHook
+            //          with our ForwardEvent thunk.
+            //       4. Connect to the bus (with address for addressed
+            //          buses, no-arg for broadcast-only).
+            //       5. Stash the proxy in s_managedHandlers keyed by
+            //          token.
+            //   - UnregisterEBusHandler(token):
+            //       1. Look up the proxy.
+            //       2. Disconnect from bus.
+            //       3. Call bus->m_destroyHandler to free.
+            //       4. Erase from s_managedHandlers.
+            //
+            // Mirrors EditorPythonBindings' PythonProxyBus pattern -
+            // we essentially have a "managed proxy bus" indexed by the
+            // managed token rather than a Python object.
+            struct ManagedEBusProxy
+            {
+                AZ::BehaviorEBus* bus = nullptr;
+                AZ::BehaviorEBusHandler* handler = nullptr;
+                int64_t managedToken = 0;
+            };
+
+            class ManagedHandlerTable
+            {
+            public:
+                bool Register(int64_t token, AZStd::unique_ptr<ManagedEBusProxy> proxy)
+                {
+                    AZStd::lock_guard<AZStd::mutex> lock(m_mutex);
+                    if (m_entries.find(token) != m_entries.end()) return false;
+                    m_entries.emplace(token, AZStd::move(proxy));
+                    return true;
+                }
+
+                AZStd::unique_ptr<ManagedEBusProxy> Release(int64_t token)
+                {
+                    AZStd::lock_guard<AZStd::mutex> lock(m_mutex);
+                    auto it = m_entries.find(token);
+                    if (it == m_entries.end()) return nullptr;
+                    auto proxy = AZStd::move(it->second);
+                    m_entries.erase(it);
+                    return proxy;
+                }
+
+                void Clear()
+                {
+                    AZStd::lock_guard<AZStd::mutex> lock(m_mutex);
+                    m_entries.clear();
+                }
+
+                size_t Size() const
+                {
+                    AZStd::lock_guard<AZStd::mutex> lock(m_mutex);
+                    return m_entries.size();
+                }
+
+            private:
+                mutable AZStd::mutex m_mutex;
+                AZStd::unordered_map<int64_t, AZStd::unique_ptr<ManagedEBusProxy>> m_entries;
+            };
+
+            static ManagedHandlerTable s_managedHandlers;
+
+            // The generic hook for every event on a managed handler.
+            // userData carries the managed token (encoded as void* via
+            // a uintptr_t cast - tokens are int64 so this fits in a
+            // pointer on 64-bit platforms; on 32-bit we'd need to box).
+            //
+            // The hook receives the AZ::BehaviorArguments for the
+            // event - we marshal them into a JSON array via the
+            // existing BehaviorArgumentToJsonValue helper, then call
+            // back into managed via the static method
+            //   O3DE.Reflection.EBusHandlerRegistry.DispatchEvent
+            // The managed side returns a JSON envelope (an "ok" / "error"
+            // / "result" object) which we currently ignore - the
+            // existing bus dispatch flow has no slot for handler-
+            // returned results since each handler returns independently
+            // and the bus aggregates them. Future Phase 18-E3 could
+            // wire this up for ResultEBus dispatches.
+            void ForwardEventToManaged(
+                void* userData,
+                const char* eventName,
+                int eventIndex,
+                AZ::BehaviorArgument* /*result*/,
+                int numParameters,
+                AZ::BehaviorArgument* parameters)
+            {
+                AZ_UNUSED(eventIndex);
+                const int64_t token = static_cast<int64_t>(reinterpret_cast<uintptr_t>(userData));
+                if (token == 0) return;
+
+                // Build the args JSON array. Each parameter goes through
+                // BehaviorArgumentToJsonValue which handles all the
+                // primitive + math marshaling we've already shipped.
+                rapidjson::Document argsDoc;
+                argsDoc.SetArray();
+                for (int i = 0; i < numParameters; ++i)
+                {
+                    rapidjson::Value v;
+                    AZStd::string marshalErr;
+                    if (!Marshaling::BehaviorArgumentToJsonValue(
+                            parameters[i], v, argsDoc.GetAllocator(), marshalErr))
+                    {
+                        AZ_Warning("O3DESharp", false,
+                            "ForwardEventToManaged('%s'): arg[%d] marshal failed: %s - skipping handler call",
+                            eventName, i, marshalErr.c_str());
+                        return;
+                    }
+                    argsDoc.PushBack(v, argsDoc.GetAllocator());
+                }
+
+                rapidjson::StringBuffer buffer;
+                rapidjson::Writer<rapidjson::StringBuffer> writer(buffer);
+                argsDoc.Accept(writer);
+                const char* argsJson = buffer.GetString();
+
+                // Invoke EBusHandlerRegistry.DispatchEvent via Coral.
+                // We need the CoralHostManager to resolve the static
+                // method; if it's not available (gem teardown), the
+                // event is dropped (logged at the warning level).
+                ICoralHostManager* hostMgr = CoralHostManagerInterface::Get();
+                if (hostMgr == nullptr)
+                {
+                    AZ_Warning("O3DESharp", false,
+                        "ForwardEventToManaged('%s'): CoralHostManager unavailable; dropping event",
+                        eventName);
+                    return;
+                }
+                Coral::Type* registryType = hostMgr->GetCoreType("O3DE.Reflection.EBusHandlerRegistry");
+                if (registryType == nullptr)
+                {
+                    AZ_Warning("O3DESharp", false,
+                        "ForwardEventToManaged('%s'): O3DE.Reflection.EBusHandlerRegistry type not found; dropping event",
+                        eventName);
+                    return;
+                }
+                // DispatchEvent(long token, string eventName, string argsJson) -> string?
+                // Coral::Type::InvokeStaticMethod marshals string + long
+                // arguments via its built-in primitive support.
+                Coral::ScopedString eventNameStr = Coral::String::New(eventName);
+                Coral::ScopedString argsJsonStr = Coral::String::New(argsJson);
+                try
+                {
+                    registryType->InvokeStaticMethod(
+                        "DispatchEvent", token, eventNameStr, argsJsonStr);
+                }
+                catch (...)
+                {
+                    AZ_Warning("O3DESharp", false,
+                        "ForwardEventToManaged('%s'): exception from managed DispatchEvent; "
+                        "event dropped",
+                        eventName);
+                }
+            }
 
             // Phase 18-B: factor the "marshal args, call, marshal result"
             // tail of DispatchEBusEvent into a reusable helper so the
@@ -2259,6 +2602,170 @@ namespace O3DESharp
                 // mutex so a re-entrant call from a destructor doesn't
                 // self-deadlock.
             s_dispatcherInstance->DestroyInstance(entry.className.c_str(), entry.address);
+        }
+
+        // ========================================================
+        // Phase 18-E2: Managed EBus handler registration.
+        // ========================================================
+        // Wired into the C# side as ReflectionInternalCalls.
+        //   Reflection_RegisterEBusHandler / Reflection_UnregisterEBusHandler
+
+        int64_t RegisterEBusHandler(Coral::String busName, uint64_t address, int64_t managedToken)
+        {
+            if (managedToken == 0)
+            {
+                return 0;
+            }
+            auto* ctx = GetBehaviorContext();
+            if (ctx == nullptr)
+            {
+                AZ_Warning("O3DESharp", false,
+                    "RegisterEBusHandler(token=%lld): no BehaviorContext available",
+                    static_cast<long long>(managedToken));
+                return 0;
+            }
+
+            std::string busNameStr(busName);
+            auto busIt = ctx->m_ebuses.find(busNameStr.c_str());
+            if (busIt == ctx->m_ebuses.end())
+            {
+                AZ_Warning("O3DESharp", false,
+                    "RegisterEBusHandler(token=%lld): bus '%s' not reflected in BehaviorContext",
+                    static_cast<long long>(managedToken), busNameStr.c_str());
+                return 0;
+            }
+            AZ::BehaviorEBus* bus = busIt->second;
+
+            if (bus->m_createHandler == nullptr || bus->m_destroyHandler == nullptr)
+            {
+                AZ_Warning("O3DESharp", false,
+                    "RegisterEBusHandler(token=%lld): bus '%s' has no handler factory "
+                    "(not all buses are reflected with handler support; only those that "
+                    "explicitly call .Handler<HandlerT>() in their Reflect can be implemented "
+                    "in script)",
+                    static_cast<long long>(managedToken), busNameStr.c_str());
+                return 0;
+            }
+
+            // Spawn the BehaviorEBusHandler via the bus's factory.
+            // m_createHandler is a BehaviorMethod*; its return type is
+            // a BehaviorEBusHandler*. Call with no args.
+            AZ::BehaviorArgument handlerResult;
+            if (const auto* resultParam = bus->m_createHandler->GetResult())
+            {
+                handlerResult.m_typeId = resultParam->m_typeId;
+                handlerResult.m_traits = resultParam->m_traits;
+            }
+            if (!bus->m_createHandler->Call(nullptr, 0, &handlerResult))
+            {
+                AZ_Warning("O3DESharp", false,
+                    "RegisterEBusHandler(token=%lld): bus '%s' m_createHandler->Call returned false",
+                    static_cast<long long>(managedToken), busNameStr.c_str());
+                return 0;
+            }
+            AZ::BehaviorEBusHandler* handler =
+                *reinterpret_cast<AZ::BehaviorEBusHandler**>(handlerResult.m_value);
+            if (handler == nullptr)
+            {
+                AZ_Warning("O3DESharp", false,
+                    "RegisterEBusHandler(token=%lld): bus '%s' factory returned null handler",
+                    static_cast<long long>(managedToken), busNameStr.c_str());
+                return 0;
+            }
+
+            // Install our generic hook on every event the handler
+            // exposes. userData carries the managed token (cast via
+            // uintptr_t since BehaviorEBusHandler typedefs userData
+            // as void*).
+            void* userData = reinterpret_cast<void*>(static_cast<uintptr_t>(managedToken));
+            for (const auto& evt : handler->GetEvents())
+            {
+                if (!handler->InstallGenericHook(
+                        evt.m_name, &ForwardEventToManaged, userData))
+                {
+                    AZ_Warning("O3DESharp", false,
+                        "RegisterEBusHandler(token=%lld): InstallGenericHook failed for event '%s' on bus '%s'",
+                        static_cast<long long>(managedToken), evt.m_name, busNameStr.c_str());
+                    // Continue with the other events - partial hook
+                    // installation is still useful.
+                }
+            }
+
+            // Connect. For addressed buses we synthesize a
+            // BehaviorArgument carrying the address; for broadcast-
+            // only buses we pass nullptr.
+            //
+            // The static_cast disambiguates between
+            //   virtual bool Connect(BehaviorArgument* id = nullptr)
+            // and the sibling
+            //   template<typename BusId> bool Connect(BusId id)
+            // which otherwise wins overload resolution on a bare
+            // `nullptr` (exact-match deduction beats the pointer
+            // conversion) and tries to instantiate AzTypeInfo on
+            // nullptr_t.
+            bool connected = false;
+            if (address != 0)
+            {
+                // Synthesize the address argument. We currently support
+                // EntityId-shaped addresses (the most common case) and
+                // u64 raw handles. Other address types (Crc32, strings)
+                // need their own marshaling path - tracked as Phase
+                // 18-E3 follow-up.
+                AZ::BehaviorArgument addressArg;
+                AZ::EntityId entityId(address);
+                addressArg.Set<AZ::EntityId>(&entityId);
+                connected = handler->Connect(&addressArg);
+            }
+            else
+            {
+                connected = handler->Connect(static_cast<AZ::BehaviorArgument*>(nullptr));
+            }
+            if (!connected)
+            {
+                AZ_Warning("O3DESharp", false,
+                    "RegisterEBusHandler(token=%lld): handler->Connect returned false for bus '%s'",
+                    static_cast<long long>(managedToken), busNameStr.c_str());
+                bus->m_destroyHandler->Call(&handlerResult, 1, nullptr);
+                return 0;
+            }
+
+            // Register in the managed-handler table so Unregister can
+            // find it and disconnect cleanly.
+            auto proxy = AZStd::make_unique<ManagedEBusProxy>();
+            proxy->bus = bus;
+            proxy->handler = handler;
+            proxy->managedToken = managedToken;
+            if (!s_managedHandlers.Register(managedToken, AZStd::move(proxy)))
+            {
+                AZ_Warning("O3DESharp", false,
+                    "RegisterEBusHandler(token=%lld): duplicate token; rolling back",
+                    static_cast<long long>(managedToken));
+                handler->Disconnect();
+                bus->m_destroyHandler->Call(&handlerResult, 1, nullptr);
+                return 0;
+            }
+
+            // Return a non-zero confirmation handle. We return the
+            // token itself; the C# side just checks != 0.
+            return managedToken;
+        }
+
+        void UnregisterEBusHandler(int64_t managedToken)
+        {
+            if (managedToken == 0) return;
+            auto proxy = s_managedHandlers.Release(managedToken);
+            if (proxy == nullptr) return;
+
+            if (proxy->handler != nullptr)
+            {
+                proxy->handler->Disconnect();
+                if (proxy->bus != nullptr && proxy->bus->m_destroyHandler != nullptr)
+                {
+                    AZ::BehaviorArgument handlerArg;
+                    handlerArg.Set<AZ::BehaviorEBusHandler*>(&proxy->handler);
+                    proxy->bus->m_destroyHandler->Call(&handlerArg, 1, nullptr);
+                }
+            }
         }
     }
 

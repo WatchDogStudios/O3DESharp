@@ -362,6 +362,15 @@ namespace O3DESharp
         // Object lifecycle
         int64_t CreateInstance(Coral::String className, Coral::String argsJson);
         void DestroyInstance(Coral::String className, int64_t instanceHandle);
+
+        // Phase 18-E2: managed EBus handler bridge entry points.
+        // RegisterEBusHandler installs a generic hook on every event of the
+        // named bus and routes the dispatch back to managed code via the
+        // EBusHandlerRegistry, keyed by the caller-supplied managedToken.
+        // Returns a native handle that UnregisterEBusHandler must later
+        // release (0 on failure). 'address' is ignored for singleton buses.
+        int64_t RegisterEBusHandler(Coral::String busName, uint64_t address, int64_t managedToken);
+        void UnregisterEBusHandler(int64_t managedToken);
     }
 
 } // namespace O3DESharp

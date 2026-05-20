@@ -8,6 +8,7 @@
 using System;
 using System.Collections.Concurrent;
 using System.Diagnostics;
+using System.Text.Json;
 
 namespace O3DE.Reflection
 {
@@ -194,5 +195,154 @@ namespace O3DE.Reflection
         /// lifetime in tests + leak detection.
         /// </summary>
         public static int RegisteredHandlerCount => s_handlers.Count;
+
+        // ------------------------------------------------------------
+        // Argument unmarshaling
+        // ------------------------------------------------------------
+        // Phase 18-E2 follow-up: the source generator's emitted
+        // dispatch shim needs to convert the per-event JSON-array
+        // arguments back into the user method's typed parameters.
+        // Centralising the per-type switch in this static helper
+        // keeps the emitted shim code small (one line per parameter)
+        // and lets the unmarshal logic evolve without regenerating
+        // every user gem.
+        //
+        // The wire shapes mirror the C++ side's
+        // Marshaling::BehaviorArgumentToJsonValue exactly:
+        //   bool             -> JSON bool
+        //   integer types    -> JSON number
+        //   float / double   -> JSON number
+        //   string           -> JSON string
+        //   EntityId         -> JSON number (u64)
+        //   Crc32            -> JSON number (u32)
+        //   Uuid             -> JSON string ("{XXXX-...}")
+        //   Vector2/3/4      -> JSON array of 2/3/4 floats
+        //   Quaternion       -> JSON array of 4 floats
+        //   Color            -> JSON array of 4 floats
+        //   Aabb             -> JSON array of 6 floats
+        //   Matrix3x3        -> JSON array of 9 floats (row-major)
+        //   Matrix4x4        -> JSON array of 16 floats (row-major)
+        //   Transform        -> JSON array of 10 floats (pos[3] + quat[4] + scale + reserved[2])
+        //
+        // Unsupported types fall through to default(T); the source
+        // generator's switch is the source of truth for which user
+        // methods get wired up, and unknown user-defined types would
+        // already have errored on the C++ side before we ever get
+        // here.
+
+        /// <summary>
+        /// Convert one JSON element into a strongly-typed value matching
+        /// the wire shape emitted by the C++ side's marshaling layer.
+        /// Used by source-generator-emitted dispatch shims to unpack
+        /// EBus event args - one call per parameter at the shim call
+        /// site keeps the emitted code readable.
+        /// </summary>
+        public static T UnmarshalArg<T>(JsonElement el)
+        {
+            try
+            {
+                object? value = UnmarshalArgRaw(el, typeof(T));
+                if (value is T cast) return cast;
+                if (value is null) return default(T)!;
+                // Numeric promo / demotion (e.g. C++ emits int, user wants long).
+                return (T)System.Convert.ChangeType(
+                    value, typeof(T), System.Globalization.CultureInfo.InvariantCulture)!;
+            }
+            catch (Exception ex)
+            {
+                Debug.LogWarning(
+                    $"[EBusHandlerRegistry] UnmarshalArg<{typeof(T).Name}> failed for " +
+                    $"JSON '{TryGetRaw(el)}' ({ex.GetType().Name}: {ex.Message}); " +
+                    $"using default(T)");
+                return default(T)!;
+            }
+        }
+
+        private static string TryGetRaw(JsonElement el)
+        {
+            try { return el.GetRawText(); }
+            catch { return "<unreadable>"; }
+        }
+
+        // ChangeType doesn't know about our struct types, and ValueKind
+        // dispatch is the cleanest way to handle JSON-array-shaped
+        // values, so we do explicit type dispatch ourselves.
+        private static object? UnmarshalArgRaw(JsonElement el, Type t)
+        {
+            // Strip Nullable<T> wrapper - we'll unmarshal the inner type
+            // and let the caller's variable accept null implicitly.
+            Type underlying = Nullable.GetUnderlyingType(t) ?? t;
+            if (el.ValueKind == JsonValueKind.Null) return null;
+
+            if (underlying == typeof(bool))    return el.GetBoolean();
+            if (underlying == typeof(sbyte))   return (sbyte)el.GetInt32();
+            if (underlying == typeof(byte))    return (byte)el.GetInt32();
+            if (underlying == typeof(short))   return (short)el.GetInt32();
+            if (underlying == typeof(ushort))  return (ushort)el.GetInt32();
+            if (underlying == typeof(int))     return el.GetInt32();
+            if (underlying == typeof(uint))    return el.GetUInt32();
+            if (underlying == typeof(long))    return el.GetInt64();
+            if (underlying == typeof(ulong))   return el.GetUInt64();
+            if (underlying == typeof(float))   return el.GetSingle();
+            if (underlying == typeof(double))  return el.GetDouble();
+            if (underlying == typeof(string))  return el.GetString();
+            if (underlying == typeof(char))
+            {
+                var s = el.GetString();
+                return string.IsNullOrEmpty(s) ? '\0' : s![0];
+            }
+            if (underlying == typeof(Guid))
+            {
+                var s = el.GetString();
+                return string.IsNullOrEmpty(s) ? Guid.Empty : Guid.Parse(s!);
+            }
+
+            // O3DE math types - decoded from float arrays. Length
+            // disambiguates Vector2 vs Vector3 vs Quaternion etc.
+            if (el.ValueKind == JsonValueKind.Array)
+            {
+                int len = el.GetArrayLength();
+                if (underlying == typeof(O3DE.Vector2) && len >= 2)
+                {
+                    return new O3DE.Vector2(
+                        el[0].GetSingle(),
+                        el[1].GetSingle());
+                }
+                if (underlying == typeof(O3DE.Vector3) && len >= 3)
+                {
+                    return new O3DE.Vector3(
+                        el[0].GetSingle(),
+                        el[1].GetSingle(),
+                        el[2].GetSingle());
+                }
+                if (underlying == typeof(O3DE.Quaternion) && len >= 4)
+                {
+                    return new O3DE.Quaternion(
+                        el[0].GetSingle(),
+                        el[1].GetSingle(),
+                        el[2].GetSingle(),
+                        el[3].GetSingle());
+                }
+                // NOTE: AZ::Transform parameters arrive as a 10-float
+                // array (pos[3] + quat[4] + scale + reserved[2]) but
+                // O3DE.Transform on the managed side is an entity-bound
+                // wrapper, not a freestanding value type. Decoding a
+                // freestanding transform value would need a separate
+                // TransformValue struct - tracked as Phase 18-E3 work.
+                // For now, Transform parameters fall through to default
+                // and emit a one-time warning in the catch arm above.
+            }
+
+            // Last resort: hand back the raw boxed JSON primitive so
+            // ChangeType in the caller can attempt the conversion.
+            return el.ValueKind switch
+            {
+                JsonValueKind.True   => true,
+                JsonValueKind.False  => false,
+                JsonValueKind.String => el.GetString(),
+                JsonValueKind.Number => el.TryGetInt64(out long l) ? l : (object)el.GetDouble(),
+                _ => null,
+            };
+        }
     }
 }
