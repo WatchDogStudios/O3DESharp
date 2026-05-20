@@ -434,7 +434,7 @@ namespace O3DESharp
         {
             m_scriptInstance.InvokeMethod("ApplyExposedProperties", json.c_str());
         }
-        catch (const std::exception& ex)
+        catch ([[maybe_unused]] const std::exception& ex)
         {
             AZ_Warning(
                 "O3DESharp",
@@ -492,7 +492,9 @@ namespace O3DESharp
         AZ::TickBus::Handler::BusConnect();
     }
 
-    void CSharpScriptComponent::DisableAfterUnhandledException(const char* methodName, const char* what)
+    void CSharpScriptComponent::DisableAfterUnhandledException(
+        [[maybe_unused]] const char* methodName,
+        [[maybe_unused]] const char* what)
     {
         m_disabledByException = true;
 

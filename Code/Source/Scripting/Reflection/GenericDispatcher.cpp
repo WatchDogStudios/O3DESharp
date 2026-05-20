@@ -1924,7 +1924,7 @@ namespace O3DESharp
             // failures point at the right call site.
             Coral::String CallBehaviorMethodAndMarshalResult(
                 AZ::BehaviorMethod* method,
-                const char* contextLabel,
+                [[maybe_unused]] const char* contextLabel,
                 Coral::String argsJson)
             {
                 std::string argsJsonStr(argsJson);

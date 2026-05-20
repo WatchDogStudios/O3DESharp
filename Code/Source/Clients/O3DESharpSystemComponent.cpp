@@ -294,7 +294,7 @@ namespace O3DESharp
             // explicit release, swap this for the documented Free / Drop
             // call - it's the only resource concern in this method.
         }
-        catch (const std::exception& ex)
+        catch ([[maybe_unused]] const std::exception& ex)
         {
             AZ_Warning(
                 "O3DESharp", false,
