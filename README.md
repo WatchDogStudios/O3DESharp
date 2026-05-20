@@ -12,11 +12,21 @@ O3DESharp enables game developers to write gameplay logic in C# instead of (or a
 - **Familiar API**: Entity/Component model similar to other popular engines
 - **Automated Reflection**: Automatic access to any type reflected to O3DE's BehaviorContext
 
-## What's New (Phase 16 + recent fixes)
+## What's New (Phase 16 → Phase 18-E)
 
 Recent iterations added the editor + workflow polish that was always
-the missing half of "hot reload":
+the missing half of "hot reload", and most recently the second half of
+EBus support — C# can now both send and *receive* EBus events:
 
+- **First-class EBus handlers** (Phase 18-E). Decorate any partial
+  `ScriptComponent` subclass with `[EBus("BusName")]` and individual
+  methods with `[EBusHandler("EventName")]`; a Roslyn source generator
+  (`O3DESharp.SourceGenerators`) emits the `ConnectTo<BusName>` /
+  `DisconnectFrom<BusName>` / dispatch glue at compile time. The C++
+  side installs a `BehaviorEBusHandler` with a generic hook that
+  marshals args back into managed code, so user methods see typed
+  parameters. See [SCRIPTING_GUIDE.md §9 — Receiving EBus Events](SCRIPTING_GUIDE.md#9-calling-ebus-events-from-c)
+  for the authoring pattern.
 - **Auto-reload on file change** (Phase 16a). The editor watches
   `<ProjectPath>/Bin/Scripts/` and reloads user assemblies automatically
   when a DLL is rebuilt. Toggle via Tools → C# Scripting → "Reload
@@ -178,7 +188,18 @@ Hand-written bindings for frequently used functionality. These provide the best 
 
 ### 2. Automated Reflection API (For Everything Else)
 
-Dynamic access to **any** type reflected to O3DE's BehaviorContext. This allows you to call methods, access properties, and send EBus events without compile-time bindings:
+Dynamic access to **any** type reflected to O3DE's BehaviorContext. This
+allows you to call methods, access properties, and send EBus events
+without compile-time bindings.
+
+EBus *handling* (receiving events) uses a third path: the
+`O3DESharp.SourceGenerators` Roslyn generator picks up
+`[EBus]` / `[EBusHandler]` attributes on your `ScriptComponent` partial
+class and emits the Connect/Disconnect/dispatch glue at compile time.
+See [SCRIPTING_GUIDE.md §9 — Receiving EBus Events](SCRIPTING_GUIDE.md#9-calling-ebus-events-from-c)
+for the authoring pattern.
+
+
 
 ```csharp
 using O3DE.Reflection;
@@ -598,7 +619,17 @@ This approach means that:
 
 - **Template Instantiations**: C++ template types (e.g., `AZStd::vector<AZ::Vector3>`, `AZ::RHI::Handle<uint>`) are automatically skipped during binding generation since they cannot be meaningfully represented as standalone C# classes. Use a `typedef` alias and reflect that instead.
 - **Input System**: Direct input access is not yet fully implemented. Use O3DE's Input component with BehaviorContext for now.
-- **EBus Handlers (managed-side)**: Creating EBus handlers from user C# code (where a `class : SomeBus::Handler` lives in your script) is not yet supported. The editor-tooling bus pattern (Python → `azlmbr.<module>.<bus>Handler()`) works fine for editor scripts. Sending and broadcasting EBus events from C# is fully supported in both directions.
+- **EBus Handler param marshaling**: Phase 18-E ships first-class
+  managed handlers via `[EBus]` / `[EBusHandler]` (see
+  [SCRIPTING_GUIDE.md §9](SCRIPTING_GUIDE.md#9-calling-ebus-events-from-c)).
+  The arg-unmarshal table covers primitives, `string`, `Vector2`,
+  `Vector3`, `Quaternion`, and EntityId-shaped IDs. `Transform`,
+  `Vector4`, `Color`, `Aabb`, `Matrix3x3` / `Matrix4x4`, and arbitrary
+  user-defined structs currently arrive as `default(T)` with a warning
+  in the console; extend `EBusHandlerRegistry.UnmarshalArg<T>` and the
+  matching C++ marshal table to add coverage. Buses without a
+  `Handler<>()` reflection (rare; emit-only buses) refuse `Register`
+  with a clear log message.
 - **Generics**: Generic types in BehaviorContext are not fully supported.
 - **Performance**: The reflection API is slower than direct bindings. Use direct APIs for performance-critical code.
 - **Asset references in `[ExposedProperty]`**: typed widgets exist for `bool`, integer types, `float`, `double`, and `string`. `Vector3` / `Quaternion` / `Color` / `EntityId` / `AssetReference<T>` are planned. The inspector falls back to a generic key/value editor for those.

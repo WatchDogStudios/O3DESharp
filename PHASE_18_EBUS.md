@@ -1,8 +1,51 @@
 # Phase 18 — Full EBus Support for O3DESharp
 
-**Status:** spec — implementation pending sign-off.
-**Scope:** A + B + C + D (everything: consume engine EBuses, write handlers, define new buses, ScriptCanvas / inspector surfacing).
-**Estimated effort:** 10–15 working days across one large commit (per user preference), implementation broken into reviewable sub-phases internally even though they ship together.
+**Status:** Phase 18-A and Phase 18-E (managed handlers, formerly 18-B) **shipped**. Phase 18-C (managed-defined bus contracts) and Phase 18-D (editor surfaces) remain spec.
+**Scope:** A + B (re-scoped as 18-E) + C + D (everything: consume engine EBuses, write handlers, define new buses, ScriptCanvas / inspector surfacing).
+**Estimated effort:** the originally planned big-bang commit was broken into incremental phases; 18-A + 18-E shipped across the autumn 2025–spring 2026 audit pass, 18-C and 18-D remain open.
+
+> **2026-05-19 Status note.** The actual implementation deviated from the
+> original spec below in one important way: instead of an `EBusHandler<TBus>`
+> abstract base class (the §3.B "managed handlers" approach), the shipped
+> design uses **class-level attributes + a Roslyn source generator**
+> (renumbered internally as Phase 18-E). The user surface is now:
+>
+> ```csharp
+> [EBus("TickBus")]
+> public partial class GameClock : ScriptComponent
+> {
+>     public override void OnCreate()  { ConnectToTickBus(); }
+>     public override void OnDestroy() { DisconnectFromTickBus(); }
+>
+>     [EBusHandler("OnTick")]
+>     private void HandleTick(float deltaTime, ulong frameId) { ... }
+> }
+> ```
+>
+> The generator (`Code/Tools/SourceGenerators/EBusHandlerGenerator.cs`)
+> emits `ConnectTo<BusName>` / `DisconnectFrom<BusName>` partial methods
+> plus a private dispatch shim that unmarshals JSON args from the C++
+> side into typed parameters before invoking the user method. On the
+> C++ side, `Code/Source/Scripting/Reflection/GenericDispatcher.cpp`
+> registers a `BehaviorEBusHandler` per managed handler, installs a
+> generic hook on every event, and routes invocations back through
+> Coral to `O3DE.Reflection.EBusHandlerRegistry.DispatchEvent`, keyed
+> by a managed token.
+>
+> **Why the deviation:** the source-generator approach gives users the
+> same authoring ergonomics as Unity/Unreal-style component callbacks
+> without paying the cost of a managed virtual-dispatch table per bus.
+> The original `EBusHandler<TBus>` base-class approach is still viable
+> as a follow-up if a "dynamic, no-codegen" path is ever requested,
+> but in practice every consumer wants the attribute-driven API and
+> the codegen handles arity / type matching at compile time, so users
+> get a real compile error on a misspelled bus or wrong-arity handler
+> instead of a runtime "method not found" log.
+>
+> The remaining sections (§3.A through §10) below are the **original
+> spec**. They're kept as a historical record of the design space, with
+> §3.B re-read against the as-shipped attribute-driven design. §3.C
+> (managed-defined buses) and §3.D (editor surfaces) remain open.
 
 ---
 
