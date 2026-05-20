@@ -8,8 +8,6 @@
 import jetbrains.buildServer.configs.kotlin.*
 import jetbrains.buildServer.configs.kotlin.buildFeatures.commitStatusPublisher
 import jetbrains.buildServer.configs.kotlin.buildFeatures.perfmon
-import jetbrains.buildServer.configs.kotlin.buildSteps.dotnetBuild
-import jetbrains.buildServer.configs.kotlin.buildSteps.dotnetTest
 import jetbrains.buildServer.configs.kotlin.buildSteps.script
 import jetbrains.buildServer.configs.kotlin.triggers.vcs
 import jetbrains.buildServer.configs.kotlin.vcs.GitVcsRoot
@@ -41,6 +39,17 @@ import jetbrains.buildServer.configs.kotlin.vcs.GitVcsRoot
  * class instance through the helpers, which TC's DSL forbids. The
  * inline form below is the only style the TC Cloud compiler
  * accepts cleanly for object-style BuildType declarations.
+ *
+ * DOTNET RUNNER NOTE: we use plain `script { }` build steps that
+ * invoke the explicit dotnet binary path, NOT TC's dotnetBuild /
+ * dotnetTest runners. Reason: TC's Linux cloud agent ships with
+ * .NET 8.0 preinstalled at /usr/share/dotnet, but we need .NET 9
+ * for O3DE.Core. The dotnet* runners locate the dotnet binary
+ * eagerly (before the previous step's ##teamcity[setParameter] PATH
+ * update takes effect), so they always pick up 8.0 from
+ * /usr/share/dotnet and fail with NETSDK1045 "current .NET SDK does
+ * not support targeting .NET 9.0". script-runner steps that call
+ * $HOME/.dotnet/dotnet directly sidestep the discovery entirely.
  */
 
 version = "2024.03"
@@ -69,10 +78,6 @@ project {
 object O3DESharpVcs : GitVcsRoot({
     name = "O3DESharp (GitHub)"
     url = "https://github.com/WatchDogStudios/O3DESharp.git"
-    // 'main' is the long-lived release branch; development merges
-    // in via PR. The branchSpec below picks up every branch and
-    // every PR head, so triggers fire on PR pushes against both
-    // main and development.
     branch = "refs/heads/main"
     branchSpec = """
         +:refs/heads/*
@@ -95,7 +100,6 @@ object CSharpLinux : BuildType({
     }
 
     requirements {
-        // TC Cloud agent OS labels: "Linux" or "Windows".
         equals("teamcity.agent.os.family", "Linux")
     }
 
@@ -104,54 +108,62 @@ object CSharpLinux : BuildType({
             name = "Install .NET 8.0 + 9.0 SDKs"
             scriptContent = """
                 set -e
-                # dotnet-install: idempotent installer. Channel 8.0
-                # + 9.0 each install the latest patch into ~/.dotnet,
-                # then we prepend to PATH for the rest of the build.
+                # dotnet-install: idempotent installer that drops the
+                # SDK into $HOME/.dotnet. We install both 8 (for the
+                # BindingGenerator tool) and 9 (for O3DE.Core and the
+                # smoke consumer); the system-preinstalled 8 at
+                # /usr/share/dotnet does not include 9, so without
+                # this step the build fails with NETSDK1045.
                 if [ ! -f /tmp/dotnet-install.sh ]; then
                     curl -sSL https://dot.net/v1/dotnet-install.sh -o /tmp/dotnet-install.sh
                     chmod +x /tmp/dotnet-install.sh
                 fi
                 /tmp/dotnet-install.sh --channel 8.0 --install-dir "${'$'}HOME/.dotnet"
                 /tmp/dotnet-install.sh --channel 9.0 --install-dir "${'$'}HOME/.dotnet"
-                echo "##teamcity[setParameter name='env.PATH' value='${'$'}HOME/.dotnet:${'$'}PATH']"
                 "${'$'}HOME/.dotnet/dotnet" --list-sdks
             """.trimIndent()
         }
-        dotnetBuild {
+        script {
             name = "Build O3DE.Core (net9)"
-            projects = "Assets/Scripts/O3DE.Core/O3DE.Core.csproj"
-            configuration = "Release"
-            args = "--nologo"
+            scriptContent = """
+                set -e
+                "${'$'}HOME/.dotnet/dotnet" build Assets/Scripts/O3DE.Core/O3DE.Core.csproj -c Release --nologo
+            """.trimIndent()
         }
-        dotnetBuild {
+        script {
             name = "Build BindingGenerator (net8 tool)"
-            projects = "Code/Tools/BindingGenerator/O3DESharp.BindingGenerator/O3DESharp.BindingGenerator.csproj"
-            configuration = "Release"
-            args = "--nologo"
+            scriptContent = """
+                set -e
+                "${'$'}HOME/.dotnet/dotnet" build Code/Tools/BindingGenerator/O3DESharp.BindingGenerator/O3DESharp.BindingGenerator.csproj -c Release --nologo
+            """.trimIndent()
         }
-        dotnetBuild {
+        script {
             name = "Build BindingGenerator.Tasks (netstandard2.0 MSBuild task)"
-            projects = "Code/Tools/BindingGenerator/O3DESharp.BindingGenerator.Tasks/O3DESharp.BindingGenerator.Tasks.csproj"
-            configuration = "Release"
-            args = "--nologo"
+            scriptContent = """
+                set -e
+                "${'$'}HOME/.dotnet/dotnet" build Code/Tools/BindingGenerator/O3DESharp.BindingGenerator.Tasks/O3DESharp.BindingGenerator.Tasks.csproj -c Release --nologo
+            """.trimIndent()
         }
-        dotnetBuild {
+        script {
             name = "Build SourceGenerators (Roslyn analyzer)"
-            projects = "Code/Tools/SourceGenerators/O3DESharp.SourceGenerators.csproj"
-            configuration = "Release"
-            args = "--nologo"
+            scriptContent = """
+                set -e
+                "${'$'}HOME/.dotnet/dotnet" build Code/Tools/SourceGenerators/O3DESharp.SourceGenerators.csproj -c Release --nologo
+            """.trimIndent()
         }
-        dotnetBuild {
+        script {
             name = "Build SourceGenerators smoke consumer (Phase 18-E end-to-end)"
-            projects = "Code/Tools/SourceGenerators.Tests/SourceGenerators.Smoke.csproj"
-            configuration = "Release"
-            args = "--nologo"
+            scriptContent = """
+                set -e
+                "${'$'}HOME/.dotnet/dotnet" build Code/Tools/SourceGenerators.Tests/SourceGenerators.Smoke.csproj -c Release --nologo
+            """.trimIndent()
         }
-        dotnetTest {
+        script {
             name = "Run BindingGenerator xUnit tests"
-            projects = "Code/Tools/BindingGenerator.Tests/BindingGenerator.Tests.csproj"
-            configuration = "Release"
-            args = """--nologo --logger "console;verbosity=normal""""
+            scriptContent = """
+                set -e
+                "${'$'}HOME/.dotnet/dotnet" test Code/Tools/BindingGenerator.Tests/BindingGenerator.Tests.csproj -c Release --nologo --logger "console;verbosity=normal"
+            """.trimIndent()
         }
     }
 
@@ -200,49 +212,59 @@ object CSharpWindows : BuildType({
     steps {
         script {
             name = "Install .NET 9.0 SDK"
+            // Same rationale as the Linux config: TC Cloud Windows
+            // agents include .NET 8 LTS but not .NET 9. The script
+            // runner is used in lieu of the dotnetBuild/dotnetTest
+            // runners because those find the system dotnet before
+            // our installed one.
             scriptContent = """
+                ${'$'}ErrorActionPreference = 'Stop'
                 Invoke-WebRequest -UseBasicParsing -Uri https://dot.net/v1/dotnet-install.ps1 -OutFile dotnet-install.ps1
                 ./dotnet-install.ps1 -Channel 9.0 -InstallDir "${'$'}env:LOCALAPPDATA\Microsoft\dotnet"
-                ${'$'}env:PATH = "${'$'}env:LOCALAPPDATA\Microsoft\dotnet;${'$'}env:PATH"
-                Write-Host "##teamcity[setParameter name='env.PATH' value='${'$'}env:PATH']"
                 & "${'$'}env:LOCALAPPDATA\Microsoft\dotnet\dotnet.exe" --list-sdks
             """.trimIndent()
         }
-        dotnetBuild {
+        script {
             name = "Build O3DE.Core (net9)"
-            projects = "Assets/Scripts/O3DE.Core/O3DE.Core.csproj"
-            configuration = "Release"
-            args = "--nologo"
+            scriptContent = """
+                ${'$'}ErrorActionPreference = 'Stop'
+                & "${'$'}env:LOCALAPPDATA\Microsoft\dotnet\dotnet.exe" build Assets/Scripts/O3DE.Core/O3DE.Core.csproj -c Release --nologo
+            """.trimIndent()
         }
-        dotnetBuild {
+        script {
             name = "Build BindingGenerator (net8 tool)"
-            projects = "Code/Tools/BindingGenerator/O3DESharp.BindingGenerator/O3DESharp.BindingGenerator.csproj"
-            configuration = "Release"
-            args = "--nologo"
+            scriptContent = """
+                ${'$'}ErrorActionPreference = 'Stop'
+                & "${'$'}env:LOCALAPPDATA\Microsoft\dotnet\dotnet.exe" build Code/Tools/BindingGenerator/O3DESharp.BindingGenerator/O3DESharp.BindingGenerator.csproj -c Release --nologo
+            """.trimIndent()
         }
-        dotnetBuild {
+        script {
             name = "Build BindingGenerator.Tasks (netstandard2.0 MSBuild task)"
-            projects = "Code/Tools/BindingGenerator/O3DESharp.BindingGenerator.Tasks/O3DESharp.BindingGenerator.Tasks.csproj"
-            configuration = "Release"
-            args = "--nologo"
+            scriptContent = """
+                ${'$'}ErrorActionPreference = 'Stop'
+                & "${'$'}env:LOCALAPPDATA\Microsoft\dotnet\dotnet.exe" build Code/Tools/BindingGenerator/O3DESharp.BindingGenerator.Tasks/O3DESharp.BindingGenerator.Tasks.csproj -c Release --nologo
+            """.trimIndent()
         }
-        dotnetBuild {
+        script {
             name = "Build SourceGenerators (Roslyn analyzer)"
-            projects = "Code/Tools/SourceGenerators/O3DESharp.SourceGenerators.csproj"
-            configuration = "Release"
-            args = "--nologo"
+            scriptContent = """
+                ${'$'}ErrorActionPreference = 'Stop'
+                & "${'$'}env:LOCALAPPDATA\Microsoft\dotnet\dotnet.exe" build Code/Tools/SourceGenerators/O3DESharp.SourceGenerators.csproj -c Release --nologo
+            """.trimIndent()
         }
-        dotnetBuild {
+        script {
             name = "Build SourceGenerators smoke consumer (Phase 18-E end-to-end)"
-            projects = "Code/Tools/SourceGenerators.Tests/SourceGenerators.Smoke.csproj"
-            configuration = "Release"
-            args = "--nologo"
+            scriptContent = """
+                ${'$'}ErrorActionPreference = 'Stop'
+                & "${'$'}env:LOCALAPPDATA\Microsoft\dotnet\dotnet.exe" build Code/Tools/SourceGenerators.Tests/SourceGenerators.Smoke.csproj -c Release --nologo
+            """.trimIndent()
         }
-        dotnetTest {
+        script {
             name = "Run BindingGenerator xUnit tests"
-            projects = "Code/Tools/BindingGenerator.Tests/BindingGenerator.Tests.csproj"
-            configuration = "Release"
-            args = """--nologo --logger "console;verbosity=normal""""
+            scriptContent = """
+                ${'$'}ErrorActionPreference = 'Stop'
+                & "${'$'}env:LOCALAPPDATA\Microsoft\dotnet\dotnet.exe" test Code/Tools/BindingGenerator.Tests/BindingGenerator.Tests.csproj -c Release --nologo --logger "console;verbosity=normal"
+            """.trimIndent()
         }
     }
 
@@ -336,13 +358,6 @@ object PythonTests : BuildType({
 // Composite aggregator
 // --------------------------------------------------------------------
 
-/*
- * Aggregator build. Depends on all three matrix entries; turns
- * green only when every one of them is green. Branch protection
- * rules in GitHub should require THIS build to pass, not the
- * individual matrix entries - that way the required check name is
- * stable even if we add or rename a matrix entry later.
- */
 object AllChecks : BuildType({
     id("AllChecks")
     name = "All checks"
