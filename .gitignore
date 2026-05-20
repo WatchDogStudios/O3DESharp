@@ -53,3 +53,16 @@ bin
 Code/Tools/BindingGenerator/O3DESharp.BindingGenerator/bin
 obj
 Code/Tools/BindingGenerator/O3DESharp.BindingGenerator/obj
+
+# Phase 18-E2 source-generator smoke test - the analyzer persists its
+# emit to ./generated/ for human inspection (see csproj's
+# EmitCompilerGeneratedFiles + CompilerGeneratedFilesOutputPath). The
+# files are pure build output; the csproj's Compile Remove keeps them
+# out of compilation and this rule keeps them out of git.
+Code/Tools/SourceGenerators.Tests/generated/
+Code/Tools/SourceGenerators.Tests/bin/
+Code/Tools/SourceGenerators.Tests/obj/
+
+# Source-generator project build output
+Code/Tools/SourceGenerators/bin/
+Code/Tools/SourceGenerators/obj/

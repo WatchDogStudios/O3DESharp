@@ -17,9 +17,13 @@ name: ci
 
 on:
   push:
-    branches: [main]
+    # Run on every push to the long-lived branches. development is the
+    # active integration branch where new phases land; main is the
+    # release-pinned mirror. Adding development was the Phase 18-E2
+    # release-prep fix - CI was previously dark on every dev-branch push.
+    branches: [main, development]
   pull_request:
-    branches: [main]
+    branches: [main, development]
   workflow_dispatch:
 
 permissions:
@@ -51,6 +55,17 @@ jobs:
 
       - name: Restore + build BindingGenerator.Tasks (netstandard2.0 MSBuild task)
         run: dotnet build Code/Tools/BindingGenerator/O3DESharp.BindingGenerator.Tasks/O3DESharp.BindingGenerator.Tasks.csproj -c Release --nologo
+
+      - name: Restore + build SourceGenerators (netstandard2.0 Roslyn analyzer)
+        run: dotnet build Code/Tools/SourceGenerators/O3DESharp.SourceGenerators.csproj -c Release --nologo
+
+      - name: Build SourceGenerators smoke consumer (exercises the [EBus] generator end-to-end)
+        # This consumer carries a partial ScriptComponent decorated with
+        # [EBus] / [EBusHandler] attributes covering primitive args, math
+        # args, zero-arg events and an 8-arg event. The build succeeding
+        # means the generator emitted compilable C#; if the emit shape
+        # regresses, this fails before the change can land.
+        run: dotnet build Code/Tools/SourceGenerators.Tests/SourceGenerators.Smoke.csproj -c Release --nologo
 
       - name: Run BindingGenerator unit tests
         run: dotnet test Code/Tools/BindingGenerator.Tests/BindingGenerator.Tests.csproj -c Release --nologo --logger "console;verbosity=normal"
