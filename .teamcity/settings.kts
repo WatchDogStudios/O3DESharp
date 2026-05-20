@@ -171,7 +171,7 @@ object CSharpLinux : BuildType({
             publisher = github {
                 githubUrl = "https://api.github.com"
                 authType = personalToken {
-                    token = "credentialsJSON:gh-status-token"
+                    token = "credentialsJSON:github_access_token"
                 }
             }
         }
@@ -262,7 +262,7 @@ object CSharpWindows : BuildType({
             publisher = github {
                 githubUrl = "https://api.github.com"
                 authType = personalToken {
-                    token = "credentialsJSON:gh-status-token"
+                    token = "credentialsJSON:github_access_token"
                 }
             }
         }
@@ -324,7 +324,7 @@ object PythonTests : BuildType({
             publisher = github {
                 githubUrl = "https://api.github.com"
                 authType = personalToken {
-                    token = "credentialsJSON:gh-status-token"
+                    token = "credentialsJSON:github_access_token"
                 }
             }
         }
@@ -377,7 +377,7 @@ object AllChecks : BuildType({
             publisher = github {
                 githubUrl = "https://api.github.com"
                 authType = personalToken {
-                    token = "credentialsJSON:gh-status-token"
+                    token = "credentialsJSON:github_access_token"
                 }
             }
         }

@@ -34,23 +34,23 @@ connecting the repo to TeamCity Cloud.
 3. VCS root: pick the O3DESharp VCS root (created by the bootstrap).
 4. Settings format: **Kotlin**.
 5. Optionally check **"Use credentials stored in VCS"** so the
-   `credentialsJSON:gh-status-token` reference in `settings.kts`
+   `credentialsJSON:github_access_token` reference in `settings.kts`
    resolves.
 
 ### 3. Provide the GitHub status-publisher token
 
 The commit-status publisher feature uses a token to write
 "All checks succeeded / failed" badges back to GitHub commits and
-PRs. The DSL references it as `credentialsJSON:gh-status-token`;
+PRs. The DSL references it as `credentialsJSON:github_access_token`;
 you supply the actual value out-of-band:
 
 1. **Project Admin → Parameters → Add new parameter**.
-2. Name: `gh-status-token`.
+2. Name: `github_access_token` (matches what TC auto-generates for the github commit-status-publisher; previously documented as `gh-status-token` but TC translates that to the default).
 3. Kind: **Password (Stored as a token in TeamCity)**.
 4. Value: a GitHub PAT with `repo:status` scope (classic PAT) or a
    fine-grained PAT scoped to this repo with **Commit statuses:
    Read and write** and **Pull requests: Read**.
-5. Save. The DSL's `credentialsJSON:gh-status-token` reference now
+5. Save. The DSL's `credentialsJSON:github_access_token` reference now
    resolves to this value at build time without it ever appearing
    in version control.
 
