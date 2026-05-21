@@ -344,18 +344,19 @@ namespace O3DE.Reflection
         /// <summary>
         /// Phase 18-A typed variant: broadcasts the event AND coerces the
         /// dispatcher's return value into T. Throws InvalidCastException
-        /// when the native side returned an incompatible type (rather
-        /// than the silent null the untyped overload returns), so callers
-        /// catch shape mismatches at the call site.
+        /// when the native side returned a type that genuinely cannot be
+        /// coerced into T - numeric promotions (Double-to-Single,
+        /// Int64-to-Int32, etc.) are attempted via Convert.ChangeType
+        /// before we give up. The non-coercion case is rare in practice
+        /// (the dispatcher already marshals according to the reflected
+        /// return type) but the JSON wire format is lossy: a C++ `float`
+        /// arrives in C# as a `Double` because the JSON number tokenizer
+        /// has no way to tell single from double precision.
         /// </summary>
         public static T? BroadcastResultEBusEvent<T>(string busName, string eventName, params object[] args)
         {
             object? raw = BroadcastEBusEvent(busName, eventName, args);
-            if (raw is null) { return default; }
-            if (raw is T typed) { return typed; }
-            throw new InvalidCastException(
-                $"BroadcastResultEBusEvent<{typeof(T).Name}>('{busName}', '{eventName}') " +
-                $"returned a {raw.GetType().Name}; expected {typeof(T).Name}.");
+            return CoerceEBusResult<T>(raw, "BroadcastResultEBusEvent", busName, eventName, /*busId*/ null);
         }
 
         /// <summary>
@@ -366,11 +367,49 @@ namespace O3DE.Reflection
         public static T? SendResultEBusEvent<T>(string busName, string eventName, ulong busId, params object[] args)
         {
             object? raw = SendEBusEvent(busName, eventName, busId, args);
+            return CoerceEBusResult<T>(raw, "SendResultEBusEvent", busName, eventName, busId);
+        }
+
+        // Internal helper for BroadcastResultEBusEvent / SendResultEBusEvent.
+        // Implements the type-coercion ladder:
+        //   1. raw == null                              -> default(T)
+        //   2. raw is already T                         -> direct cast
+        //   3. Both raw and T are IConvertible numerics -> Convert.ChangeType
+        //      (handles the common JSON-Double -> float, JSON-Int64 -> int
+        //      style demotions that the wire format imposes)
+        //   4. otherwise                                -> InvalidCastException
+        //      with a message that names both ends so callers see what
+        //      mismatch actually happened.
+        private static T? CoerceEBusResult<T>(
+            object? raw,
+            string apiName,
+            string busName,
+            string eventName,
+            ulong? busId)
+        {
             if (raw is null) { return default; }
             if (raw is T typed) { return typed; }
+
+            Type targetType = Nullable.GetUnderlyingType(typeof(T)) ?? typeof(T);
+            if (raw is IConvertible && typeof(IConvertible).IsAssignableFrom(targetType))
+            {
+                try
+                {
+                    return (T)System.Convert.ChangeType(
+                        raw, targetType, System.Globalization.CultureInfo.InvariantCulture);
+                }
+                catch (Exception)
+                {
+                    // Fall through to the precise error below; coercion failed.
+                }
+            }
+
+            string callSite = busId is null
+                ? $"{apiName}<{typeof(T).Name}>('{busName}', '{eventName}')"
+                : $"{apiName}<{typeof(T).Name}>('{busName}', '{eventName}', busId={busId.Value})";
             throw new InvalidCastException(
-                $"SendResultEBusEvent<{typeof(T).Name}>('{busName}', '{eventName}', busId={busId}) " +
-                $"returned a {raw.GetType().Name}; expected {typeof(T).Name}.");
+                $"{callSite} returned a {raw.GetType().Name}; expected {typeof(T).Name} " +
+                $"and no IConvertible path between them was found.");
         }
 
         /// <summary>
