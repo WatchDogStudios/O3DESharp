@@ -1,0 +1,29 @@
+{
+    "gem_name": "O3DE.FirstPersonController",
+    "display_name": "O3DE First Person Controller (C#)",
+    "license": "Apache-2.0 OR MIT",
+    "license_url": "https://github.com/WatchDogStudios/O3DESharp/blob/main/LICENSE",
+    "origin": "WD Studios Corp.",
+    "origin_url": "https://github.com/WatchDogStudios/O3DESharp",
+    "type": "Code",
+    "summary": "C# port of Porcupine-Factory/FirstPersonController, riding on O3DESharp. Standalone gem providing PhysX-backed first-person character controller authored entirely in C#.",
+    "canonical_tags": ["Gem"],
+    "user_tags": ["FirstPerson", "Controller", "CSharp", "O3DESharp"],
+    "platforms": ["Linux", "Windows"],
+    "version": "0.1.0",
+    "compatible_engines": ["o3de==25.1.0"],
+    "dependencies": [
+        {
+            "name": "O3DESharp",
+            "version_specifier": ">=1.0.0"
+        },
+        {
+            "name": "PhysX5",
+            "version_specifier": ">=0.1.0"
+        },
+        {
+            "name": "StartingPointInput",
+            "version_specifier": ">=1.0.0"
+        }
+    ]
+}

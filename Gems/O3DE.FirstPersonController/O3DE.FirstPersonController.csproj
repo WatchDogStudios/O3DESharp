@@ -1,0 +1,63 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net9.0</TargetFramework>
+    <ImplicitUsings>disable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <LangVersion>latest</LangVersion>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+
+    <AssemblyName>O3DE.FirstPersonController</AssemblyName>
+    <RootNamespace>O3DE.FirstPersonController</RootNamespace>
+    <Version>0.1.0</Version>
+    <Authors>WD Studios Corp.</Authors>
+    <Description>C# port of Porcupine-Factory/FirstPersonController, riding on O3DESharp.</Description>
+
+    <Configurations>Debug;Profile;Release</Configurations>
+    <Platforms>AnyCPU</Platforms>
+
+    <GenerateDocumentationFile>true</GenerateDocumentationFile>
+    <NoWarn>$(NoWarn);CS1591</NoWarn>
+  </PropertyGroup>
+
+  <PropertyGroup Condition="'$(Configuration)' == 'Debug'">
+    <Optimize>false</Optimize>
+    <DebugSymbols>true</DebugSymbols>
+    <DebugType>full</DebugType>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!--
+      Reference O3DESharp's managed Core library. Hosted in this same
+      repo at Assets/Scripts/O3DE.Core/; this csproj depends on it for
+      ScriptComponent, [ExposedProperty], [EBus]/[EBusHandler], Vector3,
+      Transform, etc.
+    -->
+    <ProjectReference Include="..\..\Assets\Scripts\O3DE.Core\O3DE.Core.csproj">
+      <Private>false</Private>
+    </ProjectReference>
+
+    <!--
+      O3DESharp source generator: emits Connect/Disconnect/dispatch
+      glue from [EBus] / [EBusHandler] attributes. The
+      OutputItemType=Analyzer + ReferenceOutputAssembly=false markers
+      make MSBuild load it as a Roslyn component, not a regular ref.
+    -->
+    <ProjectReference Include="..\..\Code\Tools\SourceGenerators\O3DESharp.SourceGenerators.csproj"
+                      OutputItemType="Analyzer"
+                      ReferenceOutputAssembly="false" />
+  </ItemGroup>
+
+  <!--
+    Exclude Tests/ and SmokeTests/ subdirs from this project's
+    compilation. They are separate csproj artifacts; if SDK glob
+    picks them up here we get CS0101 duplicate-type-definition errors.
+  -->
+  <ItemGroup>
+    <Compile Remove="Tests/**/*.cs" />
+    <Compile Remove="SmokeTests/**/*.cs" />
+    <None Include="Tests/**/*.cs" />
+    <None Include="SmokeTests/**/*.cs" />
+  </ItemGroup>
+
+</Project>
