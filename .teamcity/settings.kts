@@ -165,6 +165,20 @@ object CSharpLinux : BuildType({
                 "${'$'}HOME/.dotnet/dotnet" test Code/Tools/BindingGenerator.Tests/BindingGenerator.Tests.csproj -c Release --nologo --logger "console;verbosity=normal"
             """.trimIndent()
         }
+        script {
+            name = "Run FirstPersonController xUnit tests"
+            scriptContent = """
+                set -e
+                "${'$'}HOME/.dotnet/dotnet" test Gems/O3DE.FirstPersonController/Tests/O3DE.FirstPersonController.Tests.csproj -c Release --nologo --logger "console;verbosity=normal"
+            """.trimIndent()
+        }
+        script {
+            name = "Run FirstPersonController smoke (state-machine golden trajectory)"
+            scriptContent = """
+                set -e
+                "${'$'}HOME/.dotnet/dotnet" run --project Gems/O3DE.FirstPersonController/SmokeTests/O3DE.FirstPersonController.SmokeTests.csproj -c Release --no-restore
+            """.trimIndent()
+        }
     }
 
     triggers {
@@ -264,6 +278,20 @@ object CSharpWindows : BuildType({
             scriptContent = """
                 ${'$'}ErrorActionPreference = 'Stop'
                 & "${'$'}env:LOCALAPPDATA\Microsoft\dotnet\dotnet.exe" test Code/Tools/BindingGenerator.Tests/BindingGenerator.Tests.csproj -c Release --nologo --logger "console;verbosity=normal"
+            """.trimIndent()
+        }
+        script {
+            name = "Run FirstPersonController xUnit tests"
+            scriptContent = """
+                ${'$'}ErrorActionPreference = 'Stop'
+                & "${'$'}env:LOCALAPPDATA\Microsoft\dotnet\dotnet.exe" test Gems/O3DE.FirstPersonController/Tests/O3DE.FirstPersonController.Tests.csproj -c Release --nologo --logger "console;verbosity=normal"
+            """.trimIndent()
+        }
+        script {
+            name = "Run FirstPersonController smoke (state-machine golden trajectory)"
+            scriptContent = """
+                ${'$'}ErrorActionPreference = 'Stop'
+                & "${'$'}env:LOCALAPPDATA\Microsoft\dotnet\dotnet.exe" run --project Gems/O3DE.FirstPersonController/SmokeTests/O3DE.FirstPersonController.SmokeTests.csproj -c Release --no-restore
             """.trimIndent()
         }
     }
