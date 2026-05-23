@@ -347,7 +347,7 @@ object PythonTests : BuildType({
             scriptContent = """
                 set -e
                 python3 --version
-                python3 -m pip install --upgrade --quiet pip pytest
+                python3 -m pip install --upgrade --quiet pip pytest --break-system-packages
                 python3 -m pytest --version
             """.trimIndent()
         }
