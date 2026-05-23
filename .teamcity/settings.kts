@@ -226,72 +226,75 @@ object CSharpWindows : BuildType({
     steps {
         script {
             name = "Install .NET 9.0 SDK"
-            // Same rationale as the Linux config: TC Cloud Windows
-            // agents include .NET 8 LTS but not .NET 9. The script
-            // runner is used in lieu of the dotnetBuild/dotnetTest
-            // runners because those find the system dotnet before
-            // our installed one.
+            // TC Cloud Windows agents include .NET 8 LTS but not .NET 9.
+            // The script runner wraps content in a .cmd file, so all
+            // syntax must be cmd.exe-compatible: invoke powershell.exe
+            // explicitly for the download/install step, then use
+            // %LOCALAPPDATA% (cmd.exe variable expansion) for all
+            // subsequent explicit dotnet.exe paths.
             scriptContent = """
-                ${'$'}ErrorActionPreference = 'Stop'
-                Invoke-WebRequest -UseBasicParsing -Uri https://dot.net/v1/dotnet-install.ps1 -OutFile dotnet-install.ps1
-                ./dotnet-install.ps1 -Channel 9.0 -InstallDir "${'$'}env:LOCALAPPDATA\Microsoft\dotnet"
-                & "${'$'}env:LOCALAPPDATA\Microsoft\dotnet\dotnet.exe" --list-sdks
+                powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command "Invoke-WebRequest -UseBasicParsing -Uri 'https://dot.net/v1/dotnet-install.ps1' -OutFile '%TEMP%\dotnet-install.ps1'"
+                if %errorlevel% neq 0 exit /b %errorlevel%
+                powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "%TEMP%\dotnet-install.ps1" -Channel 9.0 -InstallDir "%LOCALAPPDATA%\Microsoft\dotnet"
+                if %errorlevel% neq 0 exit /b %errorlevel%
+                "%LOCALAPPDATA%\Microsoft\dotnet\dotnet.exe" --list-sdks
+                if %errorlevel% neq 0 exit /b %errorlevel%
             """.trimIndent()
         }
         script {
             name = "Build O3DE.Core (net9)"
             scriptContent = """
-                ${'$'}ErrorActionPreference = 'Stop'
-                & "${'$'}env:LOCALAPPDATA\Microsoft\dotnet\dotnet.exe" build Assets/Scripts/O3DE.Core/O3DE.Core.csproj -c Release --nologo
+                "%LOCALAPPDATA%\Microsoft\dotnet\dotnet.exe" build Assets/Scripts/O3DE.Core/O3DE.Core.csproj -c Release --nologo
+                if %errorlevel% neq 0 exit /b %errorlevel%
             """.trimIndent()
         }
         script {
             name = "Build BindingGenerator (net8 tool)"
             scriptContent = """
-                ${'$'}ErrorActionPreference = 'Stop'
-                & "${'$'}env:LOCALAPPDATA\Microsoft\dotnet\dotnet.exe" build Code/Tools/BindingGenerator/O3DESharp.BindingGenerator/O3DESharp.BindingGenerator.csproj -c Release --nologo
+                "%LOCALAPPDATA%\Microsoft\dotnet\dotnet.exe" build Code/Tools/BindingGenerator/O3DESharp.BindingGenerator/O3DESharp.BindingGenerator.csproj -c Release --nologo
+                if %errorlevel% neq 0 exit /b %errorlevel%
             """.trimIndent()
         }
         script {
             name = "Build BindingGenerator.Tasks (netstandard2.0 MSBuild task)"
             scriptContent = """
-                ${'$'}ErrorActionPreference = 'Stop'
-                & "${'$'}env:LOCALAPPDATA\Microsoft\dotnet\dotnet.exe" build Code/Tools/BindingGenerator/O3DESharp.BindingGenerator.Tasks/O3DESharp.BindingGenerator.Tasks.csproj -c Release --nologo
+                "%LOCALAPPDATA%\Microsoft\dotnet\dotnet.exe" build Code/Tools/BindingGenerator/O3DESharp.BindingGenerator.Tasks/O3DESharp.BindingGenerator.Tasks.csproj -c Release --nologo
+                if %errorlevel% neq 0 exit /b %errorlevel%
             """.trimIndent()
         }
         script {
             name = "Build SourceGenerators (Roslyn analyzer)"
             scriptContent = """
-                ${'$'}ErrorActionPreference = 'Stop'
-                & "${'$'}env:LOCALAPPDATA\Microsoft\dotnet\dotnet.exe" build Code/Tools/SourceGenerators/O3DESharp.SourceGenerators.csproj -c Release --nologo
+                "%LOCALAPPDATA%\Microsoft\dotnet\dotnet.exe" build Code/Tools/SourceGenerators/O3DESharp.SourceGenerators.csproj -c Release --nologo
+                if %errorlevel% neq 0 exit /b %errorlevel%
             """.trimIndent()
         }
         script {
             name = "Build SourceGenerators smoke consumer (Phase 18-E end-to-end)"
             scriptContent = """
-                ${'$'}ErrorActionPreference = 'Stop'
-                & "${'$'}env:LOCALAPPDATA\Microsoft\dotnet\dotnet.exe" build Code/Tools/SourceGenerators.Tests/SourceGenerators.Smoke.csproj -c Release --nologo
+                "%LOCALAPPDATA%\Microsoft\dotnet\dotnet.exe" build Code/Tools/SourceGenerators.Tests/SourceGenerators.Smoke.csproj -c Release --nologo
+                if %errorlevel% neq 0 exit /b %errorlevel%
             """.trimIndent()
         }
         script {
             name = "Run BindingGenerator xUnit tests"
             scriptContent = """
-                ${'$'}ErrorActionPreference = 'Stop'
-                & "${'$'}env:LOCALAPPDATA\Microsoft\dotnet\dotnet.exe" test Code/Tools/BindingGenerator.Tests/BindingGenerator.Tests.csproj -c Release --nologo --logger "console;verbosity=normal"
+                "%LOCALAPPDATA%\Microsoft\dotnet\dotnet.exe" test Code/Tools/BindingGenerator.Tests/BindingGenerator.Tests.csproj -c Release --nologo --logger "console;verbosity=normal"
+                if %errorlevel% neq 0 exit /b %errorlevel%
             """.trimIndent()
         }
         script {
             name = "Run FirstPersonController xUnit tests"
             scriptContent = """
-                ${'$'}ErrorActionPreference = 'Stop'
-                & "${'$'}env:LOCALAPPDATA\Microsoft\dotnet\dotnet.exe" test Gems/O3DE.FirstPersonController/Tests/O3DE.FirstPersonController.Tests.csproj -c Release --nologo --logger "console;verbosity=normal"
+                "%LOCALAPPDATA%\Microsoft\dotnet\dotnet.exe" test Gems/O3DE.FirstPersonController/Tests/O3DE.FirstPersonController.Tests.csproj -c Release --nologo --logger "console;verbosity=normal"
+                if %errorlevel% neq 0 exit /b %errorlevel%
             """.trimIndent()
         }
         script {
             name = "Run FirstPersonController smoke (state-machine golden trajectory)"
             scriptContent = """
-                ${'$'}ErrorActionPreference = 'Stop'
-                & "${'$'}env:LOCALAPPDATA\Microsoft\dotnet\dotnet.exe" run --project Gems/O3DE.FirstPersonController/SmokeTests/O3DE.FirstPersonController.SmokeTests.csproj -c Release --no-restore
+                "%LOCALAPPDATA%\Microsoft\dotnet\dotnet.exe" run --project Gems/O3DE.FirstPersonController/SmokeTests/O3DE.FirstPersonController.SmokeTests.csproj -c Release --no-restore
+                if %errorlevel% neq 0 exit /b %errorlevel%
             """.trimIndent()
         }
     }
