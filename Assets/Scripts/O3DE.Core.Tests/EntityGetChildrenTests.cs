@@ -86,9 +86,15 @@ public class EntityGetChildrenTests
         var entity = new Entity(1);
 
         InternalCalls.GetChildrenCallCount = 0;
+        InternalCalls.GetChildAtIndexCallCount = 0;
         var children = entity.GetChildren();
 
         children.Should().HaveCount(50);
         InternalCalls.GetChildrenCallCount.Should().Be(1);
+        // The real regression this test guards against: a revert to the old
+        // count-then-loop implementation. Asserting the new path ran once is
+        // not enough on its own - this also proves the old per-child path
+        // never ran at all, regardless of child count.
+        InternalCalls.GetChildAtIndexCallCount.Should().Be(0);
     }
 }

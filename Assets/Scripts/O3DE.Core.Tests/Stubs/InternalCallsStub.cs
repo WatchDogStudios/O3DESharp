@@ -28,6 +28,7 @@ namespace O3DE
             ValidEntities.Clear();
             ChildrenByEntity.Clear();
             GetChildrenCallCount = 0;
+            GetChildAtIndexCallCount = 0;
         }
 
         public static void Log_Info(string message) => InfoLogs.Add(message);
@@ -42,6 +43,7 @@ namespace O3DE
         internal static readonly HashSet<ulong> ValidEntities = new();
         internal static readonly Dictionary<ulong, List<ulong>> ChildrenByEntity = new();
         internal static int GetChildrenCallCount;
+        internal static int GetChildAtIndexCallCount;
 
         internal static Bool32 Entity_IsValid(ulong entityId)
         {
@@ -60,6 +62,21 @@ namespace O3DE
         internal static int Entity_GetChildCount(ulong entityId)
         {
             return ChildrenByEntity.TryGetValue(entityId, out var kids) ? kids.Count : 0;
+        }
+
+        // Nothing in the currently-linked O3DE.Core files calls this anymore
+        // (Entity.GetChildren() was rewritten to call Entity_GetChildren
+        // once instead of this once per child), but it's stubbed with a
+        // call counter anyway so a regression test can assert the old
+        // per-child path stays dead, not just that the new bulk path runs.
+        internal static ulong Entity_GetChildAtIndex(ulong entityId, int index)
+        {
+            GetChildAtIndexCallCount++;
+            if (ChildrenByEntity.TryGetValue(entityId, out var kids) && index >= 0 && index < kids.Count)
+            {
+                return kids[index];
+            }
+            return Entity.InvalidId;
         }
 
         internal static unsafe int Entity_GetChildren(ulong entityId, ulong* outBuffer, int bufferCapacity)
