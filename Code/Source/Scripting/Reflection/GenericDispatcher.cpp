@@ -1777,6 +1777,15 @@ namespace O3DESharp
                 AZ::BehaviorEBus* bus = nullptr;
                 AZ::BehaviorEBusHandler* handler = nullptr;
                 int64_t managedToken = 0;
+
+                // Perf: resolved once (lazily, on first event fire) and
+                // reused for every subsequent event on this handler -
+                // avoids re-doing CoralHostManager's string-keyed
+                // m_coreTypeCache lookup (plus a fresh AZStd::string
+                // construction from the literal) on every single event
+                // dispatch. Populated by ForwardEventToManaged the first
+                // time this proxy forwards an event; nullptr until then.
+                Coral::Type* cachedRegistryType = nullptr;
             };
 
             class ManagedHandlerTable
@@ -1844,8 +1853,9 @@ namespace O3DESharp
                 AZ::BehaviorArgument* parameters)
             {
                 AZ_UNUSED(eventIndex);
-                const int64_t token = static_cast<int64_t>(reinterpret_cast<uintptr_t>(userData));
-                if (token == 0) return;
+                ManagedEBusProxy* proxy = static_cast<ManagedEBusProxy*>(userData);
+                if (proxy == nullptr || proxy->managedToken == 0) return;
+                const int64_t token = proxy->managedToken;
 
                 // Build the args JSON array. Each parameter goes through
                 // BehaviorArgumentToJsonValue which handles all the
@@ -1872,25 +1882,33 @@ namespace O3DESharp
                 argsDoc.Accept(writer);
                 const char* argsJson = buffer.GetString();
 
-                // Invoke EBusHandlerRegistry.DispatchEvent via Coral.
-                // We need the CoralHostManager to resolve the static
-                // method; if it's not available (gem teardown), the
-                // event is dropped (logged at the warning level).
-                ICoralHostManager* hostMgr = CoralHostManagerInterface::Get();
-                if (hostMgr == nullptr)
-                {
-                    AZ_Warning("O3DESharp", false,
-                        "ForwardEventToManaged('%s'): CoralHostManager unavailable; dropping event",
-                        eventName);
-                    return;
-                }
-                Coral::Type* registryType = hostMgr->GetCoreType("O3DE.Reflection.EBusHandlerRegistry");
+                // Resolve EBusHandlerRegistry's Coral::Type once per
+                // registration and cache it on the proxy. Previously this
+                // called CoralHostManager::GetCoreType (a string-keyed
+                // hashmap lookup plus a fresh AZStd::string construction
+                // from the "O3DE.Reflection.EBusHandlerRegistry" literal)
+                // on EVERY event fire, even though the type can never
+                // change once resolved for a given handler registration.
+                Coral::Type* registryType = proxy->cachedRegistryType;
                 if (registryType == nullptr)
                 {
-                    AZ_Warning("O3DESharp", false,
-                        "ForwardEventToManaged('%s'): O3DE.Reflection.EBusHandlerRegistry type not found; dropping event",
-                        eventName);
-                    return;
+                    ICoralHostManager* hostMgr = CoralHostManagerInterface::Get();
+                    if (hostMgr == nullptr)
+                    {
+                        AZ_Warning("O3DESharp", false,
+                            "ForwardEventToManaged('%s'): CoralHostManager unavailable; dropping event",
+                            eventName);
+                        return;
+                    }
+                    registryType = hostMgr->GetCoreType("O3DE.Reflection.EBusHandlerRegistry");
+                    if (registryType == nullptr)
+                    {
+                        AZ_Warning("O3DESharp", false,
+                            "ForwardEventToManaged('%s'): O3DE.Reflection.EBusHandlerRegistry type not found; dropping event",
+                            eventName);
+                        return;
+                    }
+                    proxy->cachedRegistryType = registryType;
                 }
                 // DispatchEvent(long token, string eventName, string argsJson) -> string?
                 // Coral::Type::InvokeStaticMethod marshals string + long
@@ -2714,11 +2732,25 @@ namespace O3DESharp
                 return 0;
             }
 
+            // Allocate the proxy up front (before installing hooks) so
+            // its stable heap address can be handed to InstallGenericHook
+            // as userData. The proxy carries the managed token AND (once
+            // populated on first event fire) the cached Coral::Type* for
+            // EBusHandlerRegistry, so ForwardEventToManaged never needs
+            // to re-resolve the type by name after the first event.
+            auto proxy = AZStd::make_unique<ManagedEBusProxy>();
+            proxy->bus = bus;
+            proxy->handler = handler;
+            proxy->managedToken = managedToken;
+
             // Install our generic hook on every event the handler
-            // exposes. userData carries the managed token (cast via
-            // uintptr_t since BehaviorEBusHandler typedefs userData
-            // as void*).
-            void* userData = reinterpret_cast<void*>(static_cast<uintptr_t>(managedToken));
+            // exposes. userData carries a pointer to the ManagedEBusProxy
+            // itself (stable for the proxy's lifetime - see
+            // UnregisterEBusHandler, which moves the proxy out of
+            // s_managedHandlers into a local via Release() BEFORE calling
+            // handler->Disconnect(), so the proxy stays alive for as long
+            // as the hook could still fire).
+            void* userData = proxy.get();
             for (const auto& evt : handler->GetEvents())
             {
                 if (!handler->InstallGenericHook(
@@ -2772,10 +2804,6 @@ namespace O3DESharp
 
             // Register in the managed-handler table so Unregister can
             // find it and disconnect cleanly.
-            auto proxy = AZStd::make_unique<ManagedEBusProxy>();
-            proxy->bus = bus;
-            proxy->handler = handler;
-            proxy->managedToken = managedToken;
             if (!s_managedHandlers.Register(managedToken, AZStd::move(proxy)))
             {
                 AZ_Warning("O3DESharp", false,
