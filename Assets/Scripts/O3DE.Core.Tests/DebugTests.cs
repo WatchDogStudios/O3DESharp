@@ -98,4 +98,51 @@ public class DebugTests
         InternalCalls.WarningLogs[0].Should().Contain("bad {0} {1}");
         InternalCalls.WarningLogs[0].Should().Contain("[format error:");
     }
+
+    // SafeFormat's XML doc justifies catching the broad `Exception` type (not just
+    // FormatException) by naming two additional failure modes: a null args array, and an
+    // args value whose ToString() throws. The tests below exercise exactly those two cases -
+    // without them, the suite would pass identically if the catch clause were narrowed to
+    // `catch (FormatException)`, which would undercut the documented design intent.
+
+    [Fact]
+    public void Log_WithNullArgsArray_DoesNotThrow()
+    {
+        Action act = () => Debug.Log("bad {0}", (object[])null!);
+
+        act.Should().NotThrow();
+    }
+
+    [Fact]
+    public void Log_WithNullArgsArray_LogsRawFormatAndErrorMarker()
+    {
+        Debug.Log("bad {0}", (object[])null!);
+
+        InternalCalls.InfoLogs.Should().ContainSingle();
+        InternalCalls.InfoLogs[0].Should().Contain("bad {0}");
+        InternalCalls.InfoLogs[0].Should().Contain("[format error:");
+    }
+
+    private sealed class ThrowsOnToString
+    {
+        public override string ToString() => throw new InvalidOperationException("boom");
+    }
+
+    [Fact]
+    public void Log_WithArgWhoseToStringThrows_DoesNotThrow()
+    {
+        Action act = () => Debug.Log("value is {0}", new ThrowsOnToString());
+
+        act.Should().NotThrow();
+    }
+
+    [Fact]
+    public void Log_WithArgWhoseToStringThrows_LogsRawFormatAndErrorMarker()
+    {
+        Debug.Log("value is {0}", new ThrowsOnToString());
+
+        InternalCalls.InfoLogs.Should().ContainSingle();
+        InternalCalls.InfoLogs[0].Should().Contain("value is {0}");
+        InternalCalls.InfoLogs[0].Should().Contain("[format error:");
+    }
 }
