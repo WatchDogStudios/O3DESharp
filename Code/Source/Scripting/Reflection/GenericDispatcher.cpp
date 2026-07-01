@@ -1925,7 +1925,7 @@ namespace O3DESharp
             template<typename ContextLabelFn>
             Coral::String CallBehaviorMethodAndMarshalResult(
                 AZ::BehaviorMethod* method,
-                [[maybe_unused]] ContextLabelFn&& contextLabelFn,
+                const ContextLabelFn& contextLabelFn,
                 Coral::String argsJson)
             {
                 std::string argsJsonStr(argsJson);
