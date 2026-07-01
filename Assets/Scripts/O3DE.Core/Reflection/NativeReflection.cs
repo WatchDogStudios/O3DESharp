@@ -569,7 +569,12 @@ namespace O3DE.Reflection
                 // when the target parameter is AZ::EntityId.
                 Entity e    => e.Id,
                 NativeObject no => no.Handle,
-                _           => arg.ToString()
+                _ => throw new NotSupportedException(
+                    $"Unsupported argument type {arg.GetType()} in NativeReflection.SerializeArgumentToObject. " +
+                    "Add an explicit case for this type (and its native-side array/scalar shape) instead of " +
+                    "letting it silently stringify - the C++ marshaler in " +
+                    "O3DESharp::Marshaling::JsonValueToBehaviorParameter does not know how to consume a display " +
+                    "string for this parameter type.")
             };
         }
 

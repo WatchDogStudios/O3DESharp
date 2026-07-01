@@ -39,6 +39,7 @@
     <Compile Include="..\O3DE.Core\Math\Quaternion.cs" Link="O3DE.Core\Math\Quaternion.cs" />
     <Compile Include="..\O3DE.Core\Debugger.cs" Link="O3DE.Core\Debugger.cs" />
     <Compile Include="..\O3DE.Core\Debug.cs" Link="O3DE.Core\Debug.cs" />
+    <Compile Include="..\O3DE.Core\Reflection\NativeReflection.cs" Link="O3DE.Core\Reflection\NativeReflection.cs" />
   </ItemGroup>
 
   <ItemGroup>
