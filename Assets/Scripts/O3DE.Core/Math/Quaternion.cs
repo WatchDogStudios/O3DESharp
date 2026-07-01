@@ -485,13 +485,25 @@ namespace O3DE
 
         #region Equality
 
+        /// <summary>
+        /// Returns true if this quaternion is exactly equal to <paramref name="other"/>
+        /// (bit-for-bit component comparison via <c>==</c> on each float), matching
+        /// the convention used by <see cref="System.Numerics.Quaternion"/>.
+        /// This is NOT tolerance-based: two quaternions that differ by 1e-7 in a
+        /// single component are not equal, even though they represent visually
+        /// identical rotations. Some game engines use an epsilon-tolerant Equals,
+        /// but that breaks the contract that equal objects must always report
+        /// equal hash codes, which in turn breaks Dictionary/HashSet lookups.
+        /// Callers that want tolerance-based comparison should use
+        /// <c>Quaternion.Angle(a, b) &lt; epsilonDegrees</c> instead of relying
+        /// on <see cref="Equals(Quaternion)"/> or <c>==</c>.
+        /// </summary>
         public bool Equals(Quaternion other)
         {
-            const float epsilon = 1e-6f;
-            return MathF.Abs(X - other.X) < epsilon &&
-                   MathF.Abs(Y - other.Y) < epsilon &&
-                   MathF.Abs(Z - other.Z) < epsilon &&
-                   MathF.Abs(W - other.W) < epsilon;
+            return X == other.X &&
+                   Y == other.Y &&
+                   Z == other.Z &&
+                   W == other.W;
         }
 
         public override bool Equals(object? obj)

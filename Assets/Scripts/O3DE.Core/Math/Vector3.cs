@@ -343,12 +343,26 @@ namespace O3DE
 
         #region Equality
 
+        /// <summary>
+        /// Returns true if this vector is exactly equal to <paramref name="other"/>
+        /// (bit-for-bit component comparison via <c>==</c> on each float), matching
+        /// the convention used by <see cref="System.Numerics.Vector3"/>.
+        /// This is NOT tolerance-based: (1e-7f, 0, 0) is not equal to (0, 0, 0)
+        /// even though the difference is tiny. Some game engines use an
+        /// epsilon-tolerant Equals for vectors, but that breaks the contract
+        /// that equal objects must always report equal hash codes, which in
+        /// turn breaks Dictionary/HashSet lookups. Callers that want
+        /// tolerance-based comparison should use
+        /// <c>Vector3.Distance(a, b) &lt; epsilon</c> (or compare
+        /// <see cref="SqrMagnitude"/> of the difference against
+        /// <c>epsilon * epsilon</c> to avoid the square root) instead of
+        /// relying on <see cref="Equals(Vector3)"/> or <c>==</c>.
+        /// </summary>
         public bool Equals(Vector3 other)
         {
-            const float epsilon = 1e-6f;
-            return MathF.Abs(X - other.X) < epsilon &&
-                   MathF.Abs(Y - other.Y) < epsilon &&
-                   MathF.Abs(Z - other.Z) < epsilon;
+            return X == other.X &&
+                   Y == other.Y &&
+                   Z == other.Z;
         }
 
         public override bool Equals(object? obj)
