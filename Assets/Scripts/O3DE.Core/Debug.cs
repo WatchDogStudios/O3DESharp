@@ -20,6 +20,26 @@ namespace O3DE
     public static class Debug
     {
         /// <summary>
+        /// Formats <paramref name="format"/> with <paramref name="args"/>, falling back to a
+        /// diagnostic-safe string if formatting itself throws (e.g. a mismatched placeholder
+        /// count, or an args value whose ToString() throws). A logging API must never throw
+        /// back into caller code just because the message it was asked to log was malformed.
+        /// </summary>
+        /// <param name="format">The format string</param>
+        /// <param name="args">The format arguments</param>
+        private static string SafeFormat(string format, object[] args)
+        {
+            try
+            {
+                return string.Format(format, args);
+            }
+            catch (Exception ex)
+            {
+                return $"{format} [format error: {ex.Message}]";
+            }
+        }
+
+        /// <summary>
         /// Logs an informational message to the O3DE console.
         /// </summary>
         /// <param name="message">The message to log</param>
@@ -44,7 +64,7 @@ namespace O3DE
         /// <param name="args">The format arguments</param>
         public static void Log(string format, params object[] args)
         {
-            unsafe { InternalCalls.Log_Info(string.Format(format, args)); }
+            unsafe { InternalCalls.Log_Info(SafeFormat(format, args)); }
         }
 
         /// <summary>
@@ -72,7 +92,7 @@ namespace O3DE
         /// <param name="args">The format arguments</param>
         public static void LogWarning(string format, params object[] args)
         {
-            unsafe { InternalCalls.Log_Warning(string.Format(format, args)); }
+            unsafe { InternalCalls.Log_Warning(SafeFormat(format, args)); }
         }
 
         /// <summary>
@@ -100,7 +120,7 @@ namespace O3DE
         /// <param name="args">The format arguments</param>
         public static void LogError(string format, params object[] args)
         {
-            unsafe { InternalCalls.Log_Error(string.Format(format, args)); }
+            unsafe { InternalCalls.Log_Error(SafeFormat(format, args)); }
         }
 
         /// <summary>
@@ -191,7 +211,7 @@ namespace O3DE
         [Conditional("O3DE_DEBUG")]
         public static void LogDebug(string format, params object[] args)
         {
-            unsafe { InternalCalls.Log_Info($"[DEBUG] {string.Format(format, args)}"); }
+            unsafe { InternalCalls.Log_Info($"[DEBUG] {SafeFormat(format, args)}"); }
         }
     }
 }
