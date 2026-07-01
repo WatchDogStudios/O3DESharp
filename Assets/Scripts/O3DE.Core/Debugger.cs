@@ -71,18 +71,32 @@ namespace O3DE
         /// <returns>True if a debugger was attached before the timeout; false otherwise.</returns>
         public static bool WaitForAttach(TimeSpan timeout = default)
         {
-            // Default(TimeSpan) is Zero - treat as "wait forever". Callers
-            // that genuinely want a single-shot check should use IsAttached.
-            // Negative spans (e.g. Timeout.InfiniteTimeSpan) also mean infinite.
-            bool waitForever = timeout <= TimeSpan.Zero;
-            DateTime deadline = waitForever
-                ? DateTime.MaxValue
-                : DateTime.UtcNow + timeout;
-
             if (IsAttached)
             {
                 return true;
             }
+
+            // Only a strictly negative timeout (e.g. Timeout.InfiniteTimeSpan,
+            // which is -1ms) means "wait forever". TimeSpan.Zero - including
+            // the default parameter value, since default(TimeSpan) is Zero -
+            // means "check IsAttached once and return immediately", matching
+            // this method's documented contract above. This is a deliberate
+            // behavior change from earlier versions where Zero (and therefore
+            // the no-args call WaitForAttach()) silently blocked forever;
+            // see SCRIPTING_GUIDE.md's troubleshooting FAQ for the symptom
+            // this used to cause. Callers that want the old "block forever"
+            // behavior must now pass Timeout.InfiniteTimeSpan explicitly.
+            bool waitForever = timeout < TimeSpan.Zero;
+            if (!waitForever && timeout == TimeSpan.Zero)
+            {
+                // Single-shot check: IsAttached was already false above, so
+                // there is nothing to poll for. Return immediately.
+                return false;
+            }
+
+            DateTime deadline = waitForever
+                ? DateTime.MaxValue
+                : DateTime.UtcNow + timeout;
 
             // Log once so the user knows the editor is paused on purpose.
             Debug.Log(waitForever
