@@ -10,8 +10,17 @@ namespace O3DE
     /// in this project constructs a real Entity; only NativeReflection.cs's
     /// compile-time type reference needs satisfying.
     /// </summary>
+    /// <remarks>
+    /// Deliberately has no parameterless constructor: the real Entity.Id is
+    /// backed by a live native entity handle, so a silent default of 0 here
+    /// would look like a valid entity to SerializeArgumentToObject's
+    /// `Entity e => e.Id` arm. Any test that needs an Entity-shaped value
+    /// must construct one with an explicit Id via <see cref="Entity(ulong)"/>.
+    /// </remarks>
     public class Entity
     {
         public ulong Id { get; }
+
+        public Entity(ulong id) => Id = id;
     }
 }

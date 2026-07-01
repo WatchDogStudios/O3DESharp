@@ -1,5 +1,13 @@
 namespace Coral.Managed.Interop
 {
+    // This namespace exists purely to give O3DE.Core's `using Coral.Managed.Interop;`
+    // directives (unused in Debug.cs, used for NativeString/Bool32 in
+    // NativeReflection.cs) something to resolve to, without the real
+    // Coral.Managed.dll - a native-build artifact not present on a bare
+    // checkout (see the O3DE.Core.Tests.csproj comment on why O3DE.Core.dll
+    // isn't linked directly). The two structs below are the only members
+    // any linked-in O3DE.Core file actually needs from this namespace.
+
     /// <summary>
     /// Minimal stand-in for Coral.Managed.Interop.NativeString, used only so that
     /// NativeReflection.cs (which declares delegate* unmanaged&lt;NativeString, ...&gt;
