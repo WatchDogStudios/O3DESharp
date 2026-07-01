@@ -66,7 +66,17 @@ namespace O3DESharp::Marshaling
         // unverified container/include. 16-byte alignment comfortably
         // covers AZStd::string / AZStd::vector<AZ::u8>'s actual alignment
         // needs (both are pointer/size_t-based control blocks, not SIMD
-        // types) on every platform this gem targets.
+        // types) on every platform this gem targets. The static_asserts
+        // below turn that assumption into a compile-time guarantee: if a
+        // future AZStd version ever needs stricter alignment than this,
+        // placement-new below would otherwise construct into
+        // under-aligned storage - undefined behavior that may not
+        // reliably crash.
+        static_assert(alignof(AZStd::string) <= 16,
+            "StackAllocator's inline arena alignment assumption violated");
+        static_assert(alignof(AZStd::vector<AZ::u8>) <= 16,
+            "StackAllocator's inline arena alignment assumption violated");
+
         alignas(16) AZ::u8 m_arena[kInlineArenaBytes];
         size_t m_arenaOffset = 0;
 
