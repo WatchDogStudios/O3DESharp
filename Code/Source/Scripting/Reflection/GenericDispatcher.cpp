@@ -1791,7 +1791,21 @@ namespace O3DESharp
             class ManagedHandlerTable
             {
             public:
-                bool Register(int64_t token, AZStd::unique_ptr<ManagedEBusProxy> proxy)
+                // Takes proxy by non-const lvalue reference (NOT by value)
+                // and only moves it on the success path. This matters now
+                // that ForwardEventToManaged's hooks are already installed
+                // against this exact proxy's address by the time Register
+                // is called (see RegisterEBusHandler): a by-value parameter
+                // would move-construct from the caller's proxy unconditionally
+                // at the call site, and if this function then rejected a
+                // duplicate token without storing it, that by-value copy
+                // would be destroyed - freeing the ManagedEBusProxy - at the
+                // end of THIS function's scope, before the caller's rollback
+                // path (handler->Disconnect()) ever runs. Rejecting without
+                // touching proxy keeps the caller's unique_ptr - and the
+                // object the just-installed hooks point at - alive until the
+                // caller has a chance to disconnect the handler first.
+                bool Register(int64_t token, AZStd::unique_ptr<ManagedEBusProxy>& proxy)
                 {
                     AZStd::lock_guard<AZStd::mutex> lock(m_mutex);
                     if (m_entries.find(token) != m_entries.end()) return false;
@@ -1829,9 +1843,13 @@ namespace O3DESharp
             static ManagedHandlerTable s_managedHandlers;
 
             // The generic hook for every event on a managed handler.
-            // userData carries the managed token (encoded as void* via
-            // a uintptr_t cast - tokens are int64 so this fits in a
-            // pointer on 64-bit platforms; on 32-bit we'd need to box).
+            // userData carries a ManagedEBusProxy* (the per-registration
+            // proxy allocated in RegisterEBusHandler, stable for the
+            // registration's lifetime - see that function and
+            // UnregisterEBusHandler for the ownership/lifetime story).
+            // It carries the managed token plus a lazily-cached
+            // Coral::Type* for EBusHandlerRegistry, resolved once on
+            // first event fire and reused thereafter.
             //
             // The hook receives the AZ::BehaviorArguments for the
             // event - we marshal them into a JSON array via the
@@ -2795,6 +2813,14 @@ namespace O3DESharp
             }
             if (!connected)
             {
+                // Safe despite hooks already being installed against
+                // proxy.get(): the handler never successfully subscribed
+                // to the bus, so the bus can never dispatch an event to
+                // it - hook function pointers on an unconnected handler
+                // are simply never invoked, regardless of what userData
+                // they carry. proxy is still fully alive here (nothing
+                // has touched it since its construction above) and is
+                // destroyed normally when this function returns.
                 AZ_Warning("O3DESharp", false,
                     "RegisterEBusHandler(token=%lld): handler->Connect returned false for bus '%s'",
                     static_cast<long long>(managedToken), busNameStr.c_str());
@@ -2803,8 +2829,15 @@ namespace O3DESharp
             }
 
             // Register in the managed-handler table so Unregister can
-            // find it and disconnect cleanly.
-            if (!s_managedHandlers.Register(managedToken, AZStd::move(proxy)))
+            // find it and disconnect cleanly. Register takes proxy by
+            // reference (not by value + AZStd::move) specifically so a
+            // duplicate-token rejection leaves proxy - and the
+            // ManagedEBusProxy the just-installed hooks point at - alive
+            // and unmoved, letting the rollback below disconnect the
+            // handler (which IS live at this point, unlike the
+            // !connected case above) before proxy is destroyed normally
+            // at this function's return.
+            if (!s_managedHandlers.Register(managedToken, proxy))
             {
                 AZ_Warning("O3DESharp", false,
                     "RegisterEBusHandler(token=%lld): duplicate token; rolling back",
