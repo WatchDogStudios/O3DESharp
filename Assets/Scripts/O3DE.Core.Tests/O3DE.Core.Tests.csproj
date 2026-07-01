@@ -1,0 +1,49 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net9.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <IsPackable>false</IsPackable>
+    <IsTestProject>true</IsTestProject>
+    <RootNamespace>O3DE.Core.Tests</RootNamespace>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="coverlet.collector" Version="6.0.0">
+      <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
+      <PrivateAssets>all</PrivateAssets>
+    </PackageReference>
+    <PackageReference Include="FluentAssertions" Version="6.12.0" />
+    <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.8.0" />
+    <PackageReference Include="xunit" Version="2.6.2" />
+    <PackageReference Include="xunit.runner.visualstudio" Version="2.5.4">
+      <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
+      <PrivateAssets>all</PrivateAssets>
+    </PackageReference>
+  </ItemGroup>
+
+  <!--
+    O3DE.Core.dll can't be referenced directly: its csproj requires
+    bin/Coral/Coral.Managed.dll (a native-build artifact not present on a
+    bare CI checkout), and several of its types call through InternalCalls'
+    unmanaged function pointers that Coral only populates at runtime. We
+    compile the pure-managed math/logic files under test directly instead,
+    matching the pattern BindingGenerator.Tests already uses for
+    ExposedProperty.cs.
+  -->
+  <ItemGroup>
+    <Compile Include="..\O3DE.Core\Math\Vector2.cs" Link="O3DE.Core\Math\Vector2.cs" />
+    <Compile Include="..\O3DE.Core\Math\Vector3.cs" Link="O3DE.Core\Math\Vector3.cs" />
+    <Compile Include="..\O3DE.Core\Math\Quaternion.cs" Link="O3DE.Core\Math\Quaternion.cs" />
+    <Compile Include="..\O3DE.Core\Debugger.cs" Link="O3DE.Core\Debugger.cs" />
+    <Compile Include="..\O3DE.Core\Debug.cs" Link="O3DE.Core\Debug.cs" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Using Include="Xunit" />
+    <Using Include="FluentAssertions" />
+  </ItemGroup>
+
+</Project>

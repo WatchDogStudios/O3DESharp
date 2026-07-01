@@ -165,6 +165,13 @@ object CSharpLinux : BuildType({
                 "${'$'}HOME/.dotnet/dotnet" test Code/Tools/BindingGenerator.Tests/BindingGenerator.Tests.csproj -c Release --nologo --logger "console;verbosity=normal"
             """.trimIndent()
         }
+        script {
+            name = "Run O3DE.Core xUnit tests"
+            scriptContent = """
+                set -e
+                "${'$'}HOME/.dotnet/dotnet" test Assets/Scripts/O3DE.Core.Tests/O3DE.Core.Tests.csproj -c Release --nologo --logger "console;verbosity=normal"
+            """.trimIndent()
+        }
     }
 
     triggers {
@@ -266,6 +273,13 @@ object CSharpWindows : BuildType({
             name = "Run BindingGenerator xUnit tests"
             scriptContent = """
                 "%LOCALAPPDATA%\Microsoft\dotnet\dotnet.exe" test Code/Tools/BindingGenerator.Tests/BindingGenerator.Tests.csproj -c Release --nologo --logger "console;verbosity=normal"
+                if %errorlevel% neq 0 exit /b %errorlevel%
+            """.trimIndent()
+        }
+        script {
+            name = "Run O3DE.Core xUnit tests"
+            scriptContent = """
+                "%LOCALAPPDATA%\Microsoft\dotnet\dotnet.exe" test Assets/Scripts/O3DE.Core.Tests/O3DE.Core.Tests.csproj -c Release --nologo --logger "console;verbosity=normal"
                 if %errorlevel% neq 0 exit /b %errorlevel%
             """.trimIndent()
         }
