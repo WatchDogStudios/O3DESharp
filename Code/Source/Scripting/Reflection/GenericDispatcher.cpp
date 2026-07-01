@@ -1922,13 +1922,21 @@ namespace O3DESharp
             // contextLabel is used purely for the error-log prefix
             // ("InvokeStaticMethod('AZ::Vector3', 'Length'): ...") so
             // failures point at the right call site.
+            template<typename ContextLabelFn>
             Coral::String CallBehaviorMethodAndMarshalResult(
                 AZ::BehaviorMethod* method,
-                [[maybe_unused]] const char* contextLabel,
+                [[maybe_unused]] ContextLabelFn&& contextLabelFn,
                 Coral::String argsJson)
             {
                 std::string argsJsonStr(argsJson);
 
+                // contextLabelFn is a zero-argument callable returning
+                // AZStd::string (the call sites pass a
+                // `auto contextLabel = [&]() -> AZStd::string { ... };`
+                // lambda). It is only invoked here, inside makeError, so a
+                // caller whose behavior method call succeeds never pays the
+                // AZStd::string::format cost of building its diagnostic
+                // label at all - this is the whole point of this task.
                 auto makeError = [&](const char* fmt, ...) -> Coral::String
                 {
                     va_list args;
@@ -1936,7 +1944,8 @@ namespace O3DESharp
                     char buf[1024] = {};
                     azvsnprintf(buf, sizeof(buf), fmt, args);
                     va_end(args);
-                    AZ_Warning("O3DESharp", false, "%s: %s", contextLabel, buf);
+                    const AZStd::string label = contextLabelFn();
+                    AZ_Warning("O3DESharp", false, "%s: %s", label.c_str(), buf);
                     AZStd::string msg = AZStd::string::format("{\"error\":\"%s\"}", buf);
                     return Coral::String::New(msg.c_str());
                 };
@@ -2043,14 +2052,24 @@ namespace O3DESharp
         {
             std::string classNameStr(className);
             std::string methodNameStr(methodName);
-            const AZStd::string contextLabel = AZStd::string::format(
-                "InvokeStaticMethod('%s', '%s')", classNameStr.c_str(), methodNameStr.c_str());
+            // Deferred: only formatted when an error branch below actually
+            // needs it, or once (unavoidably) on the path that proceeds to
+            // CallBehaviorMethodAndMarshalResult - but that helper is now a
+            // template accepting this lambda directly, so even THAT call
+            // never formats the string unless ITS OWN internal error path
+            // fires. A fully successful call therefore never pays the
+            // AZStd::string::format cost at all.
+            auto contextLabel = [&]() -> AZStd::string
+            {
+                return AZStd::string::format(
+                    "InvokeStaticMethod('%s', '%s')", classNameStr.c_str(), methodNameStr.c_str());
+            };
 
             auto* ctx = GetBehaviorContext();
             if (ctx == nullptr)
             {
                 AZStd::string msg = AZStd::string::format(
-                    "{\"error\":\"%s: no BehaviorContext\"}", contextLabel.c_str());
+                    "{\"error\":\"%s: no BehaviorContext\"}", contextLabel().c_str());
                 return Coral::String::New(msg.c_str());
             }
 
@@ -2058,7 +2077,7 @@ namespace O3DESharp
             if (classIt == ctx->m_classes.end())
             {
                 AZStd::string msg = AZStd::string::format(
-                    "{\"error\":\"%s: class not reflected\"}", contextLabel.c_str());
+                    "{\"error\":\"%s: class not reflected\"}", contextLabel().c_str());
                 return Coral::String::New(msg.c_str());
             }
             AZ::BehaviorClass* cls = classIt->second;
@@ -2067,7 +2086,7 @@ namespace O3DESharp
             if (methodIt == cls->m_methods.end())
             {
                 AZStd::string msg = AZStd::string::format(
-                    "{\"error\":\"%s: method not reflected on class\"}", contextLabel.c_str());
+                    "{\"error\":\"%s: method not reflected on class\"}", contextLabel().c_str());
                 return Coral::String::New(msg.c_str());
             }
             AZ::BehaviorMethod* method = methodIt->second;
@@ -2075,21 +2094,29 @@ namespace O3DESharp
             {
                 AZStd::string msg = AZStd::string::format(
                     "{\"error\":\"%s: method is an instance member; use InvokeInstanceMethod\"}",
-                    contextLabel.c_str());
+                    contextLabel().c_str());
                 return Coral::String::New(msg.c_str());
             }
 
-            return CallBehaviorMethodAndMarshalResult(method, contextLabel.c_str(), argsJson);
+            return CallBehaviorMethodAndMarshalResult(method, contextLabel, argsJson);
         }
 
         Coral::String InvokeInstanceMethod(Coral::String className, Coral::String methodName, int64_t instanceHandle, Coral::String argsJson)
         {
             std::string classNameStr(className);
             std::string methodNameStr(methodName);
-            const AZStd::string contextLabel = AZStd::string::format(
-                "InvokeInstanceMethod('%s', '%s', handle=%lld)",
-                classNameStr.c_str(), methodNameStr.c_str(),
-                static_cast<long long>(instanceHandle));
+            // Deferred: only formatted when actually read below (an early
+            // validation branch, the class-name-mismatch diagnostic, or
+            // makeError's own AZ_Warning) - this function's fully
+            // successful path never touches it, so a lazy lambda avoids
+            // formatting a label that would otherwise be discarded.
+            auto contextLabel = [&]() -> AZStd::string
+            {
+                return AZStd::string::format(
+                    "InvokeInstanceMethod('%s', '%s', handle=%lld)",
+                    classNameStr.c_str(), methodNameStr.c_str(),
+                    static_cast<long long>(instanceHandle));
+            };
 
             // Resolve the handle. Empty/stale handle -> immediate error
             // with the entry-point label, so the C# call site can see
@@ -2099,14 +2126,14 @@ namespace O3DESharp
             {
                 AZStd::string msg = AZStd::string::format(
                     "{\"error\":\"%s: instance handle not found in table (already destroyed or never allocated)\"}",
-                    contextLabel.c_str());
+                    contextLabel().c_str());
                 return Coral::String::New(msg.c_str());
             }
             if (entry.behaviorClass == nullptr || entry.address == nullptr)
             {
                 AZStd::string msg = AZStd::string::format(
                     "{\"error\":\"%s: instance entry corrupted (class or address null)\"}",
-                    contextLabel.c_str());
+                    contextLabel().c_str());
                 return Coral::String::New(msg.c_str());
             }
 
@@ -2120,7 +2147,7 @@ namespace O3DESharp
                 AZ_Warning("O3DESharp", false,
                     "%s: caller's class name '%s' differs from handle's registered class '%s' "
                     "- proceeding with handle's class",
-                    contextLabel.c_str(), classNameStr.c_str(), entry.className.c_str());
+                    contextLabel().c_str(), classNameStr.c_str(), entry.className.c_str());
             }
 
             auto methodIt = entry.behaviorClass->m_methods.find(methodNameStr.c_str());
@@ -2128,7 +2155,7 @@ namespace O3DESharp
             {
                 AZStd::string msg = AZStd::string::format(
                     "{\"error\":\"%s: method not reflected on class '%s'\"}",
-                    contextLabel.c_str(), entry.className.c_str());
+                    contextLabel().c_str(), entry.className.c_str());
                 return Coral::String::New(msg.c_str());
             }
             AZ::BehaviorMethod* method = methodIt->second;
@@ -2136,7 +2163,7 @@ namespace O3DESharp
             {
                 AZStd::string msg = AZStd::string::format(
                     "{\"error\":\"%s: method is static; use InvokeStaticMethod\"}",
-                    contextLabel.c_str());
+                    contextLabel().c_str());
                 return Coral::String::New(msg.c_str());
             }
 
@@ -2163,7 +2190,7 @@ namespace O3DESharp
                 char buf[1024] = {};
                 azvsnprintf(buf, sizeof(buf), fmt, vargs);
                 va_end(vargs);
-                AZ_Warning("O3DESharp", false, "%s: %s", contextLabel.c_str(), buf);
+                AZ_Warning("O3DESharp", false, "%s: %s", contextLabel().c_str(), buf);
                 AZStd::string m = AZStd::string::format("{\"error\":\"%s\"}", buf);
                 return Coral::String::New(m.c_str());
             };
@@ -2259,14 +2286,17 @@ namespace O3DESharp
         Coral::String InvokeGlobalMethod(Coral::String methodName, Coral::String argsJson)
         {
             std::string methodNameStr(methodName);
-            const AZStd::string contextLabel = AZStd::string::format(
-                "InvokeGlobalMethod('%s')", methodNameStr.c_str());
+            auto contextLabel = [&]() -> AZStd::string
+            {
+                return AZStd::string::format(
+                    "InvokeGlobalMethod('%s')", methodNameStr.c_str());
+            };
 
             auto* ctx = GetBehaviorContext();
             if (ctx == nullptr)
             {
                 AZStd::string msg = AZStd::string::format(
-                    "{\"error\":\"%s: no BehaviorContext\"}", contextLabel.c_str());
+                    "{\"error\":\"%s: no BehaviorContext\"}", contextLabel().c_str());
                 return Coral::String::New(msg.c_str());
             }
 
@@ -2274,33 +2304,36 @@ namespace O3DESharp
             if (methodIt == ctx->m_methods.end())
             {
                 AZStd::string msg = AZStd::string::format(
-                    "{\"error\":\"%s: global method not reflected\"}", contextLabel.c_str());
+                    "{\"error\":\"%s: global method not reflected\"}", contextLabel().c_str());
                 return Coral::String::New(msg.c_str());
             }
             AZ::BehaviorMethod* method = methodIt->second;
-            return CallBehaviorMethodAndMarshalResult(method, contextLabel.c_str(), argsJson);
+            return CallBehaviorMethodAndMarshalResult(method, contextLabel, argsJson);
         }
 
         Coral::String GetProperty(Coral::String className, Coral::String propertyName, int64_t instanceHandle)
         {
             std::string classNameStr(className);
             std::string propertyNameStr(propertyName);
-            const AZStd::string contextLabel = AZStd::string::format(
-                "GetProperty('%s.%s', handle=%lld)",
-                classNameStr.c_str(), propertyNameStr.c_str(),
-                static_cast<long long>(instanceHandle));
+            auto contextLabel = [&]() -> AZStd::string
+            {
+                return AZStd::string::format(
+                    "GetProperty('%s.%s', handle=%lld)",
+                    classNameStr.c_str(), propertyNameStr.c_str(),
+                    static_cast<long long>(instanceHandle));
+            };
 
             InstanceEntry entry;
             if (!s_instanceTable.Lookup(instanceHandle, entry))
             {
                 AZStd::string msg = AZStd::string::format(
-                    "{\"error\":\"%s: instance handle not found\"}", contextLabel.c_str());
+                    "{\"error\":\"%s: instance handle not found\"}", contextLabel().c_str());
                 return Coral::String::New(msg.c_str());
             }
             if (entry.behaviorClass == nullptr || entry.address == nullptr)
             {
                 AZStd::string msg = AZStd::string::format(
-                    "{\"error\":\"%s: instance entry corrupted\"}", contextLabel.c_str());
+                    "{\"error\":\"%s: instance entry corrupted\"}", contextLabel().c_str());
                 return Coral::String::New(msg.c_str());
             }
 
@@ -2309,14 +2342,14 @@ namespace O3DESharp
             {
                 AZStd::string msg = AZStd::string::format(
                     "{\"error\":\"%s: property not reflected on class '%s'\"}",
-                    contextLabel.c_str(), entry.className.c_str());
+                    contextLabel().c_str(), entry.className.c_str());
                 return Coral::String::New(msg.c_str());
             }
             AZ::BehaviorProperty* prop = propIt->second;
             if (prop->m_getter == nullptr)
             {
                 AZStd::string msg = AZStd::string::format(
-                    "{\"error\":\"%s: property has no getter\"}", contextLabel.c_str());
+                    "{\"error\":\"%s: property has no getter\"}", contextLabel().c_str());
                 return Coral::String::New(msg.c_str());
             }
 
@@ -2337,7 +2370,7 @@ namespace O3DESharp
             if (!ok)
             {
                 AZStd::string msg = AZStd::string::format(
-                    "{\"error\":\"%s: getter Call returned false\"}", contextLabel.c_str());
+                    "{\"error\":\"%s: getter Call returned false\"}", contextLabel().c_str());
                 return Coral::String::New(msg.c_str());
             }
             if (result.m_typeId.IsNull())
@@ -2357,7 +2390,7 @@ namespace O3DESharp
             {
                 AZStd::string msg = AZStd::string::format(
                     "{\"error\":\"%s: result marshal: %s\"}",
-                    contextLabel.c_str(), resultError.c_str());
+                    contextLabel().c_str(), resultError.c_str());
                 return Coral::String::New(msg.c_str());
             }
             resultDoc.AddMember("result", resultValue, resultDoc.GetAllocator());
@@ -2371,32 +2404,35 @@ namespace O3DESharp
         {
             std::string classNameStr(className);
             std::string propertyNameStr(propertyName);
-            const AZStd::string contextLabel = AZStd::string::format(
-                "SetProperty('%s.%s', handle=%lld)",
-                classNameStr.c_str(), propertyNameStr.c_str(),
-                static_cast<long long>(instanceHandle));
+            auto contextLabel = [&]() -> AZStd::string
+            {
+                return AZStd::string::format(
+                    "SetProperty('%s.%s', handle=%lld)",
+                    classNameStr.c_str(), propertyNameStr.c_str(),
+                    static_cast<long long>(instanceHandle));
+            };
 
             InstanceEntry entry;
             if (!s_instanceTable.Lookup(instanceHandle, entry))
             {
-                AZ_Warning("O3DESharp", false, "%s: instance handle not found", contextLabel.c_str());
+                AZ_Warning("O3DESharp", false, "%s: instance handle not found", contextLabel().c_str());
                 return false;
             }
             if (entry.behaviorClass == nullptr || entry.address == nullptr)
             {
-                AZ_Warning("O3DESharp", false, "%s: instance entry corrupted", contextLabel.c_str());
+                AZ_Warning("O3DESharp", false, "%s: instance entry corrupted", contextLabel().c_str());
                 return false;
             }
             auto propIt = entry.behaviorClass->m_properties.find(propertyNameStr.c_str());
             if (propIt == entry.behaviorClass->m_properties.end())
             {
-                AZ_Warning("O3DESharp", false, "%s: property not reflected", contextLabel.c_str());
+                AZ_Warning("O3DESharp", false, "%s: property not reflected", contextLabel().c_str());
                 return false;
             }
             AZ::BehaviorProperty* prop = propIt->second;
             if (prop->m_setter == nullptr)
             {
-                AZ_Warning("O3DESharp", false, "%s: property has no setter (readonly)", contextLabel.c_str());
+                AZ_Warning("O3DESharp", false, "%s: property has no setter (readonly)", contextLabel().c_str());
                 return false;
             }
 
@@ -2413,7 +2449,7 @@ namespace O3DESharp
             if (valueDoc.HasParseError())
             {
                 AZ_Warning("O3DESharp", false, "%s: value JSON parse error at offset %zu",
-                    contextLabel.c_str(), valueDoc.GetErrorOffset());
+                    contextLabel().c_str(), valueDoc.GetErrorOffset());
                 return false;
             }
 
@@ -2422,7 +2458,7 @@ namespace O3DESharp
             if (valueParam == nullptr)
             {
                 AZ_Warning("O3DESharp", false, "%s: setter has no value parameter (corrupted reflection)",
-                    contextLabel.c_str());
+                    contextLabel().c_str());
                 return false;
             }
 
@@ -2433,7 +2469,7 @@ namespace O3DESharp
                     valueDoc, *valueParam, valueArg, marshalAlloc, marshalError))
             {
                 AZ_Warning("O3DESharp", false, "%s: value marshal: %s",
-                    contextLabel.c_str(), marshalError.c_str());
+                    contextLabel().c_str(), marshalError.c_str());
                 return false;
             }
 
@@ -2441,7 +2477,7 @@ namespace O3DESharp
             const bool ok = prop->m_setter->Call(callArgs, 2, nullptr);
             if (!ok)
             {
-                AZ_Warning("O3DESharp", false, "%s: setter Call returned false", contextLabel.c_str());
+                AZ_Warning("O3DESharp", false, "%s: setter Call returned false", contextLabel().c_str());
                 return false;
             }
             return true;
@@ -2450,14 +2486,17 @@ namespace O3DESharp
         Coral::String GetGlobalProperty(Coral::String propertyName)
         {
             std::string propertyNameStr(propertyName);
-            const AZStd::string contextLabel = AZStd::string::format(
-                "GetGlobalProperty('%s')", propertyNameStr.c_str());
+            auto contextLabel = [&]() -> AZStd::string
+            {
+                return AZStd::string::format(
+                    "GetGlobalProperty('%s')", propertyNameStr.c_str());
+            };
 
             auto* ctx = GetBehaviorContext();
             if (ctx == nullptr)
             {
                 AZStd::string msg = AZStd::string::format(
-                    "{\"error\":\"%s: no BehaviorContext\"}", contextLabel.c_str());
+                    "{\"error\":\"%s: no BehaviorContext\"}", contextLabel().c_str());
                 return Coral::String::New(msg.c_str());
             }
 
@@ -2465,19 +2504,19 @@ namespace O3DESharp
             if (propIt == ctx->m_properties.end())
             {
                 AZStd::string msg = AZStd::string::format(
-                    "{\"error\":\"%s: global property not reflected\"}", contextLabel.c_str());
+                    "{\"error\":\"%s: global property not reflected\"}", contextLabel().c_str());
                 return Coral::String::New(msg.c_str());
             }
             AZ::BehaviorProperty* prop = propIt->second;
             if (prop->m_getter == nullptr)
             {
                 AZStd::string msg = AZStd::string::format(
-                    "{\"error\":\"%s: property has no getter\"}", contextLabel.c_str());
+                    "{\"error\":\"%s: property has no getter\"}", contextLabel().c_str());
                 return Coral::String::New(msg.c_str());
             }
             // No args for a property getter; the empty argsJson string
             // exercises the no-args path inside the helper.
-            return CallBehaviorMethodAndMarshalResult(prop->m_getter, contextLabel.c_str(), Coral::String::New(""));
+            return CallBehaviorMethodAndMarshalResult(prop->m_getter, contextLabel, Coral::String::New(""));
         }
 
         bool SetGlobalProperty(Coral::String propertyName, Coral::String valueJson)
@@ -2508,14 +2547,16 @@ namespace O3DESharp
 
             // Setter signature is (newValue) - wrap the JSON value in an
             // array so MarshalJsonArrayToArguments treats it as one arg.
-            const AZStd::string contextLabel = AZStd::string::format(
-                "SetGlobalProperty('%s')", propertyNameStr.c_str());
+            auto contextLabel = [&]() -> AZStd::string
+            {
+                return AZStd::string::format("SetGlobalProperty('%s')", propertyNameStr.c_str());
+            };
             std::string valueJsonStr(valueJson);
             AZStd::string wrappedJson = AZStd::string::format("[%s]",
                 valueJsonStr.empty() ? "null" : valueJsonStr.c_str());
             Coral::String wrapped = Coral::String::New(wrappedJson.c_str());
             Coral::String result = CallBehaviorMethodAndMarshalResult(
-                prop->m_setter, contextLabel.c_str(), wrapped);
+                prop->m_setter, contextLabel, wrapped);
             // Setter is void-returning; "ok":true on success. We treat
             // any error envelope as failure.
             std::string resultStr(result);
