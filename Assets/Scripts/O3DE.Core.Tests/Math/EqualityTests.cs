@@ -23,6 +23,13 @@ namespace O3DE.Core.Tests.Math;
 /// </summary>
 public class EqualityTests
 {
+    // 1e-6f, not 1e-7f: at the magnitudes used in this file (~0.1-4.5),
+    // adding 1e-7f rounds away to zero in float32 (the delta is smaller
+    // than one ULP at these magnitudes), which would make the
+    // "near-equal" cases below silently degenerate into "exactly-equal"
+    // cases and defeat the point of the test. Verified bit-distinct at
+    // every magnitude used in this file - re-verify with a ULP check
+    // if you add a new literal, especially a much larger or smaller one.
     private const float NearEqualDelta = 1e-6f;
 
     // ---- Vector3 -------------------------------------------------------
