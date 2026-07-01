@@ -8,6 +8,8 @@
 
 #include "BehaviorContextMarshaling.h"
 
+#include <new>
+
 #include <AzCore/Component/EntityId.h>
 #include <AzCore/Math/Vector2.h>
 #include <AzCore/Math/Vector3.h>
@@ -202,20 +204,69 @@ namespace O3DESharp::Marshaling
 
     StackAllocator::~StackAllocator()
     {
-        for (auto* s : m_strings) { delete s; }
-        for (auto* b : m_buffers) { delete b; }
+        // Arena-backed objects were placement-new'd into m_arena's raw
+        // bytes, so they need an explicit destructor call; their storage
+        // itself is reclaimed for free when m_arena (a member array)
+        // goes out of scope.
+        for (auto* s : m_arenaStrings) { s->~basic_string(); }
+        for (auto* b : m_arenaBuffers) { b->~vector(); }
+
+        // Heap-fallback objects own their storage via plain `new` and
+        // need both destruction and deallocation.
+        for (auto* s : m_heapStrings) { delete s; }
+        for (auto* b : m_heapBuffers) { delete b; }
+    }
+
+    void* StackAllocator::BumpAlloc(size_t bytes, size_t alignment)
+    {
+        // Round the current offset up to the requested alignment.
+        const size_t misalignment = m_arenaOffset % alignment;
+        const size_t alignedOffset = misalignment == 0
+            ? m_arenaOffset
+            : m_arenaOffset + (alignment - misalignment);
+
+        if (alignedOffset + bytes > kInlineArenaBytes)
+        {
+            return nullptr; // exhausted - caller falls back to heap
+        }
+
+        void* ptr = m_arena + alignedOffset;
+        m_arenaOffset = alignedOffset + bytes;
+        return ptr;
     }
 
     AZStd::string* StackAllocator::AllocString()
     {
-        m_strings.push_back(new AZStd::string());
-        return m_strings.back();
+        if (void* mem = BumpAlloc(sizeof(AZStd::string), alignof(AZStd::string)))
+        {
+            auto* s = new (mem) AZStd::string();
+            m_arenaStrings.push_back(s);
+            return s;
+        }
+        // Arena exhausted for this marshaling pass - fall back to heap,
+        // same as the original always-heap implementation.
+        m_heapStrings.push_back(new AZStd::string());
+        return m_heapStrings.back();
     }
 
     AZStd::vector<AZ::u8>* StackAllocator::AllocBlittableBuffer(size_t bytes)
     {
+        if (void* mem = BumpAlloc(sizeof(AZStd::vector<AZ::u8>), alignof(AZStd::vector<AZ::u8>)))
+        {
+            // The AZStd::vector<AZ::u8> control block is placed in the
+            // arena, but its `bytes`-sized backing storage is still a
+            // separate heap allocation performed by the vector itself
+            // (AZStd::vector always owns heap storage for its elements -
+            // there is no small-buffer optimization to preserve here).
+            // What we've saved versus the old implementation is the
+            // `new AZStd::vector<AZ::u8>` control-block allocation
+            // itself, which is the per-call overhead this task targets.
+            auto* buf = new (mem) AZStd::vector<AZ::u8>(bytes);
+            m_arenaBuffers.push_back(buf);
+            return buf;
+        }
         auto* buf = new AZStd::vector<AZ::u8>(bytes);
-        m_buffers.push_back(buf);
+        m_heapBuffers.push_back(buf);
         return buf;
     }
 

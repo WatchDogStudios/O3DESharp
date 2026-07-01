@@ -22,15 +22,31 @@ namespace O3DESharp::Marshaling
      * not the surrounding scope - so we keep them in a flat arena that
      * dies with the marshaling pass.
      *
-     * Modeled on EditorPythonBindings' Convert::StackVariableAllocator
-     * (we don't reuse it directly because the EPB header isn't usable
-     * outside that gem, and Phase 18-A.1 of the spec calls for this
-     * helper to live independently so the runtime path doesn't depend
-     * on EditorPythonBindings being loaded).
+     * Implementation: a fixed-size inline byte arena (bump allocator) is
+     * used first for both AZStd::string and AZStd::vector<AZ::u8>
+     * objects; this services the common case of a handful of small
+     * marshaled arguments per call with zero heap traffic. Each
+     * StackAllocator instance's lifetime spans exactly one marshaling
+     * pass (see the call sites in GenericDispatcher.cpp, each of which
+     * constructs one on the stack immediately before a single
+     * MarshalJsonArrayToArguments / JsonValueToBehaviorParameter call and
+     * lets it fall out of scope right after). Once the inline arena is
+     * exhausted, subsequent allocations fall back to individual heap
+     * allocations tracked in m_heapStrings/m_heapBuffers, exactly like
+     * the previous always-heap implementation, so correctness never
+     * depends on staying under the inline budget.
      */
     class StackAllocator
     {
     public:
+        // Inline arena size in bytes. Sized for the common case: most
+        // marshaled calls pass a handful of short strings (entity names,
+        // ids-as-strings, small labels) or small blittable buffers. 512
+        // bytes covers e.g. 8 AZStd::string objects (avg ~40 bytes each
+        // incl. SSO payload and alignment) or a couple of small binary
+        // buffers, per marshaling pass, before falling back to heap.
+        static constexpr size_t kInlineArenaBytes = 512;
+
         StackAllocator() = default;
         ~StackAllocator();
         StackAllocator(const StackAllocator&) = delete;
@@ -40,8 +56,32 @@ namespace O3DESharp::Marshaling
         AZStd::vector<AZ::u8>* AllocBlittableBuffer(size_t bytes);
 
     private:
-        AZStd::vector<AZStd::string*> m_strings;
-        AZStd::vector<AZStd::vector<AZ::u8>*> m_buffers;
+        // Bump-allocates `bytes` (aligned to `alignment`) out of the
+        // inline arena. Returns nullptr if the arena doesn't have enough
+        // room left, in which case the caller falls back to heap.
+        void* BumpAlloc(size_t bytes, size_t alignment);
+
+        // Plain fixed-size byte array, not AZStd::array - kept to types
+        // already used elsewhere in this file to avoid depending on an
+        // unverified container/include. 16-byte alignment comfortably
+        // covers AZStd::string / AZStd::vector<AZ::u8>'s actual alignment
+        // needs (both are pointer/size_t-based control blocks, not SIMD
+        // types) on every platform this gem targets.
+        alignas(16) AZ::u8 m_arena[kInlineArenaBytes];
+        size_t m_arenaOffset = 0;
+
+        // Objects placement-new'd into m_arena. Tracked so the
+        // destructor can call their destructors explicitly (placement
+        // new means the arena's raw bytes don't run destructors on
+        // their own).
+        AZStd::vector<AZStd::string*> m_arenaStrings;
+        AZStd::vector<AZStd::vector<AZ::u8>*> m_arenaBuffers;
+
+        // Heap fallback for allocations that don't fit in the inline
+        // arena. Same ownership model as the original implementation:
+        // plain `new`, `delete`d in the destructor.
+        AZStd::vector<AZStd::string*> m_heapStrings;
+        AZStd::vector<AZStd::vector<AZ::u8>*> m_heapBuffers;
     };
 
     /**
