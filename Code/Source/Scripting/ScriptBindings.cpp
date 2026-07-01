@@ -14,6 +14,7 @@
 #include <AzCore/Component/ComponentApplicationBus.h>
 #include <AzCore/Component/TransformBus.h>
 #include <AzCore/Time/ITime.h>
+#include <AzCore/std/algorithm.h>
 #include <AzFramework/Input/Devices/Keyboard/InputDeviceKeyboard.h>
 #include <AzFramework/Input/Devices/Mouse/InputDeviceMouse.h>
 #include <AzFramework/Input/Channels/InputChannel.h>
@@ -59,6 +60,7 @@ namespace O3DESharp
         assembly->AddInternalCall("O3DE.InternalCalls", "Entity_FindByName", reinterpret_cast<void*>(&Entity_FindByName));
         assembly->AddInternalCall("O3DE.InternalCalls", "Entity_GetChildCount", reinterpret_cast<void*>(&Entity_GetChildCount));
         assembly->AddInternalCall("O3DE.InternalCalls", "Entity_GetChildAtIndex", reinterpret_cast<void*>(&Entity_GetChildAtIndex));
+        assembly->AddInternalCall("O3DE.InternalCalls", "Entity_GetChildren", reinterpret_cast<void*>(&Entity_GetChildren));
 
         // ============================================================
         // Transform Functions - O3DE.InternalCalls
@@ -265,6 +267,25 @@ namespace O3DESharp
             return static_cast<AZ::u64>(children[index]);
         }
         return static_cast<AZ::u64>(AZ::EntityId::InvalidEntityId);
+    }
+
+    int ScriptBindings::Entity_GetChildren(AZ::u64 entityId, AZ::u64* outBuffer, int bufferCapacity)
+    {
+        if (outBuffer == nullptr || bufferCapacity <= 0)
+        {
+            return 0;
+        }
+
+        AZ::EntityId id(entityId);
+        AZStd::vector<AZ::EntityId> children;
+        AZ::TransformBus::EventResult(children, id, &AZ::TransformBus::Events::GetChildren);
+
+        const int writeCount = AZStd::min(static_cast<int>(children.size()), bufferCapacity);
+        for (int i = 0; i < writeCount; ++i)
+        {
+            outBuffer[i] = static_cast<AZ::u64>(children[i]);
+        }
+        return writeCount;
     }
 
     // ============================================================

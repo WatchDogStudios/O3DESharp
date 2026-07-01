@@ -112,6 +112,16 @@ namespace O3DESharp
         static int Entity_GetChildCount(AZ::u64 entityId);
         static AZ::u64 Entity_GetChildAtIndex(AZ::u64 entityId, int index);
 
+        /// Fetches the children of entityId in a single EBus broadcast and copies up
+        /// to bufferCapacity child EntityIds into the caller-owned outBuffer. Returns
+        /// the number of IDs written (min(actual child count, bufferCapacity)). The
+        /// caller (Entity.cs) is expected to size outBuffer using Entity_GetChildCount
+        /// first; if the hierarchy changed between the two calls, extra children are
+        /// simply not written this call (no truncation error - caller may re-check
+        /// ChildCount and retry, matching the existing GetChildCount/GetChildAtIndex
+        /// contract which had the same benign race).
+        static int Entity_GetChildren(AZ::u64 entityId, AZ::u64* outBuffer, int bufferCapacity);
+
         // ============================================================
         // Transform Functions
         // ============================================================
