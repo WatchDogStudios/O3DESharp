@@ -146,12 +146,14 @@ namespace O3DESharp
         // takes ownership semantics through Register/UnregisterPropertyType.
         CSharpScriptClassPropertyHandler* m_scriptClassPropertyHandler = nullptr;
 
-        // Phase 10 scaffolding for typed exposed-property editor widgets.
-        // Registered with the property-handler bus under
-        // AZ_CRC_CE("CSharpExposedProperties") but the EditContext for
-        // CSharpScriptComponentConfig::m_exposedPropertyValues is still on
-        // the default UIHandler, so this handler is dormant until a
-        // follow-up flips that switch.
+        // Typed exposed-property editor widget handler, registered with the
+        // property-handler bus under AZ_CRC_CE("CSharpExposedProperties").
+        // Live since Phase 14: EditorCSharpScriptComponent.cpp's EditContext
+        // for EditorCSharpScriptConfig::m_exposedPropertyValues already uses
+        // this CRC (the runtime-side CSharpScriptComponentConfig's own
+        // DataElement is separate and still on the default UIHandler, since
+        // that field is populated by mirroring the editor config rather than
+        // edited directly in the inspector).
         CSharpExposedPropertiesHandler* m_exposedPropertiesHandler = nullptr;
 
         // Phase 16: file watcher that auto-reloads user assemblies when DLLs
