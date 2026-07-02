@@ -849,8 +849,12 @@ namespace O3DESharp.BindingGenerator.Generation
         /// <summary>
         /// Deduplicate a list of items by a key selector.
         /// Keeps the first occurrence when multiple items map to the same key.
+        /// Exposed as public (rather than kept private) so
+        /// DeterministicOrderingTests can verify the "first occurrence wins"
+        /// tie-break directly against a caller-supplied, already-sorted input,
+        /// without needing a live libclang parse.
         /// </summary>
-        private static List<T> DeduplicateByName<T>(List<T> items, Func<T, string> keySelector)
+        public static List<T> DeduplicateByName<T>(List<T> items, Func<T, string> keySelector)
         {
             var seen = new HashSet<string>(StringComparer.Ordinal);
             var result = new List<T>();

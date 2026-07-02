@@ -192,6 +192,28 @@ namespace O3DESharp.BindingGenerator.Generation
             var parser = new O3DEHeaderParser(requireExportAttribute, _verbose);
             var bindings = parser.ParseHeaders(headerFiles, includePaths, defines, gem.GemName);
 
+            // Sort every parsed collection by qualified name right here, before
+            // any downstream consumer sees them. FindHeaderFiles (above) already
+            // sorts the input file list, but libclang can still enumerate
+            // declarations within a single translation unit in a
+            // platform-dependent order (e.g. template instantiation or AST
+            // traversal order), and multiple headers can independently
+            // contribute classes with the same sanitized name. Sorting by
+            // QualifiedName (unique per declaration site, unlike Name) fixes
+            // both the cosmetic diff between runs and the tie-break
+            // CSharpCodeGenerator.DeduplicateByName performs on a name
+            // collision, which today silently keeps whichever declaration
+            // happened to parse first.
+            bindings.Classes = bindings.Classes
+                .OrderBy(c => c.QualifiedName, StringComparer.Ordinal)
+                .ToList();
+            bindings.Functions = bindings.Functions
+                .OrderBy(f => f.QualifiedName, StringComparer.Ordinal)
+                .ToList();
+            bindings.Enums = bindings.Enums
+                .OrderBy(e => e.QualifiedName, StringComparer.Ordinal)
+                .ToList();
+
             if (bindings.Classes.Count == 0 && bindings.Functions.Count == 0 && bindings.Enums.Count == 0)
             {
                 // Deliberately NOT routed through Log() (which gates
@@ -421,7 +443,20 @@ namespace O3DESharp.BindingGenerator.Generation
             //     (EMotionFX-specific editor-only subsystems)
             headerFiles = headerFiles.Where(f => !IsEditorOnlyHeader(f)).ToList();
 
-            return headerFiles.Where(f => !excludedFiles.Contains(f)).Distinct().ToList();
+            // Directory.GetFiles order is filesystem-dependent (NTFS vs ext4,
+            // cold vs warm directory-entry cache), so without an explicit sort
+            // the exact same header set can be parsed in a different order on
+            // every run/machine. That non-determinism flows into bindings.Classes/
+            // Functions/Enums order (ParseHeaders appends in header-iteration
+            // order) and from there into which declaration wins a name collision
+            // in CSharpCodeGenerator.DeduplicateByName. Sorting here - the single
+            // place every gem's header list is assembled - makes the whole
+            // downstream pipeline deterministic without touching the parser.
+            return headerFiles
+                .Where(f => !excludedFiles.Contains(f))
+                .Distinct()
+                .OrderBy(f => f, StringComparer.OrdinalIgnoreCase)
+                .ToList();
         }
 
         /// <summary>
