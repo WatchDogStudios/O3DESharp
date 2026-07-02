@@ -704,9 +704,10 @@ public partial class FollowParent : ScriptComponent
 ```
 
 **What's marshalled across the boundary:** primitives (`bool`, integer
-types, `float`, `double`), `string`, `ulong`-shaped IDs (`EntityId`),
-and the math types `Vector2` / `Vector3` / `Quaternion`. Other types
-fall back to `default(T)` with a warning in the editor console — extend
+types, `float`, `double`), `string`, `Guid` (for `AZ::Uuid`),
+`ulong`-shaped IDs (`EntityId`), and the math types `Vector2` /
+`Vector3` / `Quaternion`. Other types fall back to `default(T)` with a
+warning in the editor console — extend
 the marshal table in `EBusHandlerRegistry.UnmarshalArg<T>` if you need
 more. The C++-side marshal table is in
 `Code/Source/Scripting/Marshaling/BehaviorContextMarshaling.cpp`.
@@ -999,9 +1000,16 @@ For each reflected class, EBus, method, property, and enum, the generator emits:
 
 ### Running the Generator
 
+This section's `binding_config.json` shape is consumed by the
+**`--source clang`** backend described in
+[GENERATED_BINDINGS_GUIDE.md](GENERATED_BINDINGS_GUIDE.md) — see that
+guide's "Which backend should I use?" callout for when to use it versus
+the default `--source reflection` backend.
+
 ```bash
 # From the engine or gem directory:
 dotnet run --project Code/Tools/BindingGenerator/O3DESharp.BindingGenerator/ -- \
+  --source clang \
   --config binding_config.json \
   --output Assets/Scripts/Generated
 ```
@@ -1146,7 +1154,7 @@ This automatically:
 | Area | Limitation |
 |------|-----------|
 | **Input** | Direct keyboard/mouse API is placeholder — use O3DE's Input component via EBus/Reflection |
-| **EBus Handler Marshaling** | Handler param marshaling covers primitives, `string`, `Vector2/3`, `Quaternion`, EntityId-shaped IDs. `Transform` / `Vector4` / `Color` / `Aabb` / `Matrix3x3` / `Matrix4x4` parameters arrive as `default(T)` with a warning — extend `EBusHandlerRegistry.UnmarshalArg<T>` to add coverage. |
+| **EBus Handler Marshaling** | Handler param marshaling covers primitives, `string`, `Guid` (`AZ::Uuid`), `Vector2/3`, `Quaternion`, EntityId-shaped IDs. `Transform` / `Vector4` / `Color` / `Aabb` / `Matrix3x3` / `Matrix4x4` parameters arrive as `default(T)` with a warning — extend `EBusHandlerRegistry.UnmarshalArg<T>` to add coverage. |
 | **Generics** | Generic types in BehaviorContext are not fully mapped |
 | **Reflection Performance** | JSON round-trip on every call — use direct APIs for per-frame logic |
 | **Hot Reload** | Debug/Profile builds only; non-serializable state is lost |
