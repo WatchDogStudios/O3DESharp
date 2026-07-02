@@ -194,7 +194,31 @@ namespace O3DESharp.BindingGenerator.Generation
 
             if (bindings.Classes.Count == 0 && bindings.Functions.Count == 0 && bindings.Enums.Count == 0)
             {
-                Log($"  No bindings found to generate");
+                // Deliberately NOT routed through Log() (which gates
+                // "  "-prefixed lines behind --verbose): a zero-bindings
+                // result is exactly the case a non-verbose user most needs
+                // an actionable reason for, not a routine progress line to
+                // hide. Uses O3DEHeaderParser's aggregate skip counters
+                // instead of making the user re-run with --verbose to find
+                // out why nothing was generated.
+                var reasonParts = new List<string>();
+                if (parser.SkippedNoBindableMembersCount > 0)
+                {
+                    reasonParts.Add($"{parser.SkippedNoBindableMembersCount} had no bindable public members");
+                }
+                if (parser.SkippedFilteredClassCount > 0)
+                {
+                    reasonParts.Add($"{parser.SkippedFilteredClassCount} were filtered by name (template specializations, internal/editor-only types)");
+                }
+
+                if (reasonParts.Count > 0)
+                {
+                    Console.WriteLine($"  No bindings found to generate for '{gem.GemName}': skipped {string.Join(", ", reasonParts)}. Re-run with --verbose for per-class detail.");
+                }
+                else
+                {
+                    Console.WriteLine($"  No bindings found to generate for '{gem.GemName}'. No classes, functions, or enums were even discovered under the configured header patterns - check headerPatterns/includePaths in binding_config.json.");
+                }
                 return (false, 0, 0);
             }
 

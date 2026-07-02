@@ -25,6 +25,26 @@ namespace O3DESharp.BindingGenerator.Parsing
         private readonly bool _requireExportAttribute;
 
         /// <summary>
+        /// Number of classes skipped because their name matched a filtered
+        /// pattern (template specializations, known internal/container
+        /// types, editor-only types) - see ShouldSkipClass. Accumulates
+        /// across every ParseHeaders/ParseHeaderFile call on this instance,
+        /// so a caller can print an aggregate reason summary when a gem
+        /// produces zero bindings instead of leaving the user to re-run
+        /// with --verbose to find out why.
+        /// </summary>
+        public int SkippedFilteredClassCount { get; private set; }
+
+        /// <summary>
+        /// Number of classes skipped because, after member filtering
+        /// (private/protected, un-bindable types, missing
+        /// O3DE_EXPORT_CSHARP when required), they had zero exportable
+        /// methods or properties left. See the "no bindable members" log
+        /// site in ProcessClass.
+        /// </summary>
+        public int SkippedNoBindableMembersCount { get; private set; }
+
+        /// <summary>
         /// AzCore headers that libclang -include's before every parse, so
         /// the standard O3DE types (AZ::Vector3, AZ::Quaternion,
         /// AZ::Data::AssetId, AZ::EntityId, AZStd::string, ...) are
@@ -544,6 +564,7 @@ namespace O3DESharp.BindingGenerator.Parsing
             // Skip classes with invalid/un-bindable names
             if (ShouldSkipClass(className))
             {
+                SkippedFilteredClassCount++;
                 Log($"  Skipping class: {className} (filtered)");
                 return;
             }
@@ -655,6 +676,7 @@ namespace O3DESharp.BindingGenerator.Parsing
             }
             else
             {
+                SkippedNoBindableMembersCount++;
                 Log($"  Skipping class: {parsedClass.QualifiedName} (no bindable members)");
             }
         }
