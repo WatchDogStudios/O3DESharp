@@ -223,6 +223,17 @@ namespace O3DESharp.BindingGenerator.Parsing
             int total = headerFiles.Count;
             int index = 0;
             var gemSw = System.Diagnostics.Stopwatch.StartNew();
+
+            // Share one CXIndex across every header file in this gem
+            // instead of creating/disposing a new one per file. A CXIndex
+            // is just a libclang session handle - reusing it is the
+            // standard clang_createIndex-once / clang_parseTranslationUnit-
+            // many-times pattern. Scoped to the gem (not the whole
+            // multi-gem run) because each gem can have a different
+            // include-path/define set, and CXIndex doesn't carry
+            // per-parse state that would make cross-gem sharing meaningful.
+            using var clangIndex = CXIndex.Create();
+
             foreach (var headerFile in headerFiles)
             {
                 index++;
@@ -234,7 +245,7 @@ namespace O3DESharp.BindingGenerator.Parsing
                 Console.WriteLine($"  [{gemName}] ({index}/{total}) {shortName}");
                 try
                 {
-                    ParseHeaderFile(headerFile, clangArgs, bindings);
+                    ParseHeaderFile(headerFile, clangArgs, bindings, clangIndex);
                 }
                 catch (Exception ex)
                 {
@@ -267,7 +278,7 @@ namespace O3DESharp.BindingGenerator.Parsing
             return bindings;
         }
 
-        private unsafe void ParseHeaderFile(string headerFile, string[] clangArgs, ParsedBindings bindings)
+        private unsafe void ParseHeaderFile(string headerFile, string[] clangArgs, ParsedBindings bindings, CXIndex index)
         {
             if (!File.Exists(headerFile))
             {
@@ -277,8 +288,8 @@ namespace O3DESharp.BindingGenerator.Parsing
 
             Log($"Parsing: {headerFile}");
 
-            // Create a clang index
-            using var index = CXIndex.Create();
+            // index is shared across every header file in this gem (see
+            // ParseHeaders) - we do NOT create or dispose it here anymore.
 
             // Parse the translation unit
             var translationUnitError = CXTranslationUnit.TryParse(
