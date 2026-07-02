@@ -389,7 +389,7 @@ namespace O3DESharp.BindingGenerator
                 }
 
                 // Load configuration
-                var config = BindingConfigLoader.Load(configPath);
+                var config = BindingConfigLoader.Load(configPath, out bool configLoadedSuccessfully);
                 config.Global.Verbose = verbose;
                 config.Global.IncrementalBuild = incremental;
 
@@ -407,7 +407,10 @@ namespace O3DESharp.BindingGenerator
                     config.Global.CSharpOutputPath = Path.Combine(absOutput, "{GemName}");
                 }
 
-                Console.WriteLine($"Configuration: {(File.Exists(configPath) ? configPath : "default")}");
+                // configLoadedSuccessfully (not File.Exists(configPath)) determines
+                // this line: a config file that exists but failed to parse must not
+                // be reported as if it were successfully loaded and applied.
+                Console.WriteLine($"Configuration: {(configLoadedSuccessfully ? configPath : "default")}");
                 Console.WriteLine($"Require O3DE_EXPORT_CSHARP attribute: {config.Global.RequireExportAttribute}");
                 Console.WriteLine($"Verbose: {verbose}");
                 Console.WriteLine($"Incremental: {incremental}");

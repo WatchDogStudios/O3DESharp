@@ -33,9 +33,30 @@ namespace O3DESharp.BindingGenerator.Configuration
         /// Load configuration from a JSON file
         /// </summary>
         /// <param name="configPath">Path to the configuration file</param>
-        /// <returns>Loaded configuration, or default if file doesn't exist</returns>
+        /// <returns>Loaded configuration, or default if file doesn't exist or fails to parse</returns>
         public static BindingConfig Load(string configPath)
         {
+            return Load(configPath, out _);
+        }
+
+        /// <summary>
+        /// Load configuration from a JSON file.
+        /// </summary>
+        /// <param name="configPath">Path to the configuration file</param>
+        /// <param name="loadedSuccessfully">
+        /// True only if <paramref name="configPath"/> existed AND parsed successfully.
+        /// False if the file was missing, or if it existed but failed to parse - in
+        /// both cases a default configuration is returned instead, but callers that
+        /// print "Configuration: {path}"-style status lines need this to avoid
+        /// implying a malformed config file's custom settings were actually applied
+        /// (a JSON typo previously discarded all custom settings silently and still
+        /// looked like a successful load).
+        /// </param>
+        /// <returns>Loaded configuration, or default if file doesn't exist or fails to parse</returns>
+        public static BindingConfig Load(string configPath, out bool loadedSuccessfully)
+        {
+            loadedSuccessfully = false;
+
             if (!File.Exists(configPath))
             {
                 Console.WriteLine($"Configuration file not found: {configPath}");
@@ -49,12 +70,12 @@ namespace O3DESharp.BindingGenerator.Configuration
                 var config = JsonSerializer.Deserialize<BindingConfig>(json, JsonOptions);
                 config ??= CreateDefault();
                 ExpandEnvironmentVariables(config);
+                loadedSuccessfully = true;
                 return config;
             }
             catch (Exception ex)
             {
-                Console.WriteLine($"Error loading configuration: {ex.Message}");
-                Console.WriteLine("Using default configuration.");
+                Console.WriteLine($"WARNING: failed to parse {configPath} ({ex.Message}) - using default configuration");
                 return CreateDefault();
             }
         }
