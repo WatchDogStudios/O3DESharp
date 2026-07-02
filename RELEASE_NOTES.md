@@ -1,3 +1,222 @@
+# O3DESharp v1.2.0 — Release Notes
+
+**Date:** 2026-07-02
+**Branch:** development → main
+**Compatibility:** O3DE main (tested against profile + debug; the
+release config has pre-existing /WX breaks unrelated to this release).
+
+This release is a UX/UI and performance audit pass across the whole
+gem: runtime hot paths, editor tooling, the binding generator, and
+docs. No new scripting features ship in v1.2.0 — the focus was closing
+correctness bugs (including one ship-blocking math bug), removing perf
+overhead on frequently-hit paths, fixing editor UX papercuts that could
+freeze the Editor UI, and hardening the binding generator's
+diagnosability. There was no v1.1.0 release.
+
+## Highlights
+
+### Ship-blocking fix: `Quaternion.LookRotation` returned the inverse rotation
+
+The Shepperd trace-based matrix-to-quaternion conversion had every
+antisymmetric off-diagonal term's subtraction order flipped relative to
+the convention `RotatePoint` itself uses, so `LookRotation` silently
+returned the inverse of the intended rotation for any non-trivial
+direction — turrets, cameras, and characters facing a target all turned
+backwards. Only the trivial forward-equals-up case was unaffected. Now
+covered by regression tests asserting
+`LookRotation(dir).RotatePoint(Vector3.Forward) == dir` for several
+non-axis-aligned directions.
+
+### Runtime performance
+
+- **`StackAllocator`** (BehaviorContext arg marshaling) now backs a real
+  bump arena (`alignas(16)` inline buffer) instead of issuing a heap
+  `new` per marshaled argument.
+- **`Entity.GetChildren()`** was O(n²) — one native call per child index
+  lookup. Replaced with a single bulk internal call
+  (`Entity_GetChildren`) that fills a native buffer in one round trip.
+- **`ForwardEventToManaged`** now caches the resolved `Coral::Type*` on
+  the `ManagedEBusProxy` instead of re-resolving it on every single
+  dispatched event.
+- **`GenericDispatcher`**'s per-call diagnostic `contextLabel` string is
+  now built lazily — only formatted if an error path actually needs it,
+  instead of unconditionally on every BehaviorContext call.
+
+### Editor UX: Project Manager no longer freezes the Editor
+
+**Build** and **Build All** in the C# Project Manager ran `dotnet build`
+synchronously on the UI thread, freezing the whole Editor for the
+duration of the build. Both now run on background `QThread` workers
+with duplicate-build guards and a module-level keep-alive registry
+(closing the dialog mid-build could previously destroy a running
+`QThread` and crash the whole Editor process with a Qt fatal error —
+fixed as part of the same change). The script-picker "Clear Selection"
+action is also fixed: it previously looked identical to "user hit
+Cancel" and silently no-opped instead of clearing the field.
+
+### Binding generator diagnosability + determinism
+
+- Retargeted to **net9.0** (matching `O3DE.Core` and the rest of the
+  gem).
+- A malformed `binding_config.json` used to fall back to defaults
+  while still printing a success-looking `Configuration: {path}` line.
+  It now prints an unambiguous `WARNING: failed to parse ...` and a
+  `Load` overload reports whether the load actually succeeded.
+- Unknown config keys (typos like `requireExportAttrib`) and unresolved
+  `${VAR}` environment references are now flagged with a `WARNING`
+  instead of silently no-opping.
+- A zero-bindings result now explains *why* (aggregate skip-reason
+  counters — filtered by name vs. no bindable public members) instead
+  of leaving the user to re-run with `--verbose` to find out.
+- Header file discovery and parsed class/function/enum ordering are now
+  sorted deterministically, so generated output — and which declaration
+  wins a name collision — no longer depends on filesystem enumeration
+  order or which machine/OS ran the generator.
+- The clang backend (`--source clang`, opt-in) now shares one
+  `CXIndex` per gem instead of creating/disposing one per header file,
+  cutting per-file libclang session setup cost. Full PCH/prelude-reuse
+  caching (a larger follow-on optimization) is scoped out of this
+  release — see Known limitations.
+
+## Bug fixes
+
+### `Quaternion.LookRotation` conjugate rotation
+
+See Highlights above — this is the release's one ship-blocking fix.
+
+### `Vector2`/`Vector3`/`Quaternion.Equals` violated the hash code contract
+
+`Equals` used an epsilon tolerance while `GetHashCode` hashed exact
+float bits, violating the .NET contract that equal objects must report
+equal hash codes — this silently broke `Dictionary`/`HashSet` lookups
+for near-equal keys. `Equals` now compares components exactly, matching
+`System.Numerics.Vector3`'s convention. See Upgrade notes below.
+
+### `Debug.Log` / `LogWarning` / `LogError` / `LogDebug` crashed on bad format strings
+
+A malformed format string (or a `ToString()` override that throws) took
+down the calling script instead of logging a diagnosable error. Now
+wrapped in a `SafeFormat` helper that reports the formatting failure
+instead of propagating the exception.
+
+### `Debugger.WaitForAttach(TimeSpan.Zero)` waited forever instead of not waiting
+
+An off-by-one comparison (`<=` instead of `<`) meant a caller explicitly
+asking for a zero-length wait got an infinite wait instead.
+
+### `NativeReflection` silently stringified unsupported argument types
+
+Passing an argument type the marshaling table didn't recognize used to
+fall back to `arg.ToString()`, producing a value that looked plausible
+but was semantically wrong on the native side. Now throws
+`NotSupportedException` so the mismatch surfaces immediately instead of
+corrupting data silently downstream.
+
+### Use-after-free in `ManagedHandlerTable::Register`'s rollback path
+
+`Register` took its `AZStd::unique_ptr<ManagedEBusProxy>` proxy
+parameter by value; a duplicate-token rejection destroyed the proxy
+inside `Register`'s own stack frame before the caller's rollback
+`Disconnect()` ran against it. Changed the parameter to a non-const
+reference so ownership stays with the caller until `Register` actually
+commits it.
+
+### Numeric coercion in `BroadcastResultEBusEvent` / `SendResultEBusEvent`
+
+A C# script reading a native `float` result (e.g.
+`TickRequestBus.GetTickDeltaTime()`) hit an `InvalidCastException` every
+frame: the JSON wire format has no way to distinguish `float` from
+`double`, so the strict `raw is T` check failed on every numeric
+result. Both result-returning EBus call paths now go through a shared
+`CoerceEBusResult<T>` helper that falls back to `Convert.ChangeType` for
+numeric promotions/demotions before giving up, matching the tolerance
+`EBusHandlerRegistry.UnmarshalArg<T>` already had on the inbound side.
+
+## Documentation
+
+- `README.md`, `GENERATED_BINDINGS_GUIDE.md`, and `SCRIPTING_GUIDE.md`
+  described the ClangSharp header-parser backend as canonical when the
+  actual (and recommended) default is the reflection backend
+  (`--source reflection`, reading `reflection_data.json`). Added a
+  "Which backend should I use?" callout to each doc and made every
+  example command explicit about `--source`.
+- `README.md` referred to a nonexistent **Tools > C# Script Manager**
+  menu. The dialog is actually titled **C# Project Manager**; menu
+  registration in `csharp_editor_bootstrap.py` is currently a stub that
+  only logs Python-console usage hints, so the doc now shows the actual
+  working path (open via the Python console) instead of a menu item
+  that doesn't exist yet.
+- Added `Guid` (for `AZ::Uuid`) to the EBus handler arg-marshaling
+  coverage lists in `README.md` and `SCRIPTING_GUIDE.md` —
+  `EBusHandlerRegistry` already supported it, the docs just hadn't
+  caught up.
+
+## Tooling / CI
+
+- CI migrated from GitHub Actions to TeamCity Cloud.
+- Windows CI steps and the Ubuntu 24.04 pytest install fixed.
+- New `O3DE.Core.Tests` xUnit project (45 tests) covering the math,
+  reflection, and `Debug`/`Debugger` fixes in this release —
+  `O3DE.Core` had no dedicated test project before this release.
+- `BindingGenerator.Tests` grew from 104 to 122 tests (120 passing + 2
+  skipped integration tests that require a real O3DE engine checkout),
+  covering the config-loading, determinism, and clang-backend fixes
+  above.
+
+## Known limitations
+
+Carried forward from v1.0.0 (still true):
+
+- **Managed-defined bus contracts** (Phase 18-C): a C#
+  `[EBus] interface IMyBus { ... }` that other C++, Lua, ScriptCanvas,
+  or C# can implement and broadcast on. Not yet implemented; tracked in
+  `PHASE_18_EBUS.md` §3.C.
+- **Handler param marshaling for large/non-trivial types**: `Transform`,
+  `Vector4`, `Color`, `Aabb`, `Matrix3x3` / `Matrix4x4`, and arbitrary
+  user-defined structs in handler signatures still arrive as
+  `default(T)` with a console warning.
+- **macOS / iOS / Android / consoles**: `gem.json` declares Linux +
+  Windows only.
+
+New in this release:
+
+- **`CoralHostManager` user/core `AssemblyLoadContext` separation**:
+  investigated as part of this audit (every hot-reload currently
+  rebuilds all of `O3DE.Core`, not just the changed user assembly). A
+  proper fix needs either an unverifiable Coral API or changes to the
+  separate Coral.Managed repo — documented in `CoralHostManager.cpp`
+  as a known limitation rather than attempting an unverified workaround.
+  Tracked as its own follow-up ticket.
+- **BindingGenerator clang-backend PCH/prelude caching**: the
+  small/low-risk half of this optimization (sharing one `CXIndex` per
+  gem) shipped in this release; the larger prelude precompiled-header
+  caching layer did not, and is deferred to a follow-up ticket. Clang
+  backend only — `--source reflection` (the default) is unaffected
+  either way.
+- **`GenericDispatcher`'s BehaviorContext dispatch overhead**: this
+  release's perf fixes addressed marshaling/allocation hot spots around
+  dispatch (`StackAllocator`, `contextLabel` formatting, cached
+  `Coral::Type*`), but the dispatch mechanism itself is unchanged.
+  Broader BehaviorContext control/perf work is planned for a 1.3
+  refactor.
+
+## Upgrade notes
+
+- **`Vector2`/`Vector3`/`Quaternion.Equals` is now exact**, not
+  epsilon-tolerant. Code relying on near-equal values comparing equal
+  (e.g. after a lossy round-trip) should switch to
+  `Vector3.Distance(a, b) < epsilon` (or `Quaternion.Angle` for
+  rotations) instead of `Equals`/`==`.
+- **BindingGenerator now requires the .NET 9 SDK** to build (retargeted
+  from net8.0, matching `O3DE.Core`).
+
+## Acknowledgements
+
+Implementation by Mikael K. Aboagye (WD Studios Corp.). Built against
+Coral.Managed (WD Studios fork of StudioCherno/Coral) and O3DE main.
+
+---
+
 # O3DESharp v1.0.0 — Release Notes
 
 **Date:** 2026-05-19
