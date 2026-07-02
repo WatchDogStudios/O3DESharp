@@ -589,6 +589,7 @@ class ScriptBrowserDialog(QDialog):
 
         self._build_worker = _ProjectBuildWorker(
             self.project_manager, project_path, "Release")
+        _track_worker(self._build_worker)
         self._build_worker.finished_signal.connect(self._on_build_selected_finished)
         self._build_worker.start()
 
@@ -1130,6 +1131,37 @@ class QuickActionPrompt(QDialog):
             self.action_list.setFocus()
             return
         super().keyPressEvent(event)
+
+
+
+# Every QThread worker in this file is held only via a plain instance
+# attribute on the dialog/window that started it (e.g. self._build_worker).
+# If that dialog is closed - or otherwise loses its last Python reference -
+# while the worker is still running, the worker's Python wrapper can be
+# garbage-collected out from under the still-running thread. PySide2's
+# QThread destructor calls qFatal("QThread: Destroyed while thread is still
+# running") in that situation, which aborts the entire O3DE Editor process,
+# not just this dialog. Registering every worker here keeps a strong
+# reference alive independent of whatever widget happens to own it, until
+# QThread's own built-in `finished` signal confirms run() has actually
+# returned - at which point it's safe to drop.
+#
+# This didn't matter before background workers were introduced for
+# Build/Build All (see _ProjectBuildWorker/_BuildAllWorker): the old
+# synchronous build code blocked the UI thread for the whole build, so the
+# owning dialog structurally could not be closed mid-build. Background
+# workers remove that accidental protection, so this registry replaces it
+# explicitly - for every QThread worker in this file, not just the new ones,
+# since the pre-existing _BindingGenerationWorker/_BindingBuildWorker
+# instances (below) have the identical latent gap.
+_active_workers = set()
+
+
+def _track_worker(worker):
+    """Keep a QThread alive until it has genuinely finished running, so it
+    can't be garbage-collected mid-run if its owning dialog is closed."""
+    _active_workers.add(worker)
+    worker.finished.connect(lambda: _active_workers.discard(worker))
 
 
 class _BindingGenerationWorker(QThread):
@@ -2157,6 +2189,7 @@ Status: {status['message']}"""
 
         self._project_build_worker = _ProjectBuildWorker(
             self.project_manager, project["path"], config)
+        _track_worker(self._project_build_worker)
         self._project_build_worker.finished_signal.connect(
             lambda result: self._on_build_project_finished(result, project["name"]))
         self._project_build_worker.start()
@@ -2193,6 +2226,7 @@ Status: {status['message']}"""
             self.build_all_btn.setEnabled(False)
 
         self._build_all_worker = _BuildAllWorker(self.project_manager, projects, config)
+        _track_worker(self._build_all_worker)
         self._build_all_worker.progress_signal.connect(self._on_build_all_progress)
         self._build_all_worker.project_done_signal.connect(self._on_build_all_project_done)
         self._build_all_worker.finished_signal.connect(self._on_build_all_finished)
@@ -2374,6 +2408,7 @@ Status: {status['message']}"""
                 config=config,
                 output_dir=output_dir,
             )
+            _track_worker(self._binding_worker)
             self._binding_worker.log_line.connect(
                 lambda line: self._log(line, "INFO"))
             self._binding_worker.finished_signal.connect(self._on_binding_generation_finished)
@@ -2502,6 +2537,7 @@ Status: {status['message']}"""
             self.generate_btn.setEnabled(False)
 
         self._binding_build_worker = _BindingBuildWorker(csprojs)
+        _track_worker(self._binding_build_worker)
         self._binding_build_worker.log_line.connect(
             lambda line: self._log(line, "INFO"))
         self._binding_build_worker.finished_signal.connect(
