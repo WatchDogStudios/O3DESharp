@@ -677,6 +677,17 @@ class _RecentClassesCache:
 
 # ==================== Script Class Picker Dialog ====================
 
+# Sentinel returned by CSharpEditorToolsHandler.OpenScriptPicker() to mean
+# "the user explicitly clicked Clear Selection", as distinct from "" which
+# means "the user cancelled the dialog / no value was produced". The C++
+# call sites (EditorCSharpScriptComponent::OnBrowseScript and
+# CSharpScriptClassPropertyHandler's Browse button handler) compare the
+# EBus return value against this exact string. It must never collide with
+# a real fully-qualified C# class name, which is why it uses characters
+# that are illegal in a C# identifier.
+SCRIPT_PICKER_CLEARED_SENTINEL = "__O3DESharp_ClearSelection__"
+
+
 class ScriptClassPickerDialog(QDialog):
     """
     Streamlined script class picker for the entity component inspector.
@@ -979,7 +990,7 @@ class ScriptClassPickerDialog(QDialog):
     
     def _select_none(self):
         """Clear the selection (unassign script class)."""
-        self._selected_class = ""
+        self._selected_class = SCRIPT_PICKER_CLEARED_SENTINEL
         self.class_selected.emit("")
         self.accept()
     
@@ -2812,7 +2823,9 @@ class CSharpEditorToolsHandler:
             current_class: Currently selected class (for pre-selection)
 
         Returns:
-            Selected class name, or empty string if cancelled
+            Selected class name; SCRIPT_PICKER_CLEARED_SENTINEL if the user
+            explicitly clicked "Clear Selection"; empty string "" if the
+            user cancelled the dialog (or an internal error occurred).
         """
         print(f"[O3DESharp] OpenScriptPicker(current_class={current_class!r}) - opening dialog")
         try:
@@ -2823,8 +2836,9 @@ class CSharpEditorToolsHandler:
                 selected = dialog.get_selected_class()
                 print(f"[O3DESharp] Selected class: {selected!r}")
                 if selected is not None:
-                    # Add to recent classes if not empty
-                    if selected:
+                    # Add to recent classes if not empty and not the
+                    # "explicit clear" sentinel.
+                    if selected and selected != SCRIPT_PICKER_CLEARED_SENTINEL:
                         self.AddToRecentClasses(selected)
                     return selected
             return ""  # Cancelled

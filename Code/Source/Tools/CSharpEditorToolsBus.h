@@ -15,6 +15,17 @@
 
 namespace O3DESharp
 {
+    // Mirrors SCRIPT_PICKER_CLEARED_SENTINEL in Editor/Scripts/csharp_editor_tools.py.
+    // CSharpEditorToolsBus::OpenScriptPicker returns a plain AZStd::string with
+    // no reserved "no value" representation, so this sentinel is the only way
+    // for the Python side to tell C++ callers "the user explicitly cleared the
+    // field" apart from "the user cancelled / produced nothing" (the plain
+    // empty string). Keep this string in sync with the Python constant if
+    // either side ever changes it. Declared here (rather than in a single
+    // .cpp) because both EditorCSharpScriptComponent.cpp and
+    // CSharpScriptClassPropertyHandler.cpp need to compare against it.
+    inline constexpr const char* ScriptPickerClearedSentinel = "__O3DESharp_ClearSelection__";
+
     /**
      * Data structure representing a C# script class with metadata
      */
@@ -147,7 +158,12 @@ namespace O3DESharp
         /**
          * Open the script class picker dialog
          * @param currentClass Currently selected class (for pre-selection)
-         * @return Selected class name, or empty string if cancelled
+         * @return Selected class name; the literal sentinel string
+         *         "__O3DESharp_ClearSelection__" (see ScriptPickerClearedSentinel
+         *         above) if the user explicitly clicked "Clear Selection"
+         *         (must be blanked and re-validated by the caller); or an
+         *         empty string if the user cancelled the dialog (a true
+         *         no-op, callers must not warn in this case)
          */
         virtual AZStd::string OpenScriptPicker(const AZStd::string& currentClass) = 0;
 

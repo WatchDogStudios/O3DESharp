@@ -266,6 +266,21 @@ namespace O3DESharp
         AZ_TracePrintf("O3DESharp", "OnBrowseScript: BroadcastResult returned '%s'",
             selectedClass.c_str());
 
+        // The Python-side picker returns one of three distinct values:
+        //   1. A real class name            -> user picked a script.
+        //   2. ScriptPickerClearedSentinel   -> user explicitly clicked
+        //      "Clear Selection"; blank the field and re-validate exactly
+        //      like a normal selection would (this is NOT an error).
+        //   3. Empty string ""              -> user cancelled the dialog,
+        //      or the Python EBus handler isn't connected. This is the
+        //      only case that stays a true no-op.
+        if (selectedClass == ScriptPickerClearedSentinel)
+        {
+            m_config.m_scriptClassName.clear();
+            ValidateScript();
+            return AZ::Edit::PropertyRefreshLevels::EntireTree;
+        }
+
         if (!selectedClass.empty())
         {
             m_config.m_scriptClassName = selectedClass;
@@ -274,7 +289,8 @@ namespace O3DESharp
         }
 
         // Empty result = user cancelled or the Python EBus handler isn't
-        // connected. Warn so the user can tell those two apart.
+        // connected. Warn so the user can tell those two apart. Explicit
+        // "Clear Selection" clicks are handled above and never reach here.
         AZ_Warning("O3DESharp", false,
             "OnBrowseScript: OpenScriptPicker returned empty. Either the user cancelled "
             "or the Python CSharpEditorToolsBus handler is not connected. Check the "

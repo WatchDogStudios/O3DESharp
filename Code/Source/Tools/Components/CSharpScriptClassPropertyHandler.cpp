@@ -164,7 +164,20 @@ namespace O3DESharp
 
             CSharpEditorToolsBus::BroadcastResult(selectedClass, &CSharpEditorToolsBus::Events::OpenScriptPicker, currentClass);
 
-            if (!selectedClass.empty())
+            // "Clear Selection" returns a reserved sentinel (see
+            // ScriptPickerClearedSentinel in CSharpEditorToolsBus.h) distinct
+            // from "" (Cancel). Treat an explicit clear as blanking the field
+            // and committing that change like a normal selection; Cancel
+            // stays a true no-op.
+            if (selectedClass == ScriptPickerClearedSentinel)
+            {
+                comboBox->setCurrentText("");
+                AzToolsFramework::PropertyEditorGUIMessages::Bus::Broadcast(
+                    &AzToolsFramework::PropertyEditorGUIMessages::RequestWrite, container);
+                AzToolsFramework::PropertyEditorGUIMessages::Bus::Broadcast(
+                    &AzToolsFramework::PropertyEditorGUIMessages::OnEditingFinished, container);
+            }
+            else if (!selectedClass.empty())
             {
                 comboBox->setCurrentText(selectedClass.c_str());
                 comboBox->lineEdit()->selectAll();
