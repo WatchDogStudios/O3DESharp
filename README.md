@@ -553,12 +553,30 @@ See the gems [Technical Design Document (In Progress).](https://hackmd.io/@MWD09
 
 ## C# Binding Generation Workflow
 
-The canonical binding generator is a **C# tool that uses ClangSharp / libclang
-to parse C++ headers directly** — it lives at
-`Code/Tools/BindingGenerator/O3DESharp.BindingGenerator/`. For each enabled
-gem it emits `.g.cs` C# wrappers, an `InternalCalls.g.cs` interop stub, a
-`BindingRegistration.g.cpp` Coral registration file, and a `metadata.json`
-hot-reload manifest.
+The binding generator (`Code/Tools/BindingGenerator/O3DESharp.BindingGenerator/`)
+has **two backends**, selected with `--source`:
+
+> **Which backend should I use?**
+> - **`--source reflection` (the default)** reads `reflection_data.json`,
+>   a dump of O3DE's `BehaviorContext` produced by the editor at runtime —
+>   the same public-API surface Lua / ScriptCanvas / Python already use.
+>   No header parsing, no MSVC compatibility issues, no cross-gem include
+>   walking. **This is the recommended backend for everything a C# script
+>   would actually want to call.** Prerequisite: launch the O3DE Editor
+>   for your project at least once first, so `AutoExportReflectionData`
+>   writes out `reflection_data.json`; then pass its path explicitly with
+>   `--reflection-data <path-to-reflection_data.json>` (the CLI's built-in
+>   default search path is not guaranteed to match where your project's
+>   editor build wrote the file — always pass `--reflection-data`
+>   explicitly rather than relying on the default).
+> - **`--source clang`** uses ClangSharp / libclang to parse C++ headers
+>   directly, emitting `.g.cs` C# wrappers, an `InternalCalls.g.cs` interop
+>   stub, a `BindingRegistration.g.cpp` Coral registration file, and a
+>   `metadata.json` hot-reload manifest. It's heavier (fights MSVC
+>   compatibility and cross-gem include paths) and can generate wrappers
+>   that have no matching `BehaviorContext` dispatch path, which crash at
+>   runtime if called. Use it only when you need a type a component
+>   exposes in its header but hasn't reflected to `BehaviorContext`.
 
 > **Note:** Earlier versions of this gem shipped a separate Python binding
 > generator under `Editor/Scripts/` that consumed a BehaviorContext JSON dump.
@@ -572,14 +590,16 @@ hot-reload manifest.
 cd Gems/O3DESharp/Code/Tools/BindingGenerator/O3DESharp.BindingGenerator
 dotnet build -c Release
 
-# 2. Generate bindings for every enabled gem in your project
-dotnet run -- generate --project <path-to-your-O3DE-project>
+# 2. Generate bindings for every enabled gem in your project (reflection
+#    backend — launch the Editor once first to produce reflection_data.json)
+dotnet run -- generate --project <path-to-your-O3DE-project> --source reflection --reflection-data <path-to-your-O3DE-project>/Generated/reflection_data.json
 
-# 3. Generate bindings for specific gems only
-dotnet run -- generate --project <path-to-your-O3DE-project> --gems PhysX,Atom
+# 3. Generate bindings for specific gems only, using the ClangSharp header
+#    parser instead
+dotnet run -- generate --project <path-to-your-O3DE-project> --source clang --gems PhysX,Atom
 
-# 4. Force a full regeneration (skip the incremental cache)
-dotnet run -- generate --project <path-to-your-O3DE-project> --verbose --force
+# 4. Force a full regeneration (skip the incremental cache; --source clang only)
+dotnet run -- generate --project <path-to-your-O3DE-project> --source clang --verbose --force
 ```
 
 The generator is also wired into CMake as the `O3DESharp.GenerateBindings`
@@ -622,9 +642,9 @@ This approach means that:
 - **EBus Handler param marshaling**: Phase 18-E ships first-class
   managed handlers via `[EBus]` / `[EBusHandler]` (see
   [SCRIPTING_GUIDE.md §9](SCRIPTING_GUIDE.md#9-calling-ebus-events-from-c)).
-  The arg-unmarshal table covers primitives, `string`, `Vector2`,
-  `Vector3`, `Quaternion`, and EntityId-shaped IDs. `Transform`,
-  `Vector4`, `Color`, `Aabb`, `Matrix3x3` / `Matrix4x4`, and arbitrary
+  The arg-unmarshal table covers primitives, `string`, `Guid` (for
+  `AZ::Uuid`), `Vector2`, `Vector3`, `Quaternion`, and EntityId-shaped
+  IDs. `Transform`, `Vector4`, `Color`, `Aabb`, `Matrix3x3` / `Matrix4x4`, and arbitrary
   user-defined structs currently arrive as `default(T)` with a warning
   in the console; extend `EBusHandlerRegistry.UnmarshalArg<T>` and the
   matching C++ marshal table to add coverage. Buses without a
@@ -647,9 +667,19 @@ dotnet --version
 
 This error occurs when the Coral .NET hosting files haven't been deployed to your project's runtime directory.
 
-**Solution 1: Use the C# Script Manager (Recommended)**
+**Solution 1: Use the C# Project Manager (Recommended)**
 
-1. In the O3DE Editor, go to **Tools > C# Script Manager**
+1. In the O3DE Editor, open the Python console (**Tools > Python Console**,
+   or `View > Python Console` depending on your Editor build) and run:
+   ```python
+   import csharp_editor_bootstrap
+   csharp_editor_bootstrap.open_csharp_project_manager()
+   ```
+   This opens the **C# Project Manager** dialog. (There is currently no
+   registered `Tools >` menu entry for it — `register_menus()` in
+   `Editor/Scripts/csharp_editor_bootstrap.py` only logs these Python
+   console commands to the Console panel on Editor startup; it does not
+   call the ActionManager API to add a real menu item yet.)
 2. In the **Settings** section, check the **Deployment** status
 3. Click **Deploy Coral** to automatically copy the required files
 4. If auto-detection fails, click **Browse...** to manually select the Coral.Managed build output directory
@@ -780,7 +810,7 @@ The exported launcher package includes all C# runtime files in the correct locat
 ### Development Workflow vs Export
 
 **During Development:**
-- Use the C# Script Manager tool to deploy DLLs to your project's `Bin/Scripts/` directory
+- Use the C# Project Manager tool (see [Troubleshooting](#coralmanageddll-not-found-or-failed-to-find-coralmanagedruntimeconfigjson) above for how to open it) to deploy DLLs to your project's `Bin/Scripts/` directory
 - Iterate quickly by rebuilding C# projects and using hot reload
 
 **For Export:**

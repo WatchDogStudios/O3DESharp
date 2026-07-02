@@ -361,10 +361,10 @@ class ScriptBrowserDialog(QDialog):
         self.open_btn.clicked.connect(self._open_selected_in_editor)
         toolbar.addWidget(self.open_btn)
         
-        build_btn = QPushButton("Build")
-        build_btn.setToolTip("Build the project that contains the selected script")
-        build_btn.clicked.connect(self._build_selected_project)
-        toolbar.addWidget(build_btn)
+        self.build_btn = QPushButton("Build")
+        self.build_btn.setToolTip("Build the project that contains the selected script")
+        self.build_btn.clicked.connect(self._build_selected_project)
+        toolbar.addWidget(self.build_btn)
         
         toolbar.addStretch()
         
@@ -562,6 +562,10 @@ class ScriptBrowserDialog(QDialog):
     
     def _build_selected_project(self):
         """Build the project containing the selected item."""
+        if getattr(self, "_build_worker", None) is not None and self._build_worker.isRunning():
+            QMessageBox.information(self, "Build", "A build is already in progress.")
+            return
+
         items = self.tree.selectedItems()
         project_path = None
         if items:
@@ -575,12 +579,25 @@ class ScriptBrowserDialog(QDialog):
                         parent_data = parent.data(0, Qt.UserRole)
                         if parent_data and parent_data["type"] == "project":
                             project_path = parent_data["data"]["path"]
-        
+
         if not project_path:
             QMessageBox.information(self, "Build", "Select a project or script first.")
             return
-        
-        result = self.project_manager.build_project(project_path)
+
+        self.build_btn.setEnabled(False)
+        self.build_btn.setText("Building...")
+
+        self._build_worker = _ProjectBuildWorker(
+            self.project_manager, project_path, "Release")
+        _track_worker(self._build_worker)
+        self._build_worker.finished_signal.connect(self._on_build_selected_finished)
+        self._build_worker.start()
+
+    def _on_build_selected_finished(self, result):
+        self.build_btn.setEnabled(True)
+        self.build_btn.setText("Build")
+        self._build_worker = None
+
         if result["success"]:
             QMessageBox.information(self, "Build Succeeded", f"Output: {result.get('output_path', 'OK')}")
         else:
@@ -659,6 +676,26 @@ class _RecentClassesCache:
 
 
 # ==================== Script Class Picker Dialog ====================
+
+# Sentinel returned by CSharpEditorToolsHandler.OpenScriptPicker() to mean
+# "the user explicitly clicked Clear Selection", as distinct from "" which
+# means "the user cancelled the dialog / no value was produced". The C++
+# call sites (EditorCSharpScriptComponent::OnBrowseScript and
+# CSharpScriptClassPropertyHandler's Browse button handler) compare the
+# EBus return value against this exact string. It's chosen to be extremely
+# unlikely to collide with a real class name in practice, but correctness
+# does NOT depend on that alone - leading/double underscores are actually
+# legal in C# identifiers (unlike C/C++, where they're implementation-
+# reserved), so this is not a language-level guarantee. This value is
+# intercepted and stripped by both C++ call sites before it would ever be
+# treated as a class name to look up. Keep this string byte-for-byte in
+# sync with ScriptPickerClearedSentinel in
+# Code/Source/Tools/CSharpEditorToolsBus.h - a one-sided typo here would
+# silently make Clear Selection start behaving like Cancel again (see
+# test_python_and_cpp_sentinel_literals_match in
+# Editor/Tests/test_csharp_editor_tools_picker.py).
+SCRIPT_PICKER_CLEARED_SENTINEL = "__O3DESharp_ClearSelection__"
+
 
 class ScriptClassPickerDialog(QDialog):
     """
@@ -962,7 +999,7 @@ class ScriptClassPickerDialog(QDialog):
     
     def _select_none(self):
         """Clear the selection (unassign script class)."""
-        self._selected_class = ""
+        self._selected_class = SCRIPT_PICKER_CLEARED_SENTINEL
         self.class_selected.emit("")
         self.accept()
     
@@ -1116,6 +1153,37 @@ class QuickActionPrompt(QDialog):
         super().keyPressEvent(event)
 
 
+
+# Every QThread worker in this file is held only via a plain instance
+# attribute on the dialog/window that started it (e.g. self._build_worker).
+# If that dialog is closed - or otherwise loses its last Python reference -
+# while the worker is still running, the worker's Python wrapper can be
+# garbage-collected out from under the still-running thread. PySide2's
+# QThread destructor calls qFatal("QThread: Destroyed while thread is still
+# running") in that situation, which aborts the entire O3DE Editor process,
+# not just this dialog. Registering every worker here keeps a strong
+# reference alive independent of whatever widget happens to own it, until
+# QThread's own built-in `finished` signal confirms run() has actually
+# returned - at which point it's safe to drop.
+#
+# This didn't matter before background workers were introduced for
+# Build/Build All (see _ProjectBuildWorker/_BuildAllWorker): the old
+# synchronous build code blocked the UI thread for the whole build, so the
+# owning dialog structurally could not be closed mid-build. Background
+# workers remove that accidental protection, so this registry replaces it
+# explicitly - for every QThread worker in this file, not just the new ones,
+# since the pre-existing _BindingGenerationWorker/_BindingBuildWorker
+# instances (below) have the identical latent gap.
+_active_workers = set()
+
+
+def _track_worker(worker):
+    """Keep a QThread alive until it has genuinely finished running, so it
+    can't be garbage-collected mid-run if its owning dialog is closed."""
+    _active_workers.add(worker)
+    worker.finished.connect(lambda: _active_workers.discard(worker))
+
+
 class _BindingGenerationWorker(QThread):
     """
     Runs ClangSharpInvoker.generate_bindings on a background thread so
@@ -1246,6 +1314,99 @@ class _BindingBuildWorker(QThread):
         self.finished_signal.emit(len(failed) == 0, failed)
 
 
+class _ProjectBuildWorker(QThread):
+    """
+    Runs CSharpProjectManager.build_project() on a background thread so
+    the C# Project Manager's UI (and the Script Browser's "Build" button)
+    stay responsive during a build.
+
+    Previously all three call sites (_build_selected_project,
+    _build_project, _build_all) invoked build_project() directly on the
+    Qt UI thread. build_project() shells out to `dotnet build` via
+    subprocess.run(), which blocks the calling thread until the process
+    exits - for the UI thread that means the whole dialog stops
+    repainting and stops responding to input for the entire build
+    (seconds for an incremental build, much longer on a cold restore or
+    a large solution). This worker moves that blocking call off the UI
+    thread; build_project() itself now also carries a timeout (see
+    csharp_project_manager.py) so a hung `dotnet build` can no longer
+    block forever even on this background thread.
+
+    One result dict per build, emitted via finished_signal so the UI
+    handler can render success/failure exactly as before.
+    """
+
+    finished_signal = Signal(dict)  # build_project()'s result dict
+
+    def __init__(self, project_manager, project_path, configuration):
+        super().__init__()
+        self._project_manager = project_manager
+        self._project_path = project_path
+        self._configuration = configuration
+
+    def run(self):
+        try:
+            result = self._project_manager.build_project(
+                self._project_path, self._configuration)
+        except Exception as e:
+            import traceback
+            result = {
+                "success": False,
+                "message": f"Build worker raised: {e}",
+                "output_path": None,
+                "build_output": traceback.format_exc(),
+            }
+        self.finished_signal.emit(result)
+
+
+class _BuildAllWorker(QThread):
+    """
+    Runs CSharpProjectManager.build_project() for every project in
+    `projects`, one at a time, on a background thread - the "Build All"
+    counterpart to _ProjectBuildWorker. Sequential (not parallel) so the
+    per-project log lines stay attributable and two builds never race
+    writing to the same Bin/Scripts/ output.
+
+    progress_signal fires once per project as it starts, so the UI can
+    update its status label in step. finished_signal fires once at the
+    end with (success_count, fail_count).
+    """
+
+    progress_signal = Signal(str, int, int)  # (project_name, index_1_based, total)
+    project_done_signal = Signal(str, dict)  # (project_name, result_dict)
+    finished_signal = Signal(int, int)  # (success_count, fail_count)
+
+    def __init__(self, project_manager, projects, configuration):
+        super().__init__()
+        self._project_manager = project_manager
+        self._projects = list(projects)
+        self._configuration = configuration
+
+    def run(self):
+        success_count = 0
+        fail_count = 0
+        total = len(self._projects)
+        for i, project in enumerate(self._projects, 1):
+            self.progress_signal.emit(project["name"], i, total)
+            try:
+                result = self._project_manager.build_project(
+                    project["path"], self._configuration)
+            except Exception as e:
+                import traceback
+                result = {
+                    "success": False,
+                    "message": f"Build worker raised: {e}",
+                    "output_path": None,
+                    "build_output": traceback.format_exc(),
+                }
+            self.project_done_signal.emit(project["name"], result)
+            if result["success"]:
+                success_count += 1
+            else:
+                fail_count += 1
+        self.finished_signal.emit(success_count, fail_count)
+
+
 class CSharpProjectManagerWindow(QDialog):
     """Main window for C# project management."""
     
@@ -1274,9 +1435,9 @@ class CSharpProjectManagerWindow(QDialog):
         
         toolbar.addStretch()
         
-        build_btn = QPushButton("Build All")
-        build_btn.clicked.connect(self._build_all)
-        toolbar.addWidget(build_btn)
+        self.build_all_btn = QPushButton("Build All")
+        self.build_all_btn.clicked.connect(self._build_all)
+        toolbar.addWidget(self.build_all_btn)
         
         refresh_btn = QPushButton("↻ Refresh")
         refresh_btn.clicked.connect(self._refresh)
@@ -1338,9 +1499,9 @@ class CSharpProjectManagerWindow(QDialog):
         build_layout.addWidget(QLabel("Configuration:"))
         build_layout.addWidget(self.config_combo)
         
-        build_project_btn = QPushButton("Build Project")
-        build_project_btn.clicked.connect(self._build_project)
-        build_layout.addWidget(build_project_btn)
+        self.build_project_btn = QPushButton("Build Project")
+        self.build_project_btn.clicked.connect(self._build_project)
+        build_layout.addWidget(self.build_project_btn)
         
         build_layout.addStretch()
         
@@ -2027,66 +2188,91 @@ Status: {status['message']}"""
                     QMessageBox.warning(self, "Warning", f"Could not open script: {e}")
                     
     def _build_project(self):
+        if getattr(self, "_project_build_worker", None) is not None and self._project_build_worker.isRunning():
+            self._log("A build is already in progress; ignoring duplicate request.", "WARNING")
+            return
+
         items = self.project_list.selectedItems()
         if not items:
             QMessageBox.warning(self, "Warning", "Please select a project first.")
             return
-            
+
         project = items[0].data(Qt.UserRole)
         config = self.config_combo.currentText()
-        
+
         self.status_label.setText(f"Building {project['name']}...")
         self._log(f"========== Building {project['name']} ({config}) ==========", "INFO")
         self._log(f"Project path: {project['path']}", "INFO")
-        QtWidgets.QApplication.processEvents()
-        
-        result = self.project_manager.build_project(project["path"], config)
-        
-        # Log the build output
+
+        if hasattr(self, "build_project_btn") and self.build_project_btn is not None:
+            self.build_project_btn.setEnabled(False)
+
+        self._project_build_worker = _ProjectBuildWorker(
+            self.project_manager, project["path"], config)
+        _track_worker(self._project_build_worker)
+        self._project_build_worker.finished_signal.connect(
+            lambda result: self._on_build_project_finished(result, project["name"]))
+        self._project_build_worker.start()
+
+    def _on_build_project_finished(self, result, project_name):
+        if hasattr(self, "build_project_btn") and self.build_project_btn is not None:
+            self.build_project_btn.setEnabled(True)
+        self._project_build_worker = None
+
         if result.get("build_output"):
             self._log_build_output(result["build_output"], not result["success"])
-        
+
         if result["success"]:
             self.status_label.setText(f"Build succeeded: {result['output_path']}")
             self._log(f"Build succeeded! Output: {result['output_path']}", "SUCCESS")
-            self._log("", "INFO")  # Blank line for readability
+            self._log("", "INFO")
         else:
             self.status_label.setText("Build failed")
             self._log(f"Build failed: {result['message']}", "ERROR")
-            self._log("", "INFO")  # Blank line for readability
-            
+            self._log("", "INFO")
+
     def _build_all(self):
+        if getattr(self, "_build_all_worker", None) is not None and self._build_all_worker.isRunning():
+            self._log("A 'Build All' run is already in progress; ignoring duplicate request.", "WARNING")
+            return
+
         projects = self.project_manager.list_projects()
         config = self.config_combo.currentText()
-        
+
         self._log(f"========== Building all projects ({config}) ==========", "INFO")
         self._log(f"Total projects: {len(projects)}", "INFO")
-        
-        success_count = 0
-        fail_count = 0
-        
-        for i, project in enumerate(projects, 1):
-            self.status_label.setText(f"Building {project['name']} ({i}/{len(projects)})...")
-            self._log(f"--- Building {project['name']} ({i}/{len(projects)}) ---", "INFO")
-            QtWidgets.QApplication.processEvents()
-            
-            result = self.project_manager.build_project(project["path"], config)
-            
-            # Log the build output
-            if result.get("build_output"):
-                self._log_build_output(result["build_output"], not result["success"])
-            
-            if result["success"]:
-                self._log(f"✓ {project['name']}: Build succeeded", "SUCCESS")
-                success_count += 1
-            else:
-                self._log(f"✗ {project['name']}: Build failed - {result['message']}", "ERROR")
-                fail_count += 1
-                
+
+        if hasattr(self, "build_all_btn") and self.build_all_btn is not None:
+            self.build_all_btn.setEnabled(False)
+
+        self._build_all_worker = _BuildAllWorker(self.project_manager, projects, config)
+        _track_worker(self._build_all_worker)
+        self._build_all_worker.progress_signal.connect(self._on_build_all_progress)
+        self._build_all_worker.project_done_signal.connect(self._on_build_all_project_done)
+        self._build_all_worker.finished_signal.connect(self._on_build_all_finished)
+        self._build_all_worker.start()
+
+    def _on_build_all_progress(self, project_name, index, total):
+        self.status_label.setText(f"Building {project_name} ({index}/{total})...")
+        self._log(f"--- Building {project_name} ({index}/{total}) ---", "INFO")
+
+    def _on_build_all_project_done(self, project_name, result):
+        if result.get("build_output"):
+            self._log_build_output(result["build_output"], not result["success"])
+        if result["success"]:
+            self._log(f"✓ {project_name}: Build succeeded", "SUCCESS")
+        else:
+            self._log(f"✗ {project_name}: Build failed - {result['message']}", "ERROR")
+
+    def _on_build_all_finished(self, success_count, fail_count):
+        if hasattr(self, "build_all_btn") and self.build_all_btn is not None:
+            self.build_all_btn.setEnabled(True)
+        self._build_all_worker = None
+
         self.status_label.setText(f"Build complete: {success_count} succeeded, {fail_count} failed")
-        self._log(f"========== Build complete: {success_count} succeeded, {fail_count} failed ==========", 
+        self._log(f"========== Build complete: {success_count} succeeded, {fail_count} failed ==========",
                   "SUCCESS" if fail_count == 0 else "WARNING")
-        self._log("", "INFO")  # Blank line for readability
+        self._log("", "INFO")
     
     # ==================== Binding Generation Methods ====================
     
@@ -2242,6 +2428,7 @@ Status: {status['message']}"""
                 config=config,
                 output_dir=output_dir,
             )
+            _track_worker(self._binding_worker)
             self._binding_worker.log_line.connect(
                 lambda line: self._log(line, "INFO"))
             self._binding_worker.finished_signal.connect(self._on_binding_generation_finished)
@@ -2370,6 +2557,7 @@ Status: {status['message']}"""
             self.generate_btn.setEnabled(False)
 
         self._binding_build_worker = _BindingBuildWorker(csprojs)
+        _track_worker(self._binding_build_worker)
         self._binding_build_worker.log_line.connect(
             lambda line: self._log(line, "INFO"))
         self._binding_build_worker.finished_signal.connect(
@@ -2644,7 +2832,9 @@ class CSharpEditorToolsHandler:
             current_class: Currently selected class (for pre-selection)
 
         Returns:
-            Selected class name, or empty string if cancelled
+            Selected class name; SCRIPT_PICKER_CLEARED_SENTINEL if the user
+            explicitly clicked "Clear Selection"; empty string "" if the
+            user cancelled the dialog (or an internal error occurred).
         """
         print(f"[O3DESharp] OpenScriptPicker(current_class={current_class!r}) - opening dialog")
         try:
@@ -2655,8 +2845,9 @@ class CSharpEditorToolsHandler:
                 selected = dialog.get_selected_class()
                 print(f"[O3DESharp] Selected class: {selected!r}")
                 if selected is not None:
-                    # Add to recent classes if not empty
-                    if selected:
+                    # Add to recent classes if not empty and not the
+                    # "explicit clear" sentinel.
+                    if selected and selected != SCRIPT_PICKER_CLEARED_SENTINEL:
                         self.AddToRecentClasses(selected)
                     return selected
             return ""  # Cancelled
@@ -2748,12 +2939,17 @@ class CSharpEditorToolsHandler:
     def AddToRecentClasses(self, class_name):
         """
         Add a class to the recent classes list.
-        
+
         Args:
             class_name: Fully qualified class name
         """
+        # Guard against SCRIPT_PICKER_CLEARED_SENTINEL here, not just at
+        # OpenScriptPicker's call site - centralizing it means any future
+        # caller of AddToRecentClasses (including a refactor that shares
+        # code with the non-EBus show_script_class_picker() entry point)
+        # doesn't have to remember to re-add this check itself.
         try:
-            if class_name:
+            if class_name and class_name != SCRIPT_PICKER_CLEARED_SENTINEL:
                 _RecentClassesCache.instance().add(class_name)
         except Exception as e:
             print(f"[O3DESharp] Error adding to recent classes: {e}")

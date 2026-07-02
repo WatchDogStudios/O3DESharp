@@ -23,7 +23,19 @@ game scripts.
 
 ## 1. Overview — What Gets Generated
 
-The Binding Generator reads your C++ headers (using ClangSharp / libclang) and
+> **Which backend should I use?** The Binding Generator has two backends,
+> selected with `--source`. **`--source reflection` is the default** and
+> the recommended choice for everything a C# script would actually want
+> to call — it reads `reflection_data.json` (a dump of O3DE's
+> `BehaviorContext`, the same data Lua / ScriptCanvas / Python bindings
+> consume) instead of parsing headers. Prerequisite: launch the O3DE
+> Editor for your project once first, so it writes out
+> `reflection_data.json`, then point `--reflection-data` at that file.
+> This section describes **`--source clang`**, which reads your C++
+> headers directly (using ClangSharp / libclang) instead — heavier, and
+> only needed for types not yet reflected to `BehaviorContext`.
+
+The `--source clang` backend reads your C++ headers (using ClangSharp / libclang) and
 produces:
 
 | Output File | Language | Purpose |
@@ -69,15 +81,23 @@ dotnet run -- init-config
 ### Generate Bindings
 
 ```powershell
-# All enabled gems:
-dotnet run -- generate --project F:\o3de
+# All enabled gems, using the ClangSharp header-parser backend described
+# in this guide:
+dotnet run -- generate --project F:\o3de --source clang
 
 # Specific gems only:
-dotnet run -- generate --project F:\o3de --gems MyGem,PhysicsGem
+dotnet run -- generate --project F:\o3de --source clang --gems MyGem,PhysicsGem
 
 # Verbose output + force full regeneration:
-dotnet run -- generate --project F:\o3de --verbose --force
+dotnet run -- generate --project F:\o3de --source clang --verbose --force
 ```
+
+> To use the default reflection backend instead (recommended for normal
+> gameplay-scripting use), launch the Editor once to produce
+> `reflection_data.json`, then run:
+> ```powershell
+> dotnet run -- generate --project F:\o3de --source reflection --reflection-data F:\o3de\Generated\reflection_data.json
+> ```
 
 You can also drive the generator from the editor or from Python directly:
 

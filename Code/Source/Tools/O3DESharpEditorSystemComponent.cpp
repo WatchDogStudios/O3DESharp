@@ -198,12 +198,12 @@ namespace O3DESharp
                 m_scriptClassPropertyHandler);
         }
 
-        // Phase 10 scaffolding: register the typed exposed-properties handler
-        // under AZ_CRC_CE("CSharpExposedProperties"). Nothing in the
-        // EditContext refers to that CRC yet, so this is dormant - a future
-        // commit will flip CSharpScriptComponentConfig::m_exposedPropertyValues'
-        // DataElement UIHandler from Default to the new CRC after the typed
-        // widget tree has been validated in an editor.
+        // Register the typed exposed-properties handler under
+        // AZ_CRC_CE("CSharpExposedProperties"). Live since Phase 14:
+        // EditorCSharpScriptComponent.cpp's EditContext for
+        // EditorCSharpScriptConfig::m_exposedPropertyValues already uses this
+        // CRC (see its DataElement call), so this handler is genuinely
+        // exercised in the inspector, not scaffolding.
         if (m_exposedPropertiesHandler == nullptr)
         {
             m_exposedPropertiesHandler = aznew CSharpExposedPropertiesHandler();

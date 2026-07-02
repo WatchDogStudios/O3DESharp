@@ -165,14 +165,23 @@ namespace O3DE
 
             int count;
             unsafe { count = InternalCalls.Entity_GetChildCount(m_id); }
+            if (count <= 0) return children;
 
-            for (int i = 0; i < count; i++)
+            ulong[] childIds = new ulong[count];
+            int written;
+            unsafe
             {
-                ulong childId;
-                unsafe { childId = InternalCalls.Entity_GetChildAtIndex(m_id, i); }
-                if (childId != InvalidId)
+                fixed (ulong* buffer = childIds)
                 {
-                    children.Add(new Entity(childId));
+                    written = InternalCalls.Entity_GetChildren(m_id, buffer, count);
+                }
+            }
+
+            for (int i = 0; i < written; i++)
+            {
+                if (childIds[i] != InvalidId)
+                {
+                    children.Add(new Entity(childIds[i]));
                 }
             }
             return children;

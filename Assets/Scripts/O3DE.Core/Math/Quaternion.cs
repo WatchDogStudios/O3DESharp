@@ -265,6 +265,12 @@ namespace O3DE
         /// of the resulting rotation match those columns directly, so
         /// <c>Transform.Forward</c> on an entity whose <c>Rotation</c> is set to
         /// <c>LookRotation(dir)</c> equals <c>dir</c>.
+        ///
+        /// Note: the trace-based matrix-to-quaternion conversion below must produce
+        /// the quaternion consistent with RotatePoint's own (row, column) convention -
+        /// the antisymmetric off-diagonal terms are intentionally (m_ba - m_ab), not
+        /// (m_ab - m_ba); flipping this sign silently produces the conjugate (inverse)
+        /// rotation, which was a real shipped bug fixed in 1.2.0.
         /// </summary>
         public static Quaternion LookRotation(Vector3 forward, Vector3 up)
         {
@@ -290,9 +296,9 @@ namespace O3DE
             {
                 float s = MathF.Sqrt(trace + 1f) * 2f;
                 q = new Quaternion(
-                    (m12 - m21) / s,
-                    (m20 - m02) / s,
-                    (m01 - m10) / s,
+                    (m21 - m12) / s,
+                    (m02 - m20) / s,
+                    (m10 - m01) / s,
                     0.25f * s
                 );
             }
@@ -303,7 +309,7 @@ namespace O3DE
                     0.25f * s,
                     (m01 + m10) / s,
                     (m02 + m20) / s,
-                    (m12 - m21) / s
+                    (m21 - m12) / s
                 );
             }
             else if (m11 > m22)
@@ -313,7 +319,7 @@ namespace O3DE
                     (m01 + m10) / s,
                     0.25f * s,
                     (m12 + m21) / s,
-                    (m20 - m02) / s
+                    (m02 - m20) / s
                 );
             }
             else
@@ -323,7 +329,7 @@ namespace O3DE
                     (m02 + m20) / s,
                     (m12 + m21) / s,
                     0.25f * s,
-                    (m01 - m10) / s
+                    (m10 - m01) / s
                 );
             }
 
@@ -479,13 +485,25 @@ namespace O3DE
 
         #region Equality
 
+        /// <summary>
+        /// Returns true if this quaternion is exactly equal to <paramref name="other"/>
+        /// (bit-for-bit component comparison via <c>==</c> on each float), matching
+        /// the convention used by <see cref="System.Numerics.Quaternion"/>.
+        /// This is NOT tolerance-based: two quaternions that differ by 1e-7 in a
+        /// single component are not equal, even though they represent visually
+        /// identical rotations. Some game engines use an epsilon-tolerant Equals,
+        /// but that breaks the contract that equal objects must always report
+        /// equal hash codes, which in turn breaks Dictionary/HashSet lookups.
+        /// Callers that want tolerance-based comparison should use
+        /// <c>Quaternion.Angle(a, b) &lt; epsilonDegrees</c> instead of relying
+        /// on <see cref="Equals(Quaternion)"/> or <c>==</c>.
+        /// </summary>
         public bool Equals(Quaternion other)
         {
-            const float epsilon = 1e-6f;
-            return MathF.Abs(X - other.X) < epsilon &&
-                   MathF.Abs(Y - other.Y) < epsilon &&
-                   MathF.Abs(Z - other.Z) < epsilon &&
-                   MathF.Abs(W - other.W) < epsilon;
+            return X == other.X &&
+                   Y == other.Y &&
+                   Z == other.Z &&
+                   W == other.W;
         }
 
         public override bool Equals(object? obj)

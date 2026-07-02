@@ -196,8 +196,54 @@ namespace O3DESharp
         // 1. Coral uses MemoryMappedFile which locks DLL files, preventing loading the same file twice
         // 2. Assemblies in the same context can reference each other directly
         // For hot-reload, we'll unload and recreate the entire context
+        //
+        // KNOWN LIMITATION (investigated for 1.2.0, deliberately deferred - not a
+        // TODO to "just do", see below for why): because m_userContext and
+        // m_coreContext are the same AssemblyLoadContext, every ReloadUserAssemblies()
+        // call (see below) unloads and rebuilds BOTH user and core assemblies, even
+        // though only the user assembly actually changed. .NET's
+        // AssemblyLoadContext.Unload() is all-or-nothing per context - there is no
+        // way to unload just the user assembly from a context that also holds
+        // O3DE.Core, so this can't be fixed by restructuring the reload code alone;
+        // it requires the contexts to actually be separate objects.
+        //
+        // Why they aren't already separate: doing so safely requires solving a
+        // problem this investigation could not resolve without Coral's own source
+        // (not vendored in this repo) and, likely, changes to Coral.Managed (the C#
+        // bootstrapper - a *separate* forked repo, not part of this codebase at
+        // all):
+        //   - Two independently-created custom AssemblyLoadContexts do NOT
+        //     automatically see each other's loaded assemblies in .NET (only the
+        //     Default ALC has that implicit visibility from other contexts). If
+        //     O3DE.Core lived only in m_coreContext, a genuinely separate
+        //     m_userContext would fail to resolve user scripts' references to it
+        //     (Vector3, Entity, ScriptComponent, ...) unless something explicitly
+        //     redirects that resolution - the standard .NET pattern for this is a
+        //     custom AssemblyLoadContext subclass overriding Load() to fall back to
+        //     a shared context, which is a Coral.Managed-side (C#) change, not
+        //     something fixable from this file alone.
+        //   - The tempting workaround - just load a second copy of O3DE.Core.dll
+        //     into the user context too - does NOT work: it would sidestep the
+        //     MemoryMappedFile lock issue but silently break type identity. A class
+        //     loaded independently into two different ALCs is NOT the same type to
+        //     the CLR even though it's "the same" DLL on disk, so any user script
+        //     class deriving from O3DE.Core's ScriptComponent (loaded via the user
+        //     context's private copy) would NOT be recognized as a ScriptComponent
+        //     by native code that resolved ScriptComponent via the core context's
+        //     copy. This would break the entire inheritance-based dispatch model
+        //     silently, which is worse than the current (correct, if suboptimal)
+        //     unified-context behavior.
+        //
+        // A real fix needs: (1) confirming what cross-context resolution hooks
+        // Coral's C++ AssemblyLoadContext actually exposes, if any, and (2) if none
+        // exist, adding a custom resolving AssemblyLoadContext in Coral.Managed that
+        // redirects O3DE.Core (and only O3DE.Core) references from the user context
+        // back to the single instance already loaded in the core context. Tracked
+        // as a follow-up requiring engine/Coral-source access this environment
+        // didn't have; see the 1.2.0 audit plan (docs/superpowers/plans/) for the
+        // full investigation.
         m_coreContext = m_hostInstance->CreateAssemblyLoadContext("O3DEContext");
-        
+
         // User context is the same as core context - single unified context
         // This pointer alias simplifies code that expects separate contexts
         m_userContext = m_coreContext;
@@ -330,7 +376,12 @@ namespace O3DESharp
         m_userTypeCache.clear();
         m_coreTypeCache.clear();
 
-        // Unload the unified context (which contains both O3DE.Core and user assemblies)
+        // Unload the unified context (which contains both O3DE.Core and user assemblies).
+        // This is why every hot-reload also reloads O3DE.Core, not just the user
+        // assembly that actually changed - see the detailed KNOWN LIMITATION note in
+        // Initialize() above (where m_coreContext/m_userContext are created) for why
+        // this can't be fixed without genuinely separate AssemblyLoadContexts, and
+        // why that separation is deferred rather than attempted blind.
         m_hostInstance->UnloadAssemblyLoadContext(m_coreContext);
         m_coreAssembly = nullptr;
         m_userAssembly = nullptr;

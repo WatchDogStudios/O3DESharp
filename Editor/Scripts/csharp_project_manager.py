@@ -1435,12 +1435,27 @@ class CSharpProjectManager:
             # the settings registry might not exist in non-editor contexts.
             _set_build_in_progress(True)
             try:
+                # 300s timeout matches _BindingBuildWorker's convention in
+                # csharp_editor_tools.py (Phase 18-D auto-build). Without a
+                # timeout, a hung `dotnet build` (e.g. a stuck NuGet restore
+                # against an unreachable feed) blocks this call - and every
+                # caller of it - forever.
                 result = subprocess.run(
                     ["dotnet", "build", str(csproj_path), "-c", configuration],
                     capture_output=True,
                     text=True,
-                    cwd=str(project_path)
+                    cwd=str(project_path),
+                    timeout=300,
                 )
+            except subprocess.TimeoutExpired as timeout_err:
+                return {
+                    "success": False,
+                    "message": "Build timed out after 300 seconds",
+                    "output_path": None,
+                    "build_output": (
+                        (timeout_err.stdout or "") + "\n" + (timeout_err.stderr or "")
+                    ),
+                }
             finally:
                 _set_build_in_progress(False)
 

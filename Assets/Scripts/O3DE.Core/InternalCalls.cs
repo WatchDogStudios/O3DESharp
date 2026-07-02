@@ -45,6 +45,7 @@ namespace O3DE
         internal static delegate* unmanaged<NativeString, ulong> Entity_FindByName;
         internal static delegate* unmanaged<ulong, int> Entity_GetChildCount;
         internal static delegate* unmanaged<ulong, int, ulong> Entity_GetChildAtIndex;
+        internal static delegate* unmanaged<ulong, ulong*, int, int> Entity_GetChildren;
 
         // ============================================================
         // Transform Functions

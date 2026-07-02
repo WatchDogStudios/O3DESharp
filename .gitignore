@@ -66,3 +66,7 @@ Code/Tools/SourceGenerators.Tests/obj/
 # Source-generator project build output
 Code/Tools/SourceGenerators/bin/
 Code/Tools/SourceGenerators/obj/
+
+# Git worktrees used for isolated feature/plan execution (superpowers
+# using-git-worktrees skill)
+.worktrees/
