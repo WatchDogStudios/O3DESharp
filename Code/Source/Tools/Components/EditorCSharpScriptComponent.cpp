@@ -213,9 +213,37 @@ namespace O3DESharp
             return;
         }
 
+        // Prefer the Python-side validator reached via CSharpEditorToolsBus. Unlike
+        // the native Coral-only check below, it scans the actual .cs files discovered
+        // on disk across every registered C# project, so it can distinguish:
+        //   - class found and its base class is known (valid, independent of whether
+        //     Coral has a compiled assembly loaded yet)
+        //   - class not found in any project's .cs files at all (bad name / bad path)
+        // versus the native check, which can only ever say "not found in a loaded
+        // assembly" for both of those cases. Same "call then check for empty/default
+        // result" pattern as OnBrowseScript()/OnEditScript() in this file: if no
+        // Python handler is connected, BroadcastResult leaves scriptValidation at its
+        // default-constructed value (m_message empty), and we fall through to the
+        // native-only check below instead of reporting a false negative.
+        ScriptValidationResult scriptValidation;
+        CSharpEditorToolsBus::BroadcastResult(
+            scriptValidation,
+            &CSharpEditorToolsBus::Events::ValidateScriptClass,
+            m_config.m_scriptClassName);
+
+        if (!scriptValidation.m_message.empty())
+        {
+            m_config.m_validationStatus = scriptValidation.m_message;
+            m_config.m_isValid = scriptValidation.m_isValid;
+            return;
+        }
+
+        // No Python CSharpEditorToolsBus handler connected (e.g. csharp_editor_bootstrap
+        // did not import the tools module) - fall back to the native-only Coral check.
         // If the Coral host is up, ask it whether the class actually exists in any
-        // loaded user assembly. This is the only way to catch typos against the
-        // live assemblies short of running the game.
+        // loaded user assembly. This is a strictly weaker check than the Python path
+        // above (it cannot tell "bad path" from "found but not compiled yet"), but it
+        // is better than nothing when the Python side is unavailable.
         if (ClassExistsInAssembly(m_config.m_scriptClassName, m_config.m_assemblyPath))
         {
             m_config.m_validationStatus = "OK - class found in loaded assemblies";
