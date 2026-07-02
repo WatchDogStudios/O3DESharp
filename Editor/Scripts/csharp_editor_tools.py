@@ -682,9 +682,18 @@ class _RecentClassesCache:
 # means "the user cancelled the dialog / no value was produced". The C++
 # call sites (EditorCSharpScriptComponent::OnBrowseScript and
 # CSharpScriptClassPropertyHandler's Browse button handler) compare the
-# EBus return value against this exact string. It must never collide with
-# a real fully-qualified C# class name, which is why it uses characters
-# that are illegal in a C# identifier.
+# EBus return value against this exact string. It's chosen to be extremely
+# unlikely to collide with a real class name in practice, but correctness
+# does NOT depend on that alone - leading/double underscores are actually
+# legal in C# identifiers (unlike C/C++, where they're implementation-
+# reserved), so this is not a language-level guarantee. This value is
+# intercepted and stripped by both C++ call sites before it would ever be
+# treated as a class name to look up. Keep this string byte-for-byte in
+# sync with ScriptPickerClearedSentinel in
+# Code/Source/Tools/CSharpEditorToolsBus.h - a one-sided typo here would
+# silently make Clear Selection start behaving like Cancel again (see
+# test_python_and_cpp_sentinel_literals_match in
+# Editor/Tests/test_csharp_editor_tools_picker.py).
 SCRIPT_PICKER_CLEARED_SENTINEL = "__O3DESharp_ClearSelection__"
 
 
@@ -2930,12 +2939,17 @@ class CSharpEditorToolsHandler:
     def AddToRecentClasses(self, class_name):
         """
         Add a class to the recent classes list.
-        
+
         Args:
             class_name: Fully qualified class name
         """
+        # Guard against SCRIPT_PICKER_CLEARED_SENTINEL here, not just at
+        # OpenScriptPicker's call site - centralizing it means any future
+        # caller of AddToRecentClasses (including a refactor that shares
+        # code with the non-EBus show_script_class_picker() entry point)
+        # doesn't have to remember to re-add this check itself.
         try:
-            if class_name:
+            if class_name and class_name != SCRIPT_PICKER_CLEARED_SENTINEL:
                 _RecentClassesCache.instance().add(class_name)
         except Exception as e:
             print(f"[O3DESharp] Error adding to recent classes: {e}")
