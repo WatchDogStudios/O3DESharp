@@ -7,7 +7,9 @@
  */
 
 using System;
+using System.Collections.Generic;
 using System.IO;
+using System.Linq;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using System.Text.RegularExpressions;
@@ -69,7 +71,9 @@ namespace O3DESharp.BindingGenerator.Configuration
                 var json = File.ReadAllText(configPath);
                 var config = JsonSerializer.Deserialize<BindingConfig>(json, JsonOptions);
                 config ??= CreateDefault();
+                WarnOnUnknownKeys(json);
                 ExpandEnvironmentVariables(config);
+                WarnOnUnresolvedEnvVars(config);
                 loadedSuccessfully = true;
                 return config;
             }
@@ -79,6 +83,120 @@ namespace O3DESharp.BindingGenerator.Configuration
                 return CreateDefault();
             }
         }
+
+        /// <summary>
+        /// Diff the raw JSON's object keys against the known property names
+        /// on BindingConfig/GlobalSettings/GemSettings (via reflection, so
+        /// this can never drift out of sync with the actual schema) and
+        /// warn on anything unrecognized - most likely a typo (e.g.
+        /// "requireExportAttrib" instead of "requireExportAttribute") that
+        /// would otherwise silently no-op with zero feedback. Comparison is
+        /// case-insensitive since that's how the raw JSON key would compare
+        /// against a C# property name regardless of JsonNamingPolicy's exact
+        /// camelCase transform.
+        /// </summary>
+        private static void WarnOnUnknownKeys(string json)
+        {
+            try
+            {
+                using var doc = JsonDocument.Parse(json);
+                var root = doc.RootElement;
+                if (root.ValueKind != JsonValueKind.Object)
+                {
+                    return;
+                }
+
+                WarnOnUnknownKeysInObject(root, KnownTopLevelKeys, "top-level config");
+
+                if (root.TryGetProperty("global", out var globalElement) &&
+                    globalElement.ValueKind == JsonValueKind.Object)
+                {
+                    WarnOnUnknownKeysInObject(globalElement, KnownGlobalKeys, "\"global\"");
+                }
+
+                if (root.TryGetProperty("gems", out var gemsElement) &&
+                    gemsElement.ValueKind == JsonValueKind.Object)
+                {
+                    foreach (var gemProperty in gemsElement.EnumerateObject())
+                    {
+                        if (gemProperty.Value.ValueKind == JsonValueKind.Object)
+                        {
+                            WarnOnUnknownKeysInObject(gemProperty.Value, KnownGemKeys, $"gems.\"{gemProperty.Name}\"");
+                        }
+                    }
+                }
+            }
+            catch (JsonException)
+            {
+                // Already-reported by the caller's own catch block around the
+                // strongly-typed Deserialize call - avoid a duplicate warning here.
+            }
+        }
+
+        private static void WarnOnUnknownKeysInObject(JsonElement obj, HashSet<string> knownKeys, string location)
+        {
+            foreach (var property in obj.EnumerateObject())
+            {
+                if (!knownKeys.Contains(property.Name))
+                {
+                    Console.WriteLine($"WARNING: unrecognized key \"{property.Name}\" in {location} of binding_config.json - check for a typo. Known keys: {string.Join(", ", knownKeys.OrderBy(k => k))}");
+                }
+            }
+        }
+
+        /// <summary>
+        /// After ExpandEnvironmentVariables has run, warn about any
+        /// "${VAR}"-style reference that's still present in a path/define
+        /// field - it means the referenced environment variable isn't set,
+        /// so the literal "${VAR}" text is about to be passed straight
+        /// through to libclang/the file system, which will fail in a
+        /// confusing way several steps removed from the actual cause.
+        /// </summary>
+        private static void WarnOnUnresolvedEnvVars(BindingConfig config)
+        {
+            void CheckField(string value, string fieldName)
+            {
+                if (!string.IsNullOrEmpty(value) && EnvVarPattern.IsMatch(value))
+                {
+                    Console.WriteLine($"WARNING: unresolved environment variable reference in {fieldName}: \"{value}\" - the referenced variable isn't set");
+                }
+            }
+
+            for (int i = 0; i < config.Global.IncludePaths.Count; i++)
+            {
+                CheckField(config.Global.IncludePaths[i], $"global.includePaths[{i}]");
+            }
+            for (int i = 0; i < config.Global.Defines.Count; i++)
+            {
+                CheckField(config.Global.Defines[i], $"global.defines[{i}]");
+            }
+            CheckField(config.Global.CSharpOutputPath, "global.cSharpOutputPath");
+            CheckField(config.Global.CppOutputPath, "global.cppOutputPath");
+
+            foreach (var kv in config.Gems)
+            {
+                for (int i = 0; i < kv.Value.IncludePaths.Count; i++)
+                {
+                    CheckField(kv.Value.IncludePaths[i], $"gems.\"{kv.Key}\".includePaths[{i}]");
+                }
+                for (int i = 0; i < kv.Value.Defines.Count; i++)
+                {
+                    CheckField(kv.Value.Defines[i], $"gems.\"{kv.Key}\".defines[{i}]");
+                }
+            }
+        }
+
+        private static readonly HashSet<string> KnownTopLevelKeys =
+            new HashSet<string>(
+                typeof(BindingConfig).GetProperties().Select(p => p.Name), StringComparer.OrdinalIgnoreCase);
+
+        private static readonly HashSet<string> KnownGlobalKeys =
+            new HashSet<string>(
+                typeof(GlobalSettings).GetProperties().Select(p => p.Name), StringComparer.OrdinalIgnoreCase);
+
+        private static readonly HashSet<string> KnownGemKeys =
+            new HashSet<string>(
+                typeof(GemSettings).GetProperties().Select(p => p.Name), StringComparer.OrdinalIgnoreCase);
 
         /// <summary>
         /// Save configuration to a JSON file
