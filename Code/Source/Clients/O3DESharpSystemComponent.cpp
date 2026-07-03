@@ -916,6 +916,9 @@ namespace O3DESharp
         }
 
         // Create the output path: <ProjectPath>/Generated/reflection_data.json
+        // This must stay in sync with ReflectionDataPathResolver's default in
+        // O3DESharp.BindingGenerator - that's where the CLI's reflection
+        // backend looks for this file when --reflection-data isn't passed.
         AZ::IO::Path outputPath = AZ::IO::Path(projectPath) / "Generated" / "reflection_data.json";
 
         // Ensure the directory exists
