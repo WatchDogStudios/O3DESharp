@@ -22,7 +22,7 @@ import azlmbr.bus as bus
 import azlmbr.editor as editor
 import azlmbr.paths as paths
 
-from csharp_platform_utils import resolve_dotnet
+from csharp_platform_utils import render_vscode_launch_json, resolve_dotnet
 
 
 # Phase 16b helpers.
@@ -285,46 +285,6 @@ CSPROJ_TEMPLATE = r'''<Project Sdk="Microsoft.NET.Sdk">
 # The "launch" config uses workspaceFolder-relative paths so the same
 # template works regardless of build location; the user can override
 # `${O3DELauncherPath}` per-machine.
-VSCODE_LAUNCH_JSON_TEMPLATE = '''\
-{
-    "version": "0.2.0",
-    "configurations": [
-        {
-            "name": "O3DESharp: Attach to Editor",
-            "type": "coreclr",
-            "request": "attach",
-            "processName": "Editor"
-        },
-        {
-            "name": "O3DESharp: Attach to GameLauncher",
-            "type": "coreclr",
-            "request": "attach",
-            "processName": "GameLauncher"
-        },
-        {
-            "name": "O3DESharp: Launch GameLauncher (profile)",
-            "type": "coreclr",
-            "request": "launch",
-            "preLaunchTask": "",
-            "program": "${workspaceFolder}/../../../../build/windows/bin/profile/${input:launcherExeName}",
-            "args": [],
-            "cwd": "${workspaceFolder}/../../../..",
-            "console": "internalConsole",
-            "stopAtEntry": false,
-            "justMyCode": true
-        }
-    ],
-    "inputs": [
-        {
-            "id": "launcherExeName",
-            "type": "promptString",
-            "description": "Game launcher exe name (e.g. NewProject.GameLauncher.exe). Set once and VS Code remembers it for the workspace.",
-            "default": "GameLauncher.exe"
-        }
-    ]
-}
-'''
-
 SCRIPT_COMPONENT_TEMPLATE = '''using O3DE;
 
 namespace {namespace}
@@ -1302,7 +1262,7 @@ class CSharpProjectManager:
                 vscode_dir.mkdir(parents=True, exist_ok=True)
                 launch_path = vscode_dir / "launch.json"
                 if not launch_path.exists():
-                    launch_path.write_text(VSCODE_LAUNCH_JSON_TEMPLATE)
+                    launch_path.write_text(render_vscode_launch_json())
             except OSError as e:
                 # Best-effort - csproj creation already succeeded.
                 print(f"[O3DESharp] could not write {project_dir}/.vscode/launch.json: {e}")

@@ -57,3 +57,14 @@ def test_no_unguarded_startfile_in_editor_tools():
         "csharp_editor_tools.py must use csharp_platform_utils.open_in_default_app() "
         "instead of os.startfile (Windows-only)."
     )
+
+
+@pytest.mark.unit
+def test_project_manager_uses_launch_renderer():
+    text = (SCRIPTS / "csharp_project_manager.py").read_text(encoding="utf-8")
+    assert "render_vscode_launch_json" in text, (
+        "csharp_project_manager.py must render launch.json via the host-aware helper."
+    )
+    assert "build/windows/bin/profile" not in text, (
+        "The hardcoded Windows launch.json path must be gone."
+    )
