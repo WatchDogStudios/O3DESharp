@@ -89,12 +89,12 @@ class TestGemDescriptor:
         """Test creating a GemDescriptor."""
         gem = GemDescriptor(
             name="TestGem",
-            path=Path("/path/to/gem"),
+            absolute_path=Path("/path/to/gem"),
             version="1.0.0"
         )
-        
+
         assert gem.name == "TestGem"
-        assert gem.path == Path("/path/to/gem")
+        assert gem.absolute_path == Path("/path/to/gem")
         assert gem.version == "1.0.0"
         assert gem.dependencies == []
 
@@ -102,7 +102,7 @@ class TestGemDescriptor:
         """Test GemDescriptor with dependencies."""
         gem = GemDescriptor(
             name="TestGem",
-            path=Path("/path/to/gem"),
+            absolute_path=Path("/path/to/gem"),
             version="1.0.0",
             dependencies=["AzCore", "AzFramework"]
         )
