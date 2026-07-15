@@ -1307,7 +1307,7 @@ def run_binding_tests():
                     general.log(f"✗ C# tests FAILED (exit code: {result.returncode})")
                     general.log(result.stderr)
             except FileNotFoundError:
-                general.log("⚠ dotnet not found - install .NET 8.0 SDK")
+                general.log("⚠ dotnet not found - install .NET 9.0 SDK")
             except Exception as e:
                 general.log(f"✗ C# tests failed to run: {e}")
         else:

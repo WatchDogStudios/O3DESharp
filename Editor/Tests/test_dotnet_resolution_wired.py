@@ -68,3 +68,10 @@ def test_project_manager_uses_launch_renderer():
     assert "build/windows/bin/profile" not in text, (
         "The hardcoded Windows launch.json path must be gone."
     )
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("name", ["csharp_project_manager.py", "csharp_editor_bootstrap.py"])
+def test_no_stale_dotnet8_sdk_message(name):
+    text = (SCRIPTS / name).read_text(encoding="utf-8")
+    assert ".NET 8.0 SDK" not in text, f"{name} has a stale '.NET 8.0 SDK' install message"

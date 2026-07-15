@@ -1477,7 +1477,7 @@ class CSharpProjectManager:
         except FileNotFoundError:
             return {
                 "success": False,
-                "message": "dotnet CLI not found. Please install .NET 8.0 SDK.",
+                "message": "dotnet CLI not found. Please install .NET 9.0 SDK.",
                 "output_path": None
             }
         except Exception as e:
