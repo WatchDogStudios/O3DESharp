@@ -48,3 +48,12 @@ def test_references_resolve_dotnet(name):
 @pytest.mark.parametrize("name", FILES)
 def test_still_parses(name):
     ast.parse((SCRIPTS / name).read_text(encoding="utf-8"))
+
+
+@pytest.mark.unit
+def test_no_unguarded_startfile_in_editor_tools():
+    text = (SCRIPTS / "csharp_editor_tools.py").read_text(encoding="utf-8")
+    assert "os.startfile" not in text, (
+        "csharp_editor_tools.py must use csharp_platform_utils.open_in_default_app() "
+        "instead of os.startfile (Windows-only)."
+    )
