@@ -75,3 +75,46 @@ def test_project_manager_uses_launch_renderer():
 def test_no_stale_dotnet8_sdk_message(name):
     text = (SCRIPTS / name).read_text(encoding="utf-8")
     assert ".NET 8.0 SDK" not in text, f"{name} has a stale '.NET 8.0 SDK' install message"
+
+
+# The public helpers a wired script may call. Any of these a script CALLS must
+# also be IMPORTED from csharp_platform_utils, or it's a NameError at runtime -
+# which the unit suite can't hit directly because these modules need azlmbr /
+# PySide2 to import. This static AST check catches that class of bug (it is
+# exactly the gap that let a missing `open_in_default_app` import ship).
+PLATFORM_UTIL_HELPERS = {"resolve_dotnet", "open_in_default_app", "render_vscode_launch_json"}
+
+
+def _imported_from_platform_utils(tree):
+    names = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom) and node.module == "csharp_platform_utils":
+            for alias in node.names:
+                names.add(alias.asname or alias.name)
+    return names
+
+
+def _called_helper_names(tree):
+    called = set()
+    for node in ast.walk(tree):
+        if (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Name)
+            and node.func.id in PLATFORM_UTIL_HELPERS
+        ):
+            called.add(node.func.id)
+    return called
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("name", FILES)
+def test_called_platform_helpers_are_imported(name):
+    tree = ast.parse((SCRIPTS / name).read_text(encoding="utf-8"))
+    called = _called_helper_names(tree)
+    imported = _imported_from_platform_utils(tree)
+    missing = called - imported
+    assert not missing, (
+        f"{name} calls {sorted(missing)} from csharp_platform_utils but does not import "
+        f"them (NameError at runtime). Add them to the "
+        f"'from csharp_platform_utils import ...' line."
+    )

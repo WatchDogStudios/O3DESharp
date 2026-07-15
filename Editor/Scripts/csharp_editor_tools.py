@@ -35,7 +35,7 @@ from PySide2.QtGui import QFont, QIcon
 import azlmbr.bus as bus
 import azlmbr.editor as editor
 
-from csharp_platform_utils import resolve_dotnet
+from csharp_platform_utils import resolve_dotnet, open_in_default_app
 
 # Import with fallback for different contexts
 try:

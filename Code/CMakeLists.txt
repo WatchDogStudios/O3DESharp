@@ -224,9 +224,14 @@ set(O3DE_CORE_BUILD_OUTPUT_DEBUG "${O3DE_CORE_SCRIPTS_DIR}/bin/Debug/net9.0")
 # For C# projects, we typically want Release for deployment
 set(O3DE_CORE_BUILD_OUTPUT "${O3DE_CORE_BUILD_OUTPUT_RELEASE}")
 
-# Always define the staging target; the O3DE.Core build target (MSVC msproject
-# or the non-MSVC dotnet custom target) produces the DLL before staging runs.
-if(TRUE)
+# Define the staging target when O3DE.Core will exist: either the C# source is
+# present (so the MSVC msproject / non-MSVC dotnet target below builds the DLL and
+# the consolidated wiring block adds the StageO3DECore -> O3DE.Core dependency), or
+# a pre-built DLL is already on disk. In an install/redistribution tree that ships
+# Code/ but not the C# source (no csproj, no DLL), neither holds - fall through to
+# the graceful message instead of staging a DLL that will never be produced (the
+# primary DLL copy is not absence-tolerant, unlike the PDB/deps.json copies).
+if(EXISTS "${O3DE_CORE_SCRIPTS_DIR}/O3DE.Core.csproj" OR EXISTS "${O3DE_CORE_BUILD_OUTPUT}/O3DE.Core.dll")
     # Create custom target to stage O3DE.Core files. Includes the
     # portable PDB so external debuggers (vsdbg / Rider / VS) can bind
     # source-level breakpoints in O3DE.Core methods - without the PDB
