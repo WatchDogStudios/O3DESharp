@@ -596,8 +596,13 @@ def _find_rider_executable():
     # 2. JetBrains Toolbox (per-user)
     home = Path.home()
     toolbox_candidates = [
+        # Windows
         home / "AppData" / "Local" / "Programs" / "Rider" / "bin" / exe_name,
         home / "AppData" / "Local" / "JetBrains" / "Toolbox" / "apps",
+        # Linux (Toolbox default)
+        home / ".local" / "share" / "JetBrains" / "Toolbox" / "apps",
+        # macOS (Toolbox default)
+        home / "Library" / "Application Support" / "JetBrains" / "Toolbox" / "apps",
     ]
     for c in toolbox_candidates:
         if c.is_file():
