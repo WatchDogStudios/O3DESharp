@@ -243,17 +243,12 @@ if(TRUE)
         COMMAND ${CMAKE_COMMAND} -DSRC=${O3DE_CORE_BUILD_OUTPUT}/O3DE.Core.pdb -DDST=${O3DE_CORE_STAGING_DIR}/O3DE.Core.pdb -P "${CMAKE_CURRENT_LIST_DIR}/o3desharp_copy_if_exists.cmake"
         COMMAND ${CMAKE_COMMAND} -DSRC=${O3DE_CORE_BUILD_OUTPUT}/O3DE.Core.deps.json -DDST=${O3DE_CORE_STAGING_DIR}/O3DE.Core.deps.json -P "${CMAKE_CURRENT_LIST_DIR}/o3desharp_copy_if_exists.cmake"
     )
-    
-    # Add dependency on O3DE.Core C# project if it exists as a target
-    if(TARGET O3DE.Core)
-        add_dependencies(${gem_name}.StageO3DECore O3DE.Core)
-    endif()
-    
-    # Also ensure Coral.Managed is staged first since O3DE.Core depends on it
-    if(TARGET ${gem_name}.StageCoral)
-        add_dependencies(${gem_name}.StageO3DECore ${gem_name}.StageCoral)
-    endif()
-    
+
+    # NOTE: build-ordering dependencies (O3DE.Core, StageCoral) are wired in a
+    # consolidated block AFTER the O3DE.Core target is created (see the
+    # if(MSVC)/else() block further down). They cannot be wired here because
+    # CMake evaluates if(TARGET ...) in single-pass order and O3DE.Core does
+    # not exist yet at this point in the file.
     set_property(TARGET ${gem_name}.StageO3DECore PROPERTY FOLDER "${relative_o3desharp_gem_root}/Deploy")
 
     message(STATUS "O3DESharp: O3DE.Core will be staged to ${O3DE_CORE_STAGING_DIR}")
@@ -891,6 +886,25 @@ else()
         if(TARGET Coral.Managed)
             add_dependencies(O3DE.Core Coral.Managed)
         endif()
+        # The O3DE.Core csproj references Coral via HintPath into the staged
+        # bin/Coral/Coral.Managed.dll (produced by StageCoral), so the dotnet
+        # build must run after Coral is staged, not just after it is built.
+        if(TARGET ${gem_name}.StageCoral)
+            add_dependencies(O3DE.Core ${gem_name}.StageCoral)
+        endif()
         message(STATUS "O3DESharp: O3DE.Core will be built via dotnet (non-MSVC generator)")
+    endif()
+endif()
+
+# Wire StageO3DECore's build-ordering dependencies HERE, after the O3DE.Core
+# and StageCoral targets actually exist. CMake evaluates if(TARGET ...) against
+# targets defined so far in single-pass order, so this must come after target
+# creation - not up in the StageO3DECore block where O3DE.Core does not yet exist.
+if(TARGET ${gem_name}.StageO3DECore)
+    if(TARGET O3DE.Core)
+        add_dependencies(${gem_name}.StageO3DECore O3DE.Core)
+    endif()
+    if(TARGET ${gem_name}.StageCoral)
+        add_dependencies(${gem_name}.StageO3DECore ${gem_name}.StageCoral)
     endif()
 endif()
