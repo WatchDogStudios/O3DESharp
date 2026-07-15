@@ -224,7 +224,9 @@ set(O3DE_CORE_BUILD_OUTPUT_DEBUG "${O3DE_CORE_SCRIPTS_DIR}/bin/Debug/net9.0")
 # For C# projects, we typically want Release for deployment
 set(O3DE_CORE_BUILD_OUTPUT "${O3DE_CORE_BUILD_OUTPUT_RELEASE}")
 
-if(EXISTS "${O3DE_CORE_BUILD_OUTPUT}/O3DE.Core.dll")
+# Always define the staging target; the O3DE.Core build target (MSVC msproject
+# or the non-MSVC dotnet custom target) produces the DLL before staging runs.
+if(TRUE)
     # Create custom target to stage O3DE.Core files. Includes the
     # portable PDB so external debuggers (vsdbg / Rider / VS) can bind
     # source-level breakpoints in O3DE.Core methods - without the PDB
@@ -236,12 +238,10 @@ if(EXISTS "${O3DE_CORE_BUILD_OUTPUT}/O3DE.Core.dll")
         COMMAND ${CMAKE_COMMAND} -E copy_if_different
             "${O3DE_CORE_BUILD_OUTPUT}/O3DE.Core.dll"
             "${O3DE_CORE_STAGING_DIR}/O3DE.Core.dll"
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "${O3DE_CORE_BUILD_OUTPUT}/O3DE.Core.pdb"
-            "${O3DE_CORE_STAGING_DIR}/O3DE.Core.pdb"
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "${O3DE_CORE_BUILD_OUTPUT}/O3DE.Core.deps.json"
-            "${O3DE_CORE_STAGING_DIR}/O3DE.Core.deps.json"
+        # PDB/deps.json may or may not be emitted depending on config; copy
+        # them only if present so a Release build without a PDB doesn't fail.
+        COMMAND ${CMAKE_COMMAND} -DSRC=${O3DE_CORE_BUILD_OUTPUT}/O3DE.Core.pdb -DDST=${O3DE_CORE_STAGING_DIR}/O3DE.Core.pdb -P "${CMAKE_CURRENT_LIST_DIR}/o3desharp_copy_if_exists.cmake"
+        COMMAND ${CMAKE_COMMAND} -DSRC=${O3DE_CORE_BUILD_OUTPUT}/O3DE.Core.deps.json -DDST=${O3DE_CORE_STAGING_DIR}/O3DE.Core.deps.json -P "${CMAKE_CURRENT_LIST_DIR}/o3desharp_copy_if_exists.cmake"
     )
     
     # Add dependency on O3DE.Core C# project if it exists as a target
@@ -839,8 +839,9 @@ endif()
 
 if(MSVC)
     # Get the gem root for proper folder organization
-    get_property(gem_root GLOBAL PROPERTY "@GEMROOT:${gem_name}@")
-    
+    get_property(gem_root_for_core_build GLOBAL PROPERTY "@GEMROOT:${gem_name}@")
+    set(gem_root ${gem_root_for_core_build})
+
     # Define paths to C# projects
     set(O3DESHARP_CSHARP_SCRIPTS_DIR "${gem_root}/Assets/Scripts")
     
@@ -870,4 +871,26 @@ if(MSVC)
     endif()
     
     message(STATUS "O3DESharp: C# projects integrated into Visual Studio solution")
+else()
+    # Non-MSVC generators (Ninja/Make on Linux/macOS) don't consume
+    # include_external_msproject, so build O3DE.Core with the dotnet CLI
+    # directly - same mechanism as the binding generator above. The output
+    # lands where StageO3DECore expects it (bin/Release/net9.0).
+    get_property(gem_root_for_core_build GLOBAL PROPERTY "@GEMROOT:${gem_name}@")
+    set(O3DE_CORE_CSPROJ "${gem_root_for_core_build}/Assets/Scripts/O3DE.Core/O3DE.Core.csproj")
+    if(NOT TARGET O3DE.Core AND EXISTS "${O3DE_CORE_CSPROJ}")
+        set(O3DE_CORE_DOTNET_CONFIG "Release")
+        add_custom_target(O3DE.Core ALL
+            COMMENT "O3DESharp: Building O3DE.Core (dotnet build -c ${O3DE_CORE_DOTNET_CONFIG})"
+            COMMAND ${DOTNET_EXECUTABLE} build "${O3DE_CORE_CSPROJ}"
+                -c ${O3DE_CORE_DOTNET_CONFIG}
+                --nologo
+            BYPRODUCTS "${O3DE_CORE_SCRIPTS_DIR}/bin/${O3DE_CORE_DOTNET_CONFIG}/net9.0/O3DE.Core.dll"
+            VERBATIM
+        )
+        if(TARGET Coral.Managed)
+            add_dependencies(O3DE.Core Coral.Managed)
+        endif()
+        message(STATUS "O3DESharp: O3DE.Core will be built via dotnet (non-MSVC generator)")
+    endif()
 endif()
