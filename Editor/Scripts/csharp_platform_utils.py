@@ -91,3 +91,88 @@ def resolve_dotnet():
             return str(candidate)
 
     return "dotnet"
+
+
+import subprocess
+
+
+def _default_opener(os_name=None, platform=None):
+    """Return the argv[0] opener for the current OS, or None for Windows.
+
+    None is the sentinel meaning "use os.startfile" (Windows only).
+    """
+    os_name = os.name if os_name is None else os_name
+    platform = sys.platform if platform is None else platform
+    if os_name == "nt":
+        return None
+    return "open" if platform == "darwin" else "xdg-open"
+
+
+def open_in_default_app(path):
+    """Open `path` in the OS default application. Returns True on best-effort
+    success, False on failure. Never raises."""
+    target = str(path)
+    try:
+        opener = _default_opener()
+        if opener is None:
+            os.startfile(target)  # noqa: S606 - Windows-only, intended
+            return True
+        subprocess.Popen([opener, target], close_fds=True)
+        return True
+    except Exception:
+        return False
+
+
+# O3DE build tree folder per host, e.g. build/windows, build/linux, build/mac.
+_BUILD_DIR_BY_PLATFORM = {"win32": "windows", "linux": "linux", "darwin": "mac"}
+
+
+def render_vscode_launch_json(host_platform=None):
+    """Render the .vscode/launch.json body with host-appropriate launcher
+    path + default name. VS Code launch.json cannot detect the host at F5
+    time, so we bake the right values in at generation time."""
+    platform = sys.platform if host_platform is None else host_platform
+    # sys.platform is "linux"/"linux2"; normalize.
+    if platform.startswith("linux"):
+        platform = "linux"
+    build_dir = _BUILD_DIR_BY_PLATFORM.get(platform, "linux")
+    launcher_default = "GameLauncher.exe" if platform == "win32" else "GameLauncher"
+    return f'''\
+{{
+    "version": "0.2.0",
+    "configurations": [
+        {{
+            "name": "O3DESharp: Attach to Editor",
+            "type": "coreclr",
+            "request": "attach",
+            "processName": "Editor"
+        }},
+        {{
+            "name": "O3DESharp: Attach to GameLauncher",
+            "type": "coreclr",
+            "request": "attach",
+            "processName": "GameLauncher"
+        }},
+        {{
+            "name": "O3DESharp: Launch GameLauncher (profile)",
+            "type": "coreclr",
+            "request": "launch",
+            "preLaunchTask": "",
+            "program": "${{workspaceFolder}}/../../../../build/{build_dir}/bin/profile/${{input:launcherExeName}}",
+            "args": [],
+            "cwd": "${{workspaceFolder}}/../../../..",
+            "console": "internalConsole",
+            "stopAtEntry": false,
+            "justMyCode": true
+        }}
+    ],
+    "inputs": [
+        {{
+            "id": "launcherExeName",
+            "type": "promptString",
+            "description": "Game launcher name (e.g. NewProject.GameLauncher). Set once and VS Code remembers it for the workspace.",
+            "default": "{launcher_default}"
+        }}
+    ]
+}}
+'''

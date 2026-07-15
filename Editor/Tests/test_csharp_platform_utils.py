@@ -49,3 +49,55 @@ def test_resolve_dotnet_bare_fallback(monkeypatch):
     monkeypatch.setattr(ppu.shutil, "which", lambda name: None)
     monkeypatch.setattr(ppu, "_common_dotnet_locations", lambda: [])
     assert ppu.resolve_dotnet() == "dotnet"
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("os_name,platform,expected", [
+    ("nt", "win32", None),
+    ("posix", "darwin", "open"),
+    ("posix", "linux", "xdg-open"),
+])
+def test_default_opener(os_name, platform, expected):
+    assert ppu._default_opener(os_name=os_name, platform=platform) == expected
+
+
+@pytest.mark.unit
+def test_open_in_default_app_uses_opener_on_linux(monkeypatch):
+    calls = {}
+    monkeypatch.setattr(ppu, "_default_opener", lambda: "xdg-open")
+
+    def fake_popen(argv, **kwargs):
+        calls["argv"] = argv
+        return object()
+
+    monkeypatch.setattr(ppu.subprocess, "Popen", fake_popen)
+    assert ppu.open_in_default_app("/tmp/x.cs") is True
+    assert calls["argv"] == ["xdg-open", "/tmp/x.cs"]
+
+
+@pytest.mark.unit
+def test_open_in_default_app_returns_false_on_error(monkeypatch):
+    monkeypatch.setattr(ppu, "_default_opener", lambda: "xdg-open")
+
+    def boom(argv, **kwargs):
+        raise OSError("no opener")
+
+    monkeypatch.setattr(ppu.subprocess, "Popen", boom)
+    assert ppu.open_in_default_app("/tmp/x.cs") is False
+
+
+@pytest.mark.unit
+def test_render_launch_json_linux():
+    text = ppu.render_vscode_launch_json(host_platform="linux")
+    assert "build/linux/bin/profile/" in text
+    assert '"default": "GameLauncher"' in text
+    assert ".exe" not in text
+
+
+@pytest.mark.unit
+def test_render_launch_json_windows_is_valid_json():
+    import json
+    text = ppu.render_vscode_launch_json(host_platform="win32")
+    assert "build/windows/bin/profile/" in text
+    assert '"default": "GameLauncher.exe"' in text
+    json.loads(text)  # must parse
