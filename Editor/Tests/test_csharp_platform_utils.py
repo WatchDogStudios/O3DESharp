@@ -62,6 +62,29 @@ def test_default_opener(os_name, platform, expected):
 
 
 @pytest.mark.unit
+def test_common_dotnet_locations_linux_branch():
+    """The Linux dotnet-search branch a real Linux editor hits (other tests
+    mock this out). Path equality is separator-agnostic, so this asserts the
+    intended search set even when the test itself runs on Windows."""
+    locs = ppu._common_dotnet_locations(os_name="posix", platform="linux")
+    # Canonical system install dirs are searched...
+    assert Path("/usr/share/dotnet/dotnet") in locs
+    assert Path("/usr/bin/dotnet") in locs
+    assert Path("/usr/local/share/dotnet/dotnet") in locs
+    # ...and no Windows Program Files locations leak into the Linux branch.
+    assert not any("Program" in str(p) for p in locs)
+
+
+@pytest.mark.unit
+def test_common_dotnet_locations_darwin_branch():
+    """The macOS branch, injected the same way."""
+    locs = ppu._common_dotnet_locations(os_name="posix", platform="darwin")
+    assert Path("/usr/local/share/dotnet/dotnet") in locs
+    assert Path("/opt/homebrew/bin/dotnet") in locs
+    assert not any("Program" in str(p) for p in locs)
+
+
+@pytest.mark.unit
 def test_open_in_default_app_uses_opener_on_linux(monkeypatch):
     calls = {}
     monkeypatch.setattr(ppu, "_default_opener", lambda: "xdg-open")

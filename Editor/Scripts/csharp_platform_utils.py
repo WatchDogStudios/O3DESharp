@@ -27,10 +27,16 @@ def _is_dotnet(path):
         return False
 
 
-def _common_dotnet_locations():
-    """Well-known dotnet install locations for the current OS, best first."""
+def _common_dotnet_locations(os_name=None, platform=None):
+    """Well-known dotnet install locations for the current OS, best first.
+
+    os_name / platform are injectable (default to os.name / sys.platform) so
+    the per-OS branches are unit-testable without mutating global module state.
+    """
+    os_name = os.name if os_name is None else os_name
+    platform = sys.platform if platform is None else platform
     home = Path.home()
-    if os.name == "nt":
+    if os_name == "nt":
         out = []
         for env_var in ("ProgramFiles", "ProgramW6432"):
             root = os.environ.get(env_var)
@@ -41,7 +47,7 @@ def _common_dotnet_locations():
             out.append(Path(local) / "Microsoft" / "dotnet" / _DOTNET_EXE_NAME)
         out.append(home / ".dotnet" / _DOTNET_EXE_NAME)
         return out
-    if sys.platform == "darwin":
+    if platform == "darwin":
         return [
             Path("/usr/local/share/dotnet/dotnet"),
             Path("/opt/homebrew/bin/dotnet"),
