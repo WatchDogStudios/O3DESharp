@@ -22,6 +22,8 @@ import azlmbr.bus as bus
 import azlmbr.editor as editor
 import azlmbr.paths as paths
 
+from csharp_platform_utils import resolve_dotnet
+
 
 # Phase 16b helpers.
 
@@ -1441,7 +1443,7 @@ class CSharpProjectManager:
                 # against an unreachable feed) blocks this call - and every
                 # caller of it - forever.
                 result = subprocess.run(
-                    ["dotnet", "build", str(csproj_path), "-c", configuration],
+                    [resolve_dotnet(), "build", str(csproj_path), "-c", configuration],
                     capture_output=True,
                     text=True,
                     cwd=str(project_path),

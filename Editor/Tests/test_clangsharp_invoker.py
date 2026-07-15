@@ -59,9 +59,15 @@ class TestClangSharpInvoker:
         """Test basic command-line argument construction."""
         invoker = ClangSharpInvoker(str(tmp_path / "BindingGenerator.csproj"))
         config = BindingGeneratorConfig()
-        
-        args = invoker._build_arguments("/path/to/project", config, False)
-        
+
+        # _build_arguments resolves the dotnet executable via
+        # resolve_dotnet(), which returns a full path when a dotnet
+        # install is discoverable on the host (as it usually is in CI/dev
+        # machines). Pin it to the bare "dotnet" literal so this test's
+        # assertions stay meaningful and machine-independent.
+        with patch("csharp_binding_generator.resolve_dotnet", return_value="dotnet"):
+            args = invoker._build_arguments("/path/to/project", config, False)
+
         assert "dotnet" in args
         assert "run" in args
         assert "--project" in args
@@ -306,9 +312,12 @@ class TestClangSharpInvokerEdgeCases:
         
         invoker = ClangSharpInvoker(str(tool_dir))
         config = BindingGeneratorConfig()
-        
-        args = invoker._build_arguments("/project", config, False)
-        
+
+        # See test_build_arguments_basic: pin resolve_dotnet() to the bare
+        # "dotnet" literal so the assertion is machine-independent.
+        with patch("csharp_binding_generator.resolve_dotnet", return_value="dotnet"):
+            args = invoker._build_arguments("/project", config, False)
+
         assert "dotnet" in args
         assert str(csproj) in args
 

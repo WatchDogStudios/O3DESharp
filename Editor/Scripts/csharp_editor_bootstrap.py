@@ -21,6 +21,8 @@ _SCRIPT_DIR = Path(__file__).parent.resolve()
 if str(_SCRIPT_DIR) not in sys.path:
     sys.path.insert(0, str(_SCRIPT_DIR))
 
+from csharp_platform_utils import resolve_dotnet
+
 # Try to import PySide if available
 try:
     from PySide2 import QtWidgets
@@ -1292,7 +1294,7 @@ def run_binding_tests():
         if csharp_tests_dir.exists():
             try:
                 result = subprocess.run(
-                    ["dotnet", "test", str(csharp_tests_dir / "BindingGenerator.Tests.csproj"), "--verbosity", "normal"],
+                    [resolve_dotnet(), "test", str(csharp_tests_dir / "BindingGenerator.Tests.csproj"), "--verbosity", "normal"],
                     capture_output=True,
                     text=True,
                     timeout=120,

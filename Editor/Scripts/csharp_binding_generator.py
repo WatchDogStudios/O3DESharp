@@ -42,6 +42,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable, List, Optional, Set, Tuple
 
+from csharp_platform_utils import resolve_dotnet
 
 logger = logging.getLogger("O3DESharp.BindingGenerator")
 
@@ -462,24 +463,25 @@ class ClangSharpInvoker:
         # because that skips the dotnet-run restore + build pipeline entirely
         # (30-180s of silent startup → < 1s). Fall through to `dotnet run`
         # only if all we have is a csproj.
+        _dn = resolve_dotnet()
         if tool_path.suffix == ".dll":
             # Prebuilt DLL path - fastest startup, no MSBuild involvement
-            args = ["dotnet", str(tool_path)]
+            args = [_dn, str(tool_path)]
         elif tool_path.suffix == ".csproj":
             # Csproj fallback - dotnet run with --no-build first attempt
             # would be ideal but requires a prior build that we can't
             # guarantee here. Plain dotnet run is what we have.
-            args = ["dotnet", "run", "--project", str(tool_path), "--"]
+            args = [_dn, "run", "--project", str(tool_path), "--"]
         elif tool_path.is_dir():
             # Directory - look for a DLL first, then fall back to csproj
             dll = tool_path / "O3DESharp.BindingGenerator.dll"
             csproj = tool_path / "O3DESharp.BindingGenerator.csproj"
             if dll.exists():
-                args = ["dotnet", str(dll)]
+                args = [_dn, str(dll)]
             elif csproj.exists():
-                args = ["dotnet", "run", "--project", str(csproj), "--"]
+                args = [_dn, "run", "--project", str(csproj), "--"]
             else:
-                args = ["dotnet", "run", "--"]
+                args = [_dn, "run", "--"]
         else:
             # Assume it's an executable
             args = [str(tool_path)]
@@ -601,7 +603,7 @@ class ClangSharpInvoker:
             # Check if dotnet is available
             try:
                 result = subprocess.run(
-                    ["dotnet", "--version"],
+                    [resolve_dotnet(), "--version"],
                     capture_output=True,
                     text=True,
                     timeout=5

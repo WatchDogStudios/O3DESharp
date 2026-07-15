@@ -35,6 +35,8 @@ from PySide2.QtGui import QFont, QIcon
 import azlmbr.bus as bus
 import azlmbr.editor as editor
 
+from csharp_platform_utils import resolve_dotnet
+
 # Import with fallback for different contexts
 try:
     from .csharp_project_manager import CSharpProjectManager, get_project_manager
@@ -1288,7 +1290,7 @@ class _BindingBuildWorker(QThread):
                 # Use Popen + line-streaming so the log scrolls in
                 # real time (same trick the generator wrapper uses).
                 proc = subprocess.Popen(
-                    ["dotnet", "build", csproj, "-c", "Debug", "--nologo"],
+                    [resolve_dotnet(), "build", csproj, "-c", "Debug", "--nologo"],
                     stdout=subprocess.PIPE,
                     stderr=subprocess.STDOUT,
                     text=True,
