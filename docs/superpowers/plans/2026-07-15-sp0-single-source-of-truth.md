@@ -381,8 +381,8 @@ Open `docs/sp0-divergence-manifest.md` and confirm it matches the values verifie
 
 | Category | Verified count |
 |---|---|
-| Identical to this repo (line-ending normalized) | **181** |
-| Differs (this repo authoritative) | **45** |
+| Identical to this repo (line-ending normalized) | **178** |
+| Differs (this repo authoritative) | **43** |
 | Exists only in the vendored copy | **10** |
 
 Note on the differing count: it is larger than the ~39 files git reports as locally modified in the

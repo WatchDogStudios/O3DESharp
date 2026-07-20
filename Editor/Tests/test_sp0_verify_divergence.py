@@ -87,6 +87,28 @@ def test_build_output_directories_are_ignored(tmp_path):
 
 
 @pytest.mark.unit
+def test_tool_cache_directories_are_ignored(tmp_path):
+    """Transient tool caches must never reach the manifest.
+
+    The manifest is a committed audit trail authorizing an irreversible
+    deletion; if .pytest_cache contents leak in, its counts change between runs
+    depending on what was last executed, which destroys its value as evidence.
+    """
+    vend, repo = tmp_path / "vend", tmp_path / "repo"
+    _write(vend, "Editor/Tests/.pytest_cache/v/cache/lastfailed", "{}\n")
+    _write(vend, "Editor/Tests/.pytest_cache/v/cache/nodeids", "[]\n")
+    _write(vend, ".mypy_cache/x.json", "{}\n")
+    _write(repo, "Editor/Tests/.pytest_cache/v/cache/lastfailed", "different\n")
+    repo.mkdir(parents=True, exist_ok=True)
+
+    result = sp0.classify(vend, repo)
+
+    assert result["differs"] == []
+    assert result["identical"] == []
+    assert result["only_in_vendored"] == []
+
+
+@pytest.mark.unit
 def test_gate_passes_for_allowlisted_rescued_files():
     result = {"identical": [], "differs": [], "only_in_vendored": sorted(sp0.ALLOWED_ONLY_IN_VENDORED)}
     assert sp0.gate(result) == []

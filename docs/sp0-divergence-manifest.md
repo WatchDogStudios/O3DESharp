@@ -7,8 +7,8 @@ justifying deletion of the vendored gem copy from the engine fork.
 
 | Category | Count |
 |---|---|
-| Identical to this repo (line-ending normalized) | 181 |
-| Differs (this repo authoritative) | 45 |
+| Identical to this repo (line-ending normalized) | 178 |
+| Differs (this repo authoritative) | 43 |
 | Exists only in the vendored copy | 10 |
 
 ## Gate
@@ -68,8 +68,6 @@ Deletion is lossless.
 - `Editor/Scripts/csharp_editor_tools.py`
 - `Editor/Scripts/csharp_project_manager.py`
 - `Editor/Scripts/generate_bindings.py`
-- `Editor/Tests/.pytest_cache/v/cache/lastfailed`
-- `Editor/Tests/.pytest_cache/v/cache/nodeids`
 - `Editor/Tests/test_clangsharp_invoker.py`
 - `GENERATED_BINDINGS_GUIDE.md`
 - `O3DESharp.sln`

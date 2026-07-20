@@ -29,6 +29,11 @@ from pathlib import Path
 IGNORED_DIR_NAMES = {
     ".git", ".vs", ".vscode", "bin", "obj", "build", "Cache",
     "_deps", "node_modules", "__pycache__", ".worktrees",
+    # Tool caches. These must be ignored or transient files (e.g.
+    # .pytest_cache/v/cache/lastfailed) leak into the committed manifest and
+    # make the audit trail non-reproducible - its counts would shift between
+    # runs depending on what tests were last executed in either tree.
+    ".pytest_cache", ".mypy_cache", ".ruff_cache", ".tox",
 }
 
 # The only files permitted to exist solely in the vendored copy.
