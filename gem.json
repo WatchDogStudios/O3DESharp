@@ -26,9 +26,13 @@
         "EditorPythonBindings",
         "QtForPython"
     ],
-    "repo_uri": "",
+    "repo_uri": "https://github.com/WatchDogStudios/O3DESharp",
     "compatible_engines": [
+        "o3de>=4.2.0"
     ],
     "engine_api_dependencies":[
+        "framework>=1.2.1",
+        "editor>=1.0.0",
+        "tools>=1.1.0"
     ]
 }

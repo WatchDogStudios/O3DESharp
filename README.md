@@ -87,6 +87,22 @@ Prerequisites:
 
 The managed `O3DE.Core` API builds via the `dotnet` CLI on Ninja/Make
 generators (no Visual Studio required).
+### How this gem is consumed (do not vendor it)
+
+O3DESharp lives at its own checkout and is consumed by reference. Register it once:
+
+```bash
+o3de register --gem-path /path/to/O3DESharp
+```
+
+Then enable it in your project as normal. The engine references the gem; it never contains a copy.
+
+**The gem must never be copied into an engine tree.** This is a deliberate, rejected practice, not
+an oversight. A vendored copy previously drifted 109 commits behind the source of record while
+accumulating ~2,700 lines of work that existed in no repository at all — recoverable from no clone,
+one `git clean` from destruction. Referencing a single checkout makes that class of drift
+structurally impossible. If you need reproducible builds pinned to a gem version, pin a published
+release from the gem repository rather than copying files into the engine.
 
 ## Installation
 
