@@ -125,12 +125,13 @@ namespace O3DESharp.BindingGenerator
                 description: "Generator backend: 'reflection' (default, consumes reflection_data.json) or 'clang' (ClangSharp header parser).");
 
             // Path to the reflection JSON. Defaults to
-            // <project>/Cache/pc/generated/reflection_data.json which is
+            // <project>/Generated/reflection_data.json which is
             // where the editor's AutoExportReflectionData writes it.
+            // See ReflectionDataPathResolver for the resolution logic.
             var reflectionDataOption = new Option<string?>(
                 aliases: new[] { "--reflection-data" },
                 getDefaultValue: () => null,
-                description: "Reflection backend only. Path to reflection_data.json. Defaults to <project>/Cache/pc/generated/reflection_data.json.");
+                description: "Reflection backend only. Path to reflection_data.json. Defaults to <project>/Generated/reflection_data.json.");
 
             // List gems command
             var listGemsCommand = new Command("list-gems", "List all discovered gems in the project");
@@ -294,16 +295,15 @@ namespace O3DESharp.BindingGenerator
 
                 // Resolve where to read the JSON from. Editor's
                 // AutoExportReflectionData writes to:
-                //   <project>/Cache/pc/generated/reflection_data.json
+                //   <project>/Generated/reflection_data.json
                 // so unless the caller overrides it, derive that path.
+                // See ReflectionDataPathResolver for the resolution logic.
                 var projectAbs = Path.GetFullPath(projectPath);
                 if (!Directory.Exists(projectAbs))
                 {
                     projectAbs = Path.GetDirectoryName(projectAbs) ?? projectAbs;
                 }
-                var reflectionPath = !string.IsNullOrEmpty(reflectionDataOverride)
-                    ? Path.GetFullPath(reflectionDataOverride!)
-                    : Path.Combine(projectAbs, "Cache", "pc", "generated", "reflection_data.json");
+                var reflectionPath = ReflectionDataPathResolver.Resolve(projectAbs, reflectionDataOverride);
 
                 Console.WriteLine($"Project:        {projectAbs}");
                 Console.WriteLine($"Reflection JSON: {reflectionPath}");

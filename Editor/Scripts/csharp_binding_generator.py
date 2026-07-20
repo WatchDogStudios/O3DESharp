@@ -88,7 +88,7 @@ class BindingGeneratorConfig:
 
     # Reflection backend only: explicit path to reflection_data.json.
     # When None, the tool defaults to
-    # <project>/Cache/pc/generated/reflection_data.json (where the
+    # <project>/Generated/reflection_data.json (where the
     # editor's auto-export writes it). Set this if your editor wrote
     # the JSON to a custom location via ExportReflectionData(path).
     reflection_data_path: Optional[str] = None
