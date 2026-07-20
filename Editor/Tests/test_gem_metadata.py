@@ -48,3 +48,15 @@ def test_engine_api_dependencies_declared(gem):
 @pytest.mark.unit
 def test_repo_uri_is_set(gem):
     assert gem["repo_uri"].startswith("http"), "repo_uri must point at the gem repository"
+
+
+README = Path(__file__).resolve().parents[2] / "README.md"
+
+
+@pytest.mark.unit
+def test_readme_documents_external_registration():
+    text = README.read_text(encoding="utf-8")
+    assert "o3de register --gem-path" in text, "README must document the registration workflow"
+    assert "never be copied into an engine tree" in text, (
+        "README must state that vendoring the gem is a rejected practice"
+    )
