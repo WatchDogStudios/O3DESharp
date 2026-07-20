@@ -376,18 +376,26 @@ for the pattern) or explicitly discarded before deletion is safe.
 
 - [ ] **Step 3: Sanity-check the manifest against the recorded findings**
 
-Open `docs/sp0-divergence-manifest.md` and confirm it is consistent with the spec's §3.2. Expected
-shape:
+Open `docs/sp0-divergence-manifest.md` and confirm it matches the values verified by a dry run on
+2026-07-15:
 
-- **Identical:** the large majority of the tree (the tool walks every file, not just the ~39 git
-  reported as modified, so this count is in the hundreds).
-- **Differs:** roughly **24** — the 9 "trivially different" plus the 15 "substantively different"
-  files from §3.2. The tool does not distinguish trivial from substantive; both land here.
-- **Exists only in the vendored copy:** exactly **10** — the 9 rescued sources plus `UpgradeLog.htm`.
+| Category | Verified count |
+|---|---|
+| Identical to this repo (line-ending normalized) | **181** |
+| Differs (this repo authoritative) | **45** |
+| Exists only in the vendored copy | **10** |
 
-The third number is the one that matters; it is what the gate enforces. A differing count materially
-above ~24, or any vendored-only count above 10, means the vendored tree changed since 2026-07-15 —
-re-examine it before trusting the gate.
+Note on the differing count: it is larger than the ~39 files git reports as locally modified in the
+vendored copy, because the copy is *also* 109 commits behind. Files changed in those 109 commits
+differ too, without ever having been locally edited. Both causes land in the same bucket; this is
+expected, not a warning sign.
+
+**The third number is the one the gate enforces.** It must be exactly 10, and the listed paths must
+be exactly the 9 rescued 1B sources plus `UpgradeLog.htm`. Any additional vendored-only path means
+unversioned work exists that has not been rescued — stop immediately (see Step 2).
+
+Counts drifting somewhat on the first two rows is acceptable if the vendored tree has been touched
+since 2026-07-15; a change in the third row is not.
 
 - [ ] **Step 4: Commit the audit trail**
 
