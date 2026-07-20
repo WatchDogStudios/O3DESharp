@@ -1,0 +1,37 @@
+diff --git a/Code/o3desharp_private_files.cmake b/Code/o3desharp_private_files.cmake
+index 3cdab83..f6fbf42 100644
+--- a/Code/o3desharp_private_files.cmake
++++ b/Code/o3desharp_private_files.cmake
+@@ -31,10 +31,32 @@ set(FILES
+     Source/Scripting/Reflection/BehaviorContextReflector.cpp
+     Source/Scripting/Reflection/GenericDispatcher.h
+     Source/Scripting/Reflection/GenericDispatcher.cpp
++
++    # Phase 18-A: BehaviorContext <-> JSON marshaling. Shared utility
++    # used by GenericDispatcher's EBus dispatch path and the upcoming
++    # 18-B managed-handler bridge. Kept independent of EditorPythonBindings
++    # so the runtime gem doesn't pull in the EPB Static dependency just
++    # to reuse a converter.
++    Source/Scripting/Marshaling/BehaviorContextMarshaling.h
++    Source/Scripting/Marshaling/BehaviorContextMarshaling.cpp
+     # Exports reflection data to JSON for the Python binding generator
+     Source/Scripting/Reflection/ReflectionDataExporter.h
+     Source/Scripting/Reflection/ReflectionDataExporter.cpp
+ 
++    # 1B (NightFox "Behavior->Native" pipeline): the native-binding manifest.
++    # Separate schema from ReflectionDataExporter's reflection_data.json -
++    # this one answers "what can be called as a direct native trampoline
++    # and how", not "what got reflected". See NativeBindingManifest.h's
++    # class comment for the two-pass (C++ runtime + offline libclang) split.
++    Source/Scripting/Reflection/NativeBindingManifest.h
++    Source/Scripting/Reflection/NativeBindingManifest.cpp
++
++    # 1B native-call trampoline runtime: the BindingRegistry that maps a
++    # stable binding-id string to a generated trampoline function pointer,
++    # with dynamic BehaviorMethod::Call as the null-lookup fallback.
++    Source/Scripting/Reflection/BindingRegistry.h
++    Source/Scripting/Reflection/BindingRegistry.cpp
++
+     # Generator output (Phase 15). The binding generator overwrites these as
+     # part of its normal run; placeholder versions are committed so the gem
+     # links on fresh clones. RegisterBindings is called from
