@@ -22,7 +22,7 @@
     <!-- Assembly Information -->
     <AssemblyName>O3DE.Core</AssemblyName>
     <RootNamespace>O3DE</RootNamespace>
-    <Version>1.2.0</Version>
+    <Version>1.3.0</Version>
     <Authors>WD Studios Corp.</Authors>
     <Company>WD Studios Corp.</Company>
     <Product>O3DE C# Scripting API</Product>

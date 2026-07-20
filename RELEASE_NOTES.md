@@ -1,3 +1,78 @@
+# O3DESharp v1.3.0 — Release Notes (EXPERIMENTAL)
+
+**Date:** 2026-07-15
+**Status:** ⚠️ **Experimental pre-release.** Ships the Linux-support foundation
+(M0 + M1) for community testing. The Linux paths have **not** been verified on a
+real Linux O3DE build by the maintainers — please test and report. Windows is
+unaffected and remains stable. `main` stays on v1.2.0; this is a pre-release off
+`development`.
+
+This release is the first milestone of the **Linux + dual-mode AOT** effort
+(design: `docs/superpowers/specs/2026-07-02-linux-aot-support-design.md`). It is
+Linux-portability plumbing only — no BehaviorContext, AOT, or dispatch changes.
+
+## Highlights (experimental)
+
+### Linux editor + runtime parity (M0 + M1)
+
+- **Configure unblock (M0):** added the missing
+  `Code/Platform/Linux/o3desharp_shared_files.cmake` stub whose absence was a
+  fatal CMake `include()` error on Linux, and made the PAL support traits honest
+  — Windows + Linux `TRUE`; Mac/Android/iOS `FALSE` to match `gem.json` (they
+  were all `TRUE`, which would have attempted unsupported builds).
+- **Portable editor tooling (M1):** a new `Editor/Scripts/csharp_platform_utils.py`
+  (stdlib-only) centralizes the previously Windows-hardcoded bits:
+  - `resolve_dotnet()` — finds `dotnet` via `$O3DESHARP_DOTNET_EXECUTABLE` →
+    `PATH` → `$DOTNET_ROOT` → well-known per-OS locations, so an editor launched
+    without the user's login `PATH` (common on Linux) still builds C#.
+  - `open_in_default_app()` — `xdg-open` / `open` / `os.startfile` instead of the
+    Windows-only `os.startfile`.
+  - `render_vscode_launch_json()` — host-aware `launch.json` (`build/linux`, no
+    `.exe`) instead of a hardcoded Windows launcher path.
+- **Non-MSVC `O3DE.Core` build:** on Ninja/Make generators, `O3DE.Core.dll` is
+  now built via `dotnet` (previously only the MSVC `include_external_msproject`
+  path built it), with staging hardened for install/redistribution trees.
+- **Rider discovery** on Linux/macOS JetBrains Toolbox layouts; corrected stale
+  ".NET 8.0 SDK" prompts to 9.0.
+
+## Tooling / tests
+
+- New `csharp_platform_utils` unit tests plus stub-free AST guards (no bare
+  `["dotnet", ...]` literals; every helper is imported where it's called;
+  PAL-trait ↔ `gem.json` parity; host-aware `launch.json`). The Linux/macOS
+  code branches are directly covered. **88 Python tests pass** on the existing
+  Windows + Linux CI agents.
+- Verified the M2 groundwork mechanism: a self-contained `linux-x64` publish
+  produces a private `libcoreclr.so` + `libhostfxr.so` runtime (no machine-wide
+  .NET) — see the M2 plan below.
+
+## Known limitations
+
+- **Linux is unverified by the maintainers.** The non-MSVC CMake build, the
+  Coral fork's Linux CLR hosting (`libcoreclr.so`/hostfxr), and the end-to-end
+  author→build→hot-reload→run loop need validation on a real Linux O3DE
+  checkout. That is exactly what this experimental release asks testers to
+  exercise (see the checklist in PR #14).
+- **Coral desktop-only.** Consoles/mobile are not supported (that is the later
+  Mono-AOT milestone).
+- **No "ship without installing .NET" yet.** Players still need .NET 9 installed.
+  That is **M2 (self-contained deployment)**, planned and pre-validated:
+  `docs/superpowers/plans/2026-07-15-m2-self-contained-deploy.md`.
+
+## Upgrade notes
+
+- No breaking changes for existing Windows users; the Linux work is additive.
+- Building on Linux: see the new "Building on Linux" section in `README.md`
+  (.NET 9 SDK on `PATH` / `DOTNET_ROOT` / `O3DESHARP_DOTNET_EXECUTABLE`, or the
+  CMake auto-install into `<build>/.dotnet`).
+
+## Acknowledgements
+
+Implementation by Mikael K. Aboagye (WD Studios Corp.). Built against
+Coral.Managed (WD Studios fork of StudioCherno/Coral) and O3DE main.
+
+---
+
 # O3DESharp v1.2.0 — Release Notes
 
 **Date:** 2026-07-02

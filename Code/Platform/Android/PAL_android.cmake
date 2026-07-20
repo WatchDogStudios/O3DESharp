@@ -6,6 +6,10 @@
 #
 #
 
-set(PAL_TRAIT_O3DESHARP_SUPPORTED TRUE)
+# Not yet a claimed target (see gem.json). Coral hosts desktop CoreCLR only, so
+# Android is re-enabled with the Mono milestone (JIT-banned platforms). Keeping
+# this FALSE makes the support gate in Code/CMakeLists.txt cleanly skip the gem
+# here instead of attempting an unsupported build.
+set(PAL_TRAIT_O3DESHARP_SUPPORTED FALSE)
 set(PAL_TRAIT_O3DESHARP_TEST_SUPPORTED FALSE)
 set(PAL_TRAIT_O3DESHARP_EDITOR_TEST_SUPPORTED FALSE)

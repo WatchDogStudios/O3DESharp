@@ -72,6 +72,21 @@ the tool dir into the install location.
 > are not in this gem yet. `gem.json` currently declares only Linux and Windows
 > as supported.
 
+### Building on Linux
+
+O3DESharp supports Linux (editor + runtime) with the same C# authoring, build,
+hot-reload, and run workflow as Windows.
+
+Prerequisites:
+- .NET 9.0 SDK. If it isn't on your `PATH`, either add it, set `DOTNET_ROOT`,
+  or set `O3DESHARP_DOTNET_EXECUTABLE` to the `dotnet` binary — the editor
+  tooling checks all three (plus common install locations) before giving up.
+- CMake will auto-install a .NET 9 SDK into `<build>/.dotnet` if none is found
+  (see `Code/o3desharp_netverify.cmake`); export `DOTNET_ROOT=<build>/.dotnet`
+  so the editor picks up that copy.
+
+The managed `O3DE.Core` API builds via the `dotnet` CLI on Ninja/Make
+generators (no Visual Studio required).
 ### How this gem is consumed (do not vendor it)
 
 O3DESharp lives at its own checkout and is consumed by reference. Register it once:
