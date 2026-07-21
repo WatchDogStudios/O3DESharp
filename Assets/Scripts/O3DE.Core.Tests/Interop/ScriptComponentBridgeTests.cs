@@ -6,6 +6,8 @@
 //
 
 using System;
+using System.Collections.Generic;
+using O3DE;
 using O3DE.Interop;
 
 namespace O3DE.Core.Tests.Interop;
@@ -93,4 +95,80 @@ public class ScriptComponentBridgeTests
         var act = () => ScriptComponentBridge.Unregister(handle);
         act.Should().NotThrow();
     }
+}
+
+/// <summary>
+/// Pins the native ABI. LifecycleId values are passed as raw integers from
+/// CSharpScriptComponent.cpp's enum of the same name; if these drift apart,
+/// Tick starts calling OnDestroy and nothing fails to compile on either side.
+/// </summary>
+public class LifecycleIdAbiTests
+{
+    [Theory]
+    [InlineData(LifecycleId.OnCreate, 1)]
+    [InlineData(LifecycleId.OnDestroy, 2)]
+    [InlineData(LifecycleId.Tick, 3)]
+    [InlineData(LifecycleId.OnTransformChanged, 4)]
+    public void LifecycleId_HasStableNativeValue(LifecycleId id, int expected)
+    {
+        ((int)id).Should().Be(expected,
+            "these integers are the native ABI - renumbering silently misroutes callbacks");
+    }
+
+    [Fact]
+    public void Dispatch_UnknownLifecycleId_ReturnsFalse()
+    {
+        var component = new DispatchProbe();
+        ScriptComponentBridge.Dispatch(component, (LifecycleId)9999, 0f).Should().BeFalse();
+        component.Calls.Should().BeEmpty();
+    }
+
+    [Fact]
+    public void Dispatch_NonScriptComponent_ReturnsFalse()
+    {
+        ScriptComponentBridge.Dispatch(new object(), LifecycleId.Tick, 0f).Should().BeFalse();
+    }
+
+    [Fact]
+    public void Dispatch_RoutesTickWithDeltaTime()
+    {
+        var component = new DispatchProbe();
+
+        ScriptComponentBridge.Dispatch(component, LifecycleId.Tick, 0.25f).Should().BeTrue();
+
+        component.Calls.Should().ContainSingle().Which.Should().Be("Tick:0.25");
+    }
+
+    [Theory]
+    [InlineData(LifecycleId.OnCreate, "OnCreate")]
+    [InlineData(LifecycleId.OnDestroy, "OnDestroy")]
+    [InlineData(LifecycleId.OnTransformChanged, "OnTransformChanged")]
+    public void Dispatch_RoutesEachLifecycleToItsCallback(LifecycleId id, string expected)
+    {
+        var component = new DispatchProbe();
+
+        ScriptComponentBridge.Dispatch(component, id, 0f).Should().BeTrue();
+
+        component.Calls.Should().ContainSingle().Which.Should().Be(expected);
+    }
+}
+
+/// <summary>
+/// Records which callbacks fired, so routing can be asserted.
+///
+/// NOTE: overrides OnUpdate, NOT Tick. In ScriptComponent, `Tick(float)` is a
+/// public NON-virtual method (the native entry point, which also drives the
+/// Invoke/InvokeRepeating timer machinery) and it calls the virtual
+/// `OnUpdate(float)`. Attempting `override void Tick` does not compile.
+/// Dispatching LifecycleId.Tick therefore surfaces here as an OnUpdate call.
+/// </summary>
+internal sealed class DispatchProbe : ScriptComponent
+{
+    public List<string> Calls { get; } = new List<string>();
+
+    public override void OnCreate() => Calls.Add("OnCreate");
+    public override void OnDestroy() => Calls.Add("OnDestroy");
+    public override void OnUpdate(float deltaTime) =>
+        Calls.Add($"Tick:{deltaTime.ToString(System.Globalization.CultureInfo.InvariantCulture)}");
+    public override void OnTransformChanged() => Calls.Add("OnTransformChanged");
 }
