@@ -16,6 +16,7 @@
 #include <AzCore/Memory/SystemAllocator.h>
 #include <AzCore/RTTI/RTTI.h>
 #include <AzCore/Interface/Interface.h>
+#include <AzCore/IO/Path/Path.h>
 
 #include <filesystem>
 
@@ -124,6 +125,22 @@ namespace O3DESharp
          * Get the user game assembly
          */
         virtual Coral::ManagedAssembly* GetUserAssembly() = 0;
+
+        /**
+         * Get the raw Coral host instance backing this manager. Used by
+         * CoralNativeThunkHost (SP-1a) to resolve [UnmanagedCallersOnly]
+         * managed statics to pinned function pointers; nullptr before the
+         * host has been constructed.
+         */
+        virtual Coral::HostInstance* GetHostInstance() = 0;
+
+        /**
+         * Get the directory managed assemblies are deployed to - the
+         * directory containing O3DE.Core.dll. Empty until the core assembly
+         * path has been resolved (i.e. after LoadCoreAssembly has run at
+         * least once during Initialize/ReloadUserAssemblies).
+         */
+        virtual AZ::IO::Path GetScriptsDirectory() const = 0;
     };
 
     using CoralHostManagerInterface = AZ::Interface<ICoralHostManager>;
@@ -159,6 +176,8 @@ namespace O3DESharp
         Coral::ManagedObject CreateInstance(Coral::Type& type) override;
         Coral::ManagedAssembly* GetCoreAssembly() override;
         Coral::ManagedAssembly* GetUserAssembly() override;
+        Coral::HostInstance* GetHostInstance() override;
+        AZ::IO::Path GetScriptsDirectory() const override;
 
     private:
         // Coral message callback for logging

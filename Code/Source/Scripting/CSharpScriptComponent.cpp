@@ -8,6 +8,7 @@
 
 #include "CSharpScriptComponent.h"
 #include "CoralHostManager.h"
+#include "CoralNativeThunkHost.h"
 
 #include <AzCore/Console/ILogger.h>
 #include <AzCore/Serialization/SerializeContext.h>
@@ -20,6 +21,20 @@
 
 namespace O3DESharp
 {
+    namespace
+    {
+        // Process-wide cache of resolved pinned thunks, shared by every
+        // CSharpScriptComponent instance. A single CoralHostManager backs the
+        // whole gem, so one CoralNativeThunkHost is enough here; SetHost() is
+        // a cheap no-op unless the host or scripts directory actually
+        // changed, so calling it from every CreateScriptInstance() is fine.
+        CoralNativeThunkHost& GetThunkHost()
+        {
+            static CoralNativeThunkHost s_thunkHost;
+            return s_thunkHost;
+        }
+    } // namespace
+
     // ============================================================
     // CSharpScriptComponentConfig
     // ============================================================
@@ -311,7 +326,14 @@ namespace O3DESharp
             // OnUpdate then ProcessPendingInvocations on the managed side. This
             // replaces the previous pair of InvokeMethod calls (one of which
             // was unconditional even when no actions were scheduled).
-            SafeInvokeMethod("Tick", deltaTime);
+            //
+            // Fast path: a resolved pinned thunk costs an indirect call plus a
+            // dictionary lookup. InvokeMethod would do a managed-side string
+            // lookup plus reflection dispatch - every frame, per component.
+            if (!TryInvokeViaThunk(LifecycleId::Tick, deltaTime))
+            {
+                SafeInvokeMethod("Tick", deltaTime);
+            }
         }
     }
 
@@ -333,6 +355,20 @@ namespace O3DESharp
             // Scripts that need to react to transform changes can override OnTransformChanged
             SafeInvokeMethod("OnTransformChanged");
         }
+    }
+
+    bool CSharpScriptComponent::TryInvokeViaThunk(LifecycleId id, float arg) noexcept
+    {
+        if (m_bridgeInvoke == nullptr || m_bridgeHandle == 0)
+        {
+            return false;
+        }
+
+        // A 0 return means the managed handle is dead (component torn down).
+        // That is NOT a reason to fall back to InvokeMethod - the instance is
+        // gone, so doing nothing is correct.
+        m_bridgeInvoke(m_bridgeHandle, static_cast<int>(id), arg);
+        return true;
     }
 
     void CSharpScriptComponent::SafeInvokeMethod(const char* methodName) noexcept
@@ -469,6 +505,14 @@ namespace O3DESharp
         }
         DestroyScriptInstance();
 
+        // The unified assembly context (O3DE.Core.dll included) is about to
+        // be unloaded by CoralHostManager::ReloadUserAssemblies, right after
+        // this broadcast finishes. Every pinned thunk resolved against it -
+        // including ScriptComponentBridge.Invoke - is about to dangle, so
+        // drop the cache now. Redundant across multiple components handling
+        // this same broadcast, but InvalidateCache() is just a map clear.
+        GetThunkHost().InvalidateCache();
+
         // Detach from TickBus so we don't try to dispatch into the now-
         // invalid context before OnAfterUserAssemblyReload reconstructs us.
         AZ::TickBus::Handler::BusDisconnect();
@@ -585,6 +629,19 @@ namespace O3DESharp
             return false;
         }
 
+        // Resolve the pinned thunk once per instance. Failure is expected and
+        // survivable: m_bridgeInvoke stays null and every call site falls back
+        // to SafeInvokeMethod.
+        CoralNativeThunkHost& thunkHost = GetThunkHost();
+        thunkHost.SetHost(hostManager->GetHostInstance(), hostManager->GetScriptsDirectory());
+        m_bridgeInvoke = reinterpret_cast<BridgeInvokeFn>(
+            thunkHost.Get("O3DE.Core.dll", "O3DE.Interop.ScriptComponentBridge, O3DE.Core", "Invoke"));
+
+        // One-shot, so InvokeMethod's cost is irrelevant here. Uses the same
+        // value-returning pattern already proven in the codebase (see
+        // O3DESharpSystemComponent.cpp: InvokeMethod<Coral::String>(...)).
+        m_bridgeHandle = m_scriptInstance.InvokeMethod<int>("AcquireBridgeHandle");
+
         m_scriptInitialized = true;
 
         AZLOG_INFO("CSharpScriptComponent: Successfully created script instance: '%s'",
@@ -597,9 +654,33 @@ namespace O3DESharp
     {
         if (m_scriptInstance.IsValid())
         {
+            // Release the native bridge handle before destroying the managed
+            // instance. Every caller of DestroyScriptInstance (Deactivate,
+            // OnBeforeUserAssemblyReload, ReloadScript, the destructor)
+            // dispatches OnDestroy first if it dispatches it at all, so the
+            // handle is guaranteed to still be live for that dispatch - this
+            // must run strictly after, never before.
+            if (m_bridgeHandle != 0)
+            {
+                try
+                {
+                    m_scriptInstance.InvokeMethod("ReleaseBridgeHandle");
+                }
+                catch (...)
+                {
+                    // Teardown must proceed regardless - the handle table
+                    // entry may leak in this case, but the alternative is an
+                    // exception escaping Deactivate/reload teardown.
+                    AZLOG_WARN("CSharpScriptComponent: ReleaseBridgeHandle threw during teardown of '%s'",
+                        m_config.m_scriptClassName.c_str());
+                }
+            }
+
             m_scriptInstance.Destroy();
         }
 
+        m_bridgeHandle = 0;
+        m_bridgeInvoke = nullptr;
         m_scriptType = nullptr;
         m_scriptInitialized = false;
     }
