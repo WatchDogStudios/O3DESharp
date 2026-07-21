@@ -677,6 +677,41 @@ namespace O3DESharp
         config.coralDirectory = coralDir.c_str();
         m_coralDirectory = config.coralDirectory;
 
+        // M2: a private, self-contained .NET runtime deployed next to the
+        // scripts (Bin/Scripts/dotnet, produced by the opt-in
+        // O3DESHARP_BUNDLE_DOTNET_RUNTIME CMake target) lets a shipped game run
+        // on a machine with no .NET installed at all.
+        //
+        // The override is set ONLY when the bundle is actually present on disk.
+        // Absent is the normal case and means "fall back to the machine-wide
+        // install" - i.e. exactly the behaviour before M2 - so a build without
+        // the bundle is unaffected rather than broken.
+        AZ::IO::FixedMaxPath dotnetRootDir = projectPath / "Bin" / "Scripts" / "dotnet";
+
+        if (auto settingsRegistry = AZ::SettingsRegistry::Get())
+        {
+            AZStd::string dotnetRootSetting;
+            if (settingsRegistry->Get(dotnetRootSetting, "/O3DE/O3DESharp/DotnetRootOverride"))
+            {
+                dotnetRootDir = AZ::IO::FixedMaxPath(dotnetRootSetting.c_str());
+            }
+        }
+
+        if (auto fileIO = AZ::IO::FileIOBase::GetInstance();
+            fileIO != nullptr && fileIO->IsDirectory(dotnetRootDir.c_str()))
+        {
+            config.dotnetRootOverride = dotnetRootDir.c_str();
+            AZLOG_INFO(
+                "O3DESharp: bundled .NET runtime found at %s - preferring it over the machine install",
+                dotnetRootDir.c_str());
+        }
+        else
+        {
+            AZLOG_INFO(
+                "O3DESharp: no bundled .NET runtime at %s - using the machine-wide .NET install",
+                dotnetRootDir.c_str());
+        }
+
         // Core API assembly path - O3DE.Core.
         // TODO(Mikael A.): Multiplatform.....
         AZ::IO::FixedMaxPath coreApiPath = projectPath / "Bin" / "Scripts" / "O3DE.Core.dll";

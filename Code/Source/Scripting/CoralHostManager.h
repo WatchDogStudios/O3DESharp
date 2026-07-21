@@ -37,6 +37,18 @@ namespace O3DESharp
                                                 // present in userAssemblyPaths it will be appended.
         AZStd::vector<AZStd::string> userAssemblyPaths;  // Paths to all user game assemblies to load
         AZStd::string coreApiAssemblyPath;      // Path to O3DE.Core.dll (our API)
+
+        // M2: absolute path to a private, self-contained .NET runtime deployed
+        // with the game (a directory containing host/fxr/<version>/hostfxr).
+        // When set, Coral searches it BEFORE the machine-wide install, which
+        // lets a shipped game run on a machine with no .NET installed.
+        //
+        // Empty (the default) preserves framework-dependent behaviour exactly:
+        // only the machine-wide install locations are searched. Populated by
+        // O3DESharpSystemComponent only when the bundle is actually present on
+        // disk, so an absent bundle is a silent fall-back, not an error.
+        AZStd::string dotnetRootOverride;
+
         bool enableHotReload = true;            // Enable assembly hot-reloading
     };
 
