@@ -839,6 +839,56 @@ The exported launcher package includes all C# runtime files in the correct locat
         └── MyGame.deps.json
 ```
 
+### Shipping without requiring .NET (experimental)
+
+By default, O3DESharp is **framework-dependent**: Coral resolves a machine-wide
+.NET 9 runtime install on the player's machine at startup (`hostfxr` →
+`hostpolicy`, `rollForward: LatestMinor`). That's the supported path today and
+is unchanged by everything below.
+
+M2 adds an **opt-in, experimental** alternative: bundling a private,
+self-contained CoreCLR next to the launcher so a shipped game can run C#
+scripts on a machine with **no .NET installed at all**.
+
+```bash
+cmake -S . -B build -DO3DESHARP_BUNDLE_DOTNET_RUNTIME=ON
+cmake --build build --target O3DESharp.StageRuntimeBundle
+# Re-run configure once more so the produced bundle gets queued for deploy
+# (its file list isn't known until the publish above has actually run):
+cmake -S . -B build
+```
+
+What this does:
+- Publishes `Code/Tools/RuntimeBundle/probe/probe.csproj` with `dotnet publish
+  -c Release -r <rid> --self-contained true` for the desktop RID matching the
+  host platform (`win-x64`, `linux-x64`, `osx-x64`, or `osx-arm64`), which
+  harvests the private CoreCLR + hostfxr runtime pack for that RID.
+- Stages the harvested runtime into the build tree and deploys it to
+  `Bin/Scripts/dotnet/` alongside the existing `Bin/Scripts/Coral/` and
+  `Bin/Scripts/O3DE.Core.dll` deployment.
+
+Known limitations:
+- **Per-RID.** Only desktop RIDs are in scope (no console/mobile).
+- **Untrimmed.** The bundle is a full, untrimmed runtime (~70-200 MB); the
+  reflection/JSON-based dispatch Coral uses fights the .NET trimmer, so
+  trimming is out of scope for now.
+- **Needs the Coral fork's `DotnetRootOverride` support.** Pointing Coral's
+  hostfxr resolution at the bundled runtime instead of the machine-wide one
+  requires a small change in the `WatchDogStudios/Coral` fork
+  (`HostInstance::Initialize` honoring a `dotnet_root` override). That change
+  is tracked separately and is **not yet landed**, so as of this writing the
+  bundle is produced and deployed, but Coral does not yet consume it - the
+  default framework-dependent resolution still runs even with the option on.
+- **Experimental / not configure-verified in every environment.** The CMake
+  step was verified by actually running the `dotnet publish` command it
+  wraps (confirms `hostfxr`/`coreclr`/`System.Private.CoreLib.dll` are
+  produced), but has not been exercised through a full `cmake --configure`
+  against the O3DE engine SDK in every environment. Treat it as
+  experimental until you've verified it in your own build.
+
+The default (`O3DESHARP_BUNDLE_DOTNET_RUNTIME=OFF`) keeps today's
+framework-dependent behavior: players still need .NET 9 installed.
+
 ### Development Workflow vs Export
 
 **During Development:**
