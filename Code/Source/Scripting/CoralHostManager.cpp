@@ -504,6 +504,26 @@ namespace O3DESharp
         return m_userAssembly;
     }
 
+    Coral::HostInstance* CoralHostManager::GetHostInstance()
+    {
+        return m_hostInstance.get();
+    }
+
+    AZ::IO::Path CoralHostManager::GetScriptsDirectory() const
+    {
+        // m_config.coreApiAssemblyPath is populated by LoadCoreAssembly (either
+        // from explicit config or the default <ProjectPath>/Bin/Scripts/O3DE.Core.dll
+        // derivation) - see LoadCoreAssembly below. Its parent directory is where
+        // every managed assembly (O3DE.Core.dll and user assemblies alike) is
+        // deployed, so the thunk host resolves other assemblies relative to it too.
+        if (m_config.coreApiAssemblyPath.empty())
+        {
+            return {};
+        }
+
+        return AZ::IO::Path(m_config.coreApiAssemblyPath.c_str()).ParentPath();
+    }
+
     bool CoralHostManager::LoadCoreAssembly()
     {
         if (m_config.coreApiAssemblyPath.empty())

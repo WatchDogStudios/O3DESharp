@@ -41,6 +41,9 @@
     <Compile Include="..\O3DE.Core\Debug.cs" Link="O3DE.Core\Debug.cs" />
     <Compile Include="..\O3DE.Core\Reflection\NativeReflection.cs" Link="O3DE.Core\Reflection\NativeReflection.cs" />
     <Compile Include="..\O3DE.Core\Entity.cs" Link="O3DE.Core\Entity.cs" />
+    <Compile Include="..\O3DE.Core\ExposedProperty.cs" Link="O3DE.Core\ExposedProperty.cs" />
+    <Compile Include="..\O3DE.Core\ScriptComponent.cs" Link="O3DE.Core\ScriptComponent.cs" />
+    <Compile Include="..\O3DE.Core\Interop\ScriptComponentBridge.cs" Link="O3DE.Core\Interop\ScriptComponentBridge.cs" />
   </ItemGroup>
 
   <ItemGroup>

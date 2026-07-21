@@ -21,6 +21,8 @@ set(FILES
     # C# Scripting Support via Coral
     Source/Scripting/CoralHostManager.h
     Source/Scripting/CoralHostManager.cpp
+    Source/Scripting/CoralNativeThunkHost.h
+    Source/Scripting/CoralNativeThunkHost.cpp
     Source/Scripting/ScriptBindings.h
     Source/Scripting/ScriptBindings.cpp
     Source/Scripting/CSharpScriptComponent.h
