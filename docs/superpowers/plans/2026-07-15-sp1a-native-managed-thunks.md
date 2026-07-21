@@ -40,6 +40,14 @@
 
 > **This task is in a different repository.** It gates Tasks 2, 4 and 7. Confirm with the maintainer whether they land it or delegate it.
 
+> ### ✅ TASK 1 IS COMPLETE — merged to `WatchDogStudios/Coral@main` as `a98550d` (PR #1).
+>
+> Do not redo it. It shipped **two** additive APIs, both compile-verified:
+> - `HostInstance::GetFunctionPointer(assemblyPath, typeName, methodName, delegateType = CORAL_UNMANAGED_CALLERS_ONLY)` — returns `nullptr` on failure, deliberately **not** forwarding to the internal loader (which `CORAL_VERIFY(false)`s and would abort the process instead of allowing fallback).
+> - `HostSettings::DotnetRootOverride` — for M2, unrelated to this plan.
+>
+> The steps below are retained only as a record of what was done.
+
 - [ ] **Step 1: Read the existing private path**
 
 Open `HostInstance.cpp` and locate `LoadCoralManagedFunctionPtr` and the `s_CoreCLRFunctions.GetManagedFunctionPtr` usage inside `InitializeCoralManaged`. This is the exact mechanism to expose — Coral already uses it to bootstrap `Coral.Managed`'s own entry points. Note the stored hostfxr context member (`m_HostFXRContext` or equivalent) and the delegate's real signature.
@@ -127,12 +135,25 @@ Note the pushed SHA. `Code/CMakeLists.txt` tracks `WatchDogStudios/Coral@main` v
 - Modify: `Code/o3desharp_private_files.cmake`
 
 **Interfaces:**
-- Consumes: `Coral::HostInstance::GetFunctionPointer` (Task 1).
+- Consumes (VERIFIED against merged Coral `main` @ `a98550d` — this is the real signature, not the one earlier drafts assumed):
+  ```cpp
+  void* Coral::HostInstance::GetFunctionPointer(
+      const std::filesystem::path& InAssemblyPath,
+      const UCChar* InTypeName,
+      const UCChar* InMethodName,
+      const UCChar* InDelegateType = CORAL_UNMANAGED_CALLERS_ONLY) const;
+  ```
 - Produces (consumed by Tasks 4, 7):
   - `using PinnedThunk = void*;`
-  - `void CoralNativeThunkHost::SetHost(Coral::HostInstance* host);`
-  - `PinnedThunk CoralNativeThunkHost::Get(AZStd::string_view assemblyQualifiedTypeName, AZStd::string_view methodName);` — returns `nullptr` if unavailable
+  - `void CoralNativeThunkHost::SetHost(Coral::HostInstance* host, const AZ::IO::Path& scriptsDir);`
+  - `PinnedThunk CoralNativeThunkHost::Get(AZStd::string_view assemblyFileName, AZStd::string_view assemblyQualifiedTypeName, AZStd::string_view methodName);` — returns `nullptr` if unavailable
   - `void CoralNativeThunkHost::InvalidateCache();`
+
+> **Three facts about the real Coral API that shape this design — do not skip:**
+>
+> 1. **It takes an assembly PATH, not just an assembly-qualified name.** Coral resolves `(assemblyPath, typeName, methodName)`. `O3DE.Core.dll` lives at `<ProjectPath>/Bin/Scripts/O3DE.Core.dll` (see `CoralHostManager.cpp:525`), so the thunk host must be told the scripts directory and compose the path itself.
+> 2. **`UCChar` is `wchar_t` on Windows and `char` on Linux**, and `CORAL_STR(s)` is a compile-time macro (`L##s`) that only works on string *literals* — it cannot be applied to a runtime `string_view`. Convert with the public helper `Coral::StringHelper::ConvertUtf8ToWide(std::string_view) -> UCString` (declared in `Coral/StringHelper.hpp`). Keeping the gem-side API narrow (`AZStd::string_view`) is deliberate: it matches surrounding AZ code and gives a natural cache key. The conversion cost is paid once per unique resolve because results are memoized.
+> 3. **`GetFunctionPointer` returns `nullptr` on failure and does NOT abort** — that is exactly why it exists rather than reusing Coral's internal loader, which `CORAL_VERIFY(false)`s. The whole fallback design depends on this. Do not "improve" it into an assert.
 
 - [ ] **Step 1: Read the rescued reference**
 
@@ -178,13 +199,23 @@ namespace O3DESharp
     public:
         using PinnedThunk = void*;
 
-        //! Set the live host. Must be called after CoralHostManager has
-        //! brought up the CLR. Passing a different host clears the cache.
-        void SetHost(Coral::HostInstance* host);
+        //! Set the live host and the directory managed assemblies are deployed
+        //! to (the Bin/Scripts dir holding O3DE.Core.dll). Must be called after
+        //! CoralHostManager has brought up the CLR. Changing either clears the
+        //! cache.
+        void SetHost(Coral::HostInstance* host, const AZ::IO::Path& scriptsDir);
 
-        //! Resolve (and memoize) a managed static. nullptr => not available.
+        //! Resolve (and memoize) an [UnmanagedCallersOnly] managed static.
+        //! Returns nullptr when unavailable - callers MUST fall back to
+        //! InvokeMethod; that is a first-class path, not an error.
+        //!
+        //! assemblyFileName          e.g. "O3DE.Core.dll" (resolved under scriptsDir)
         //! assemblyQualifiedTypeName e.g. "O3DE.Interop.ScriptComponentBridge, O3DE.Core"
-        PinnedThunk Get(AZStd::string_view assemblyQualifiedTypeName, AZStd::string_view methodName);
+        //! methodName                e.g. "Invoke"
+        PinnedThunk Get(
+            AZStd::string_view assemblyFileName,
+            AZStd::string_view assemblyQualifiedTypeName,
+            AZStd::string_view methodName);
 
         //! Drop all cached pointers. MUST be called on assembly reload -
         //! a pointer into an unloaded ALC is dangling.
@@ -195,10 +226,13 @@ namespace O3DESharp
 
     private:
         Coral::HostInstance* m_host = nullptr;
+        AZ::IO::Path m_scriptsDir;
         AZStd::unordered_map<AZStd::string, PinnedThunk> m_cache;
     };
 } // namespace O3DESharp
 ```
+
+Add `#include <AzCore/IO/Path/Path.h>` alongside the other AzCore includes for `AZ::IO::Path`.
 
 - [ ] **Step 3: Write the implementation**
 
@@ -216,28 +250,34 @@ Create `Code/Source/Scripting/CoralNativeThunkHost.cpp`:
 
 #include <AzCore/Console/ILogger.h>
 #include <Coral/HostInstance.hpp>
+#include <Coral/StringHelper.hpp>
 
 namespace O3DESharp
 {
-    void CoralNativeThunkHost::SetHost(Coral::HostInstance* host)
+    void CoralNativeThunkHost::SetHost(Coral::HostInstance* host, const AZ::IO::Path& scriptsDir)
     {
-        if (m_host != host)
+        if (m_host != host || m_scriptsDir != scriptsDir)
         {
-            // Cached pointers belong to the previous host's runtime.
+            // Cached pointers belong to the previous host's runtime / layout.
             m_cache.clear();
             m_host = host;
+            m_scriptsDir = scriptsDir;
         }
     }
 
     CoralNativeThunkHost::PinnedThunk CoralNativeThunkHost::Get(
-        AZStd::string_view assemblyQualifiedTypeName, AZStd::string_view methodName)
+        AZStd::string_view assemblyFileName,
+        AZStd::string_view assemblyQualifiedTypeName,
+        AZStd::string_view methodName)
     {
-        if (m_host == nullptr)
+        if (m_host == nullptr || m_scriptsDir.empty())
         {
             return nullptr;
         }
 
-        AZStd::string key(assemblyQualifiedTypeName);
+        AZStd::string key(assemblyFileName);
+        key += "!";
+        key += assemblyQualifiedTypeName;
         key += "::";
         key += methodName;
 
@@ -247,16 +287,29 @@ namespace O3DESharp
             return it->second;
         }
 
-        PinnedThunk thunk = m_host->GetFunctionPointer(
-            std::string_view(assemblyQualifiedTypeName.data(), assemblyQualifiedTypeName.size()),
+        // Coral takes an assembly PATH plus UCChar strings. UCChar is wchar_t on
+        // Windows and char on Linux, and CORAL_STR() only works on literals, so
+        // runtime strings must go through ConvertUtf8ToWide. Paid once per
+        // unique key because the result (including nullptr) is memoized below.
+        const AZ::IO::Path assemblyPath = m_scriptsDir / AZ::IO::PathView(assemblyFileName);
+
+        Coral::UCString typeNameUC = Coral::StringHelper::ConvertUtf8ToWide(
+            std::string_view(assemblyQualifiedTypeName.data(), assemblyQualifiedTypeName.size()));
+        Coral::UCString methodNameUC = Coral::StringHelper::ConvertUtf8ToWide(
             std::string_view(methodName.data(), methodName.size()));
+
+        PinnedThunk thunk = m_host->GetFunctionPointer(
+            std::filesystem::path(assemblyPath.c_str()),
+            typeNameUC.c_str(),
+            methodNameUC.c_str());
 
         if (thunk == nullptr)
         {
             AZLOG_WARN(
-                "[O3DESharp] No pinned thunk for %.*s::%.*s - falling back to InvokeMethod",
+                "[O3DESharp] No pinned thunk for %.*s::%.*s in %s - falling back to InvokeMethod",
                 static_cast<int>(assemblyQualifiedTypeName.size()), assemblyQualifiedTypeName.data(),
-                static_cast<int>(methodName.size()), methodName.data());
+                static_cast<int>(methodName.size()), methodName.data(),
+                assemblyPath.c_str());
         }
 
         // Memoize even nullptr: a failed resolution is stable, and caching
@@ -296,7 +349,13 @@ import pathlib
 h = pathlib.Path('Code/Source/Scripting/CoralNativeThunkHost.h').read_text(encoding='utf-8')
 c = pathlib.Path('Code/Source/Scripting/CoralNativeThunkHost.cpp').read_text(encoding='utf-8')
 cm = pathlib.Path('Code/o3desharp_private_files.cmake').read_text(encoding='utf-8')
-assert 'hostfxr' not in (h+c).lower(), 'hostfxr re-init must NOT be carried forward'
+import re
+# The rescued prototype called hostfxr_initialize_for_runtime_config itself.
+# That must NOT be carried forward - Coral's GetFunctionPointer replaced the
+# need. Match the actual API calls, not the word 'hostfxr', which legitimately
+# appears in explanatory comments.
+banned = re.findall(r'hostfxr_[a-z_]+\s*\(', (h + c))
+assert not banned, f'hostfxr re-init must NOT be carried forward: {banned}'
 for m in ('SetHost','Get(','InvalidateCache','CachedCount'):
     assert m in h and m.split('(')[0] in c, m
 assert 'CoralNativeThunkHost.cpp' in cm and 'CoralNativeThunkHost.h' in cm
@@ -735,7 +794,7 @@ Where `m_scriptInstance` is created (after it is valid), resolve the thunk and r
         // Resolve the pinned thunk once per instance. Failure is expected and
         // survivable: m_bridgeInvoke stays null and every call site falls back.
         m_bridgeInvoke = reinterpret_cast<BridgeInvokeFn>(
-            thunkHost.Get("O3DE.Interop.ScriptComponentBridge, O3DE.Core", "Invoke"));
+            thunkHost.Get("O3DE.Core.dll", "O3DE.Interop.ScriptComponentBridge, O3DE.Core", "Invoke"));
 
         // One-shot, so InvokeMethod's cost is irrelevant here. Uses the same
         // value-returning pattern already proven in the codebase (see
