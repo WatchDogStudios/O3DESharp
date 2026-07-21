@@ -271,6 +271,19 @@ endif()
 # Option to control automatic binding generation
 option(O3DESHARP_AUTO_GENERATE_BINDINGS "Automatically generate C# bindings during build" ON)
 
+# Bundle a private .NET runtime so shipped games don't require a machine-wide
+# .NET install (M2, experimental). OFF keeps the framework-dependent default.
+option(O3DESHARP_BUNDLE_DOTNET_RUNTIME
+    "Bundle a private self-contained .NET runtime for shipping (experimental)" OFF)
+
+if(O3DESHARP_BUNDLE_DOTNET_RUNTIME)
+    include(o3desharp_runtime_bundle.cmake)
+    o3de_sharp_stage_runtime_bundle(O3DESHARP_RUNTIME_BUNDLE_DIR)
+    if(TARGET ${gem_name}.StageRuntimeBundle)
+        message(STATUS "O3DESharp: runtime bundle -> ${O3DESHARP_RUNTIME_BUNDLE_DIR}")
+    endif()
+endif()
+
 get_property(gem_root_for_bindings GLOBAL PROPERTY "@GEMROOT:${gem_name}@")
 set(BINDING_GENERATOR_SOURCE_DIR "${gem_root_for_bindings}/Code/Tools/BindingGenerator")
 set(BINDING_GENERATOR_BINARY_DIR "${CMAKE_BINARY_DIR}/Gems/O3DESharp/BindingGenerator")
@@ -553,6 +566,35 @@ if(TARGET ${gem_name}.StageO3DECore)
         OUTPUT_SUBDIRECTORY "Bin/Scripts"
     )
     message(STATUS "O3DESharp: O3DE.Core will be deployed to Bin/Scripts/ for runtime and export")
+endif()
+
+# Deploy the private .NET runtime bundle (M2, opt-in via
+# O3DESHARP_BUNDLE_DOTNET_RUNTIME) alongside Coral/O3DE.Core, into a "dotnet"
+# subfolder next to the scripts so CoralHostManager can find it at a stable
+# relative path. Unlike the two blocks above, the runtime bundle's file list
+# isn't a small fixed set of known names - it's whatever `dotnet publish
+# --self-contained` harvests for the RID (189 files for win-x64, verified
+# empirically; see o3desharp_runtime_bundle.cmake). ly_add_target_files()
+# requires an explicit FILES list, so the staged bundle directory is globbed
+# instead of naming files.
+# CAVEAT: on the first configure after turning the option on, the bundle
+# directory does not exist yet (StageRuntimeBundle only produces it at BUILD
+# time), so the glob below is empty and nothing is queued for deploy that
+# configure. Build ${gem_name}.StageRuntimeBundle once, then re-run CMake
+# configure to pick up the produced files. See README.md "Shipping without
+# requiring .NET (experimental)".
+if(O3DESHARP_BUNDLE_DOTNET_RUNTIME AND TARGET ${gem_name}.StageRuntimeBundle)
+    file(GLOB O3DESHARP_RUNTIME_BUNDLE_FILES "${O3DESHARP_RUNTIME_BUNDLE_DIR}/*")
+    if(O3DESHARP_RUNTIME_BUNDLE_FILES)
+        ly_add_target_files(
+            TARGETS ${gem_name}.Clients ${gem_name}.Servers ${gem_name}.Unified
+            FILES ${O3DESHARP_RUNTIME_BUNDLE_FILES}
+            OUTPUT_SUBDIRECTORY "Bin/Scripts/dotnet"
+        )
+        message(STATUS "O3DESharp: private .NET runtime bundle will be deployed to Bin/Scripts/dotnet/ for runtime and export")
+    else()
+        message(STATUS "O3DESharp: runtime bundle not yet built at ${O3DESHARP_RUNTIME_BUNDLE_DIR} - build ${gem_name}.StageRuntimeBundle then re-run CMake configure to deploy it")
+    endif()
 endif()
 
 # Add in CMake dependencies for each gem dependency listed in this gem's gem.json file
