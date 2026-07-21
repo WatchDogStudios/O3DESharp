@@ -65,6 +65,11 @@ namespace O3DE
         /// </summary>
         private Transform? m_transform;
 
+        /// <summary>
+        /// Native bridge handle. Assigned on first acquire; 0 means unregistered.
+        /// </summary>
+        private int _bridgeHandle;
+
         #region Properties
 
         /// <summary>
@@ -155,6 +160,37 @@ namespace O3DE
         /// </summary>
         public virtual void OnDisable()
         {
+        }
+
+        #endregion
+
+        #region Native Bridge
+
+        /// <summary>
+        /// Register this instance with <see cref="O3DE.Interop.ScriptComponentBridge"/>
+        /// and return its native handle. Called once by native code immediately
+        /// after construction. Idempotent - repeated calls return the same handle.
+        /// </summary>
+        public int AcquireBridgeHandle()
+        {
+            if (_bridgeHandle == 0)
+            {
+                _bridgeHandle = O3DE.Interop.ScriptComponentBridge.Register(this);
+            }
+            return _bridgeHandle;
+        }
+
+        /// <summary>
+        /// Release the native bridge handle. Called by native code during
+        /// teardown, AFTER the final OnDestroy dispatch. Safe to call twice.
+        /// </summary>
+        public void ReleaseBridgeHandle()
+        {
+            if (_bridgeHandle != 0)
+            {
+                O3DE.Interop.ScriptComponentBridge.Unregister(_bridgeHandle);
+                _bridgeHandle = 0;
+            }
         }
 
         #endregion
