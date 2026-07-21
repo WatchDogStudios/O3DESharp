@@ -193,7 +193,10 @@ namespace O3DESharp
             {
                 SetEntityIdOnScript();
                 PushExposedPropertiesToScript();
-                SafeInvokeMethod("OnCreate");
+                if (!TryInvokeViaThunk(LifecycleId::OnCreate, 0.0f))
+                {
+                    SafeInvokeMethod("OnCreate");
+                }
             }
         }
     }
@@ -267,7 +270,10 @@ namespace O3DESharp
             PushExposedPropertiesToScript();
 
             // Call OnCreate on the managed instance
-            SafeInvokeMethod("OnCreate");
+            if (!TryInvokeViaThunk(LifecycleId::OnCreate, 0.0f))
+            {
+                SafeInvokeMethod("OnCreate");
+            }
         }
 
         // Connect to tick bus to call OnUpdate
@@ -307,9 +313,18 @@ namespace O3DESharp
 
         // Call OnDestroy before destroying the instance. Use the safe wrapper so
         // a throwing OnDestroy doesn't tear down the rest of the gem shutdown.
-        SafeInvokeMethod("OnDestroy");
+        //
+        // Ordering hazard: the bridge handle MUST still be registered for this
+        // dispatch. DestroyScriptInstance (below) is what unregisters it, and
+        // it runs strictly after this call - never reorder these two lines,
+        // or the thunk sees a dead handle and OnDestroy is silently skipped.
+        if (!TryInvokeViaThunk(LifecycleId::OnDestroy, 0.0f))
+        {
+            SafeInvokeMethod("OnDestroy");
+        }
 
-        // Destroy the managed instance
+        // Destroy the managed instance (also releases the bridge handle, AFTER
+        // the OnDestroy dispatch above).
         DestroyScriptInstance();
     }
 
@@ -353,7 +368,10 @@ namespace O3DESharp
             // The script can query the transform via the Transform API
             // We don't pass the transform data directly to avoid complex marshalling
             // Scripts that need to react to transform changes can override OnTransformChanged
-            SafeInvokeMethod("OnTransformChanged");
+            if (!TryInvokeViaThunk(LifecycleId::OnTransformChanged, 0.0f))
+            {
+                SafeInvokeMethod("OnTransformChanged");
+            }
         }
     }
 
@@ -499,9 +517,17 @@ namespace O3DESharp
         // mirrors what Deactivate does, giving user code a chance to clean
         // up state, but we use the safe wrapper so an exception inside
         // OnDestroy doesn't prevent the rest of the teardown.
+        //
+        // Ordering hazard: same as Deactivate. The bridge handle is still
+        // registered here - the context (and any cached thunk pointer into
+        // it) is only invalidated below, AFTER this dispatch and AFTER
+        // DestroyScriptInstance releases the handle.
         if (m_scriptInstance.IsValid())
         {
-            SafeInvokeMethod("OnDestroy");
+            if (!TryInvokeViaThunk(LifecycleId::OnDestroy, 0.0f))
+            {
+                SafeInvokeMethod("OnDestroy");
+            }
         }
         DestroyScriptInstance();
 
@@ -529,7 +555,10 @@ namespace O3DESharp
         {
             SetEntityIdOnScript();
             PushExposedPropertiesToScript();
-            SafeInvokeMethod("OnCreate");
+            if (!TryInvokeViaThunk(LifecycleId::OnCreate, 0.0f))
+            {
+                SafeInvokeMethod("OnCreate");
+            }
         }
 
         // Re-attach to TickBus so OnUpdate resumes firing.
