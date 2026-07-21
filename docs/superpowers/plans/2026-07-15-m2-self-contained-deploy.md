@@ -275,6 +275,31 @@ git commit -m "M2: opt-in CMake step to build+stage+deploy a private .NET runtim
 
 ### Task 4: Coral host wiring (this repo) + fork override (CROSS-REPO)
 
+> ### ⚠️ THIS TASK AS WRITTEN BELOW IS INACCURATE — see the corrections before implementing.
+>
+> It was authored before the Coral side was read. Three things are wrong:
+>
+> 1. **The cross-repo half is already merged** — `WatchDogStudios/Coral` `a98550d` (PR #1) added
+>    `HostSettings::DotnetRootOverride`. Do not redo Step 4, and drop the
+>    `#if CORAL_HAS_DOTNET_ROOT_OVERRIDE` guard in Step 5; the API exists unconditionally.
+> 2. **Coral does not use nethost.** `GetHostFXRPath` hand-rolls a scan of known install
+>    directories rather than calling `get_hostfxr_path`, so there is no
+>    `get_hostfxr_parameters.dotnet_root` to point anywhere. The merged change searches
+>    `<override>/host/fxr` *before* the machine-wide locations.
+> 3. **Step 2's placement does not work.** `Coral::HostSettings` is constructed in
+>    `CoralHostManager::Initialize` at ~line 163, but `coreApiAssemblyPath` is not populated until
+>    `LoadCoreAssembly` at ~line 509 — so no base path is available there to derive the bundle
+>    directory from.
+>
+> **What was actually implemented** (commit on this branch):
+> - `CoralHostConfig::dotnetRootOverride` added in `CoralHostManager.h`.
+> - Forwarded to `settings.DotnetRootOverride` in `CoralHostManager::Initialize`, guarded on
+>   non-empty.
+> - Derived in `O3DESharpSystemComponent.cpp` alongside the sibling `coralDirectory` /
+>   `coreApiAssemblyPath` derivations where `projectPath` is already in scope, honouring a
+>   `/O3DE/O3DESharp/DotnetRootOverride` settings-registry key for consistency, and set **only when
+>   the directory exists** so an absent bundle falls back to the machine install unchanged.
+
 **Files:**
 - Modify: `Code/Source/Scripting/CoralHostManager.h` (add `m_dotnetRootOverride` to `CoralHostConfig`)
 - Modify: `Code/Source/Scripting/CoralHostManager.cpp` (resolve deployed bundle dir; pass override into Coral settings)
