@@ -204,3 +204,53 @@ possible — it is not redundant with the offline half.
    never been compiled. The implementation plan must budget for the possibility that parts are
    rewritten rather than integrated; the rescue preserved *intent and analysis*, which is the durable
    value, not necessarily the exact lines.
+
+---
+
+## Appendix: learnings from Lumina Engine's scripting host
+
+Source: https://luminagameengine.com/internals/scripting-host/ (read 2026-07-20). Lumina hosts
+CoreCLR via hostfxr with collectible ALCs and name-resolved function pointers in both directions —
+architecturally the same choices as this gem, arrived at independently. Two of its safety
+mechanisms have no counterpart here and are worth adopting.
+
+### A1. Startup blittable-layout verification — ADOPT (SP-1b-2)
+
+Lumina's `CSharpLayoutChecks.cpp` verifies, at startup, that every struct crossing the boundary has
+matching size and field offsets on both sides, and fails with a named error on mismatch.
+
+This gem has the same exposure and no equivalent guard. `LifecycleId`'s integer values are pinned by
+a test (`LifecycleIdAbiTests`), but that is one enum checked by convention — nothing verifies the
+layout of argument structs passed through `[UnmanagedCallersOnly]` thunks. A C# `struct` field
+reordered or a type widened produces silent memory corruption, not a failure.
+
+Fold into SP-1b-2's load-time manifest validation (spec §7), which already walks every entry to
+compare arity and type ids against the live `BehaviorContext`. Adding size/offset to that comparison
+is close to free once the walk exists, and covers the same class of bug the manifest check exists to
+catch.
+
+### A2. Script generation counter — ADOPT (small, SP-1a follow-up)
+
+Lumina stamps a generation number (`GetScriptGeneration()`) that increments on every reload, and
+cached native pointers carry the generation they were resolved under. A pointer from a previous
+generation is *detected*, not dereferenced.
+
+`CoralNativeThunkHost` currently relies on every reload path remembering to call `InvalidateCache()`.
+One path added later that forgets leaves a dangling pointer into an unloaded ALC — and the failure
+is a crash in managed code with no obvious link to the missing call. A generation stamp makes the
+staleness detectable rather than depending on call-site discipline.
+
+Cheap: an integer bumped in `OnBeforeUserAssemblyReload`, stored alongside each cached thunk,
+compared on `Get`. Worth doing when SP-1a's C++ is next touched.
+
+### A3. Deliberately not adopted
+
+- **Roslyn in-process compilation.** Lumina compiles `.cs` in-process at runtime; this gem builds
+  through MSBuild/`dotnet`. Their model gives faster iteration, but in-process Roslyn is a large
+  dependency and is fundamentally incompatible with the AOT direction in
+  `2026-07-02-linux-aot-support-design.md`.
+- **Cooked-script manifest** (`scripts.manifest.json` + prebuilt assemblies). This is approximately
+  SP-6 (assemblies as assets) in the program design, which routes through the O3DE Asset Processor
+  instead — the engine-native equivalent.
+- **No AOT.** Lumina documents no AOT or NativeAOT story; it targets JIT CoreCLR. Nothing to learn
+  for the dual-mode AOT work, which is ahead of it.
