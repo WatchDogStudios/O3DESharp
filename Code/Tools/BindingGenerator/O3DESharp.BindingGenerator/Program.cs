@@ -12,9 +12,11 @@ using System.CommandLine;
 using System.CommandLine.Invocation;
 using System.IO;
 using System.Linq;
+using System.Text.Json;
 using O3DESharp.BindingGenerator.Configuration;
 using O3DESharp.BindingGenerator.GemDiscovery;
 using O3DESharp.BindingGenerator.Generation;
+using O3DESharp.BindingGenerator.Parsing;
 
 namespace O3DESharp.BindingGenerator
 {
@@ -199,9 +201,46 @@ namespace O3DESharp.BindingGenerator
                 context.ExitCode = 0;
             });
 
+            // native-bindings command - joins the C++ runtime manifest
+            // (native symbol column empty, see NativeBindingManifestSchema)
+            // against libclang-recovered call sites and writes the bound
+            // manifest. SP-1b-1 offline half only - see plan/spec for the
+            // runtime half (SP-1b-2) that actually dispatches through it.
+            var nativeManifestOption = new Option<string>(
+                aliases: new[] { "--manifest" },
+                description: "Path to the native-binding manifest JSON emitted by the C++ runtime pass.")
+            { IsRequired = true };
+
+            var nativeReflectionSourcesOption = new Option<string>(
+                aliases: new[] { "--reflection-sources" },
+                description: "Reflection .cpp file, directory (searched recursively for *.cpp), or glob pattern to recover native symbols from.")
+            { IsRequired = true };
+
+            var nativeOutputOption = new Option<string>(
+                aliases: new[] { "--output" },
+                description: "Where to write the joined manifest JSON.")
+            { IsRequired = true };
+
+            var nativeBindingsCommand = new Command(
+                "native-bindings",
+                "Join a native-binding manifest against libclang-recovered reflection call sites and emit the bound manifest");
+            nativeBindingsCommand.AddOption(nativeManifestOption);
+            nativeBindingsCommand.AddOption(nativeReflectionSourcesOption);
+            nativeBindingsCommand.AddOption(nativeOutputOption);
+            nativeBindingsCommand.AddOption(verboseOption);
+            nativeBindingsCommand.SetHandler((context) =>
+            {
+                var manifestPath = context.ParseResult.GetValueForOption(nativeManifestOption)!;
+                var reflectionSources = context.ParseResult.GetValueForOption(nativeReflectionSourcesOption)!;
+                var outputPath = context.ParseResult.GetValueForOption(nativeOutputOption)!;
+                var verbose = context.ParseResult.GetValueForOption(verboseOption);
+                context.ExitCode = RunNativeBindings(manifestPath, reflectionSources, outputPath, verbose);
+            });
+
             rootCommand.AddCommand(listGemsCommand);
             rootCommand.AddCommand(generateCommand);
             rootCommand.AddCommand(initConfigCommand);
+            rootCommand.AddCommand(nativeBindingsCommand);
 
             // Default action is generate
             rootCommand.AddOption(projectOption);
@@ -483,6 +522,122 @@ namespace O3DESharp.BindingGenerator
                 }
                 return 1;
             }
+        }
+
+        /// <summary>
+        /// native-bindings verb: loads the C++ runtime's manifest (native
+        /// symbol column empty), recovers &amp;C::Method symbols from the
+        /// gem's reflection .cpp files via ReflectionCallSiteParser, joins
+        /// them with NativeBindingJoin.Apply, and writes the bound
+        /// manifest. Pure orchestration - all the classification logic
+        /// lives in NativeBindingJoin (Task 2) and is unit-tested there.
+        /// </summary>
+        static int RunNativeBindings(string manifestPath, string reflectionSourcesPath, string outputPath, bool verbose)
+        {
+            try
+            {
+                Console.WriteLine("O3DE C# Binding Generator - native-bindings");
+                Console.WriteLine("=============================================\n");
+
+                if (!File.Exists(manifestPath))
+                {
+                    Console.WriteLine($"Error: manifest not found: {manifestPath}");
+                    return 1;
+                }
+
+                var manifest = JsonSerializer.Deserialize<NativeBindingManifestDocument>(File.ReadAllText(manifestPath));
+                if (manifest == null)
+                {
+                    Console.WriteLine($"Error: failed to parse manifest: {manifestPath}");
+                    return 1;
+                }
+
+                var reflectionCppFiles = ResolveReflectionSources(reflectionSourcesPath);
+
+                Console.WriteLine($"Manifest:           {manifestPath} ({manifest.Methods.Count} methods)");
+                Console.WriteLine($"Reflection sources: {reflectionSourcesPath} ({reflectionCppFiles.Count} file(s))");
+                Console.WriteLine($"Output:             {outputPath}\n");
+
+                var parser = new ReflectionCallSiteParser(verbose);
+                var callSites = new List<CallSiteSymbol>();
+                foreach (var cppFile in reflectionCppFiles)
+                {
+                    var parsed = parser.ParseFile(cppFile, Array.Empty<string>(), Array.Empty<string>());
+                    callSites.AddRange(parsed.CallSites);
+                }
+
+                var report = NativeBindingJoin.Apply(manifest, callSites);
+
+                // Printed unconditionally, not gated on --verbose: a run
+                // that binds nothing is exactly the case a user most needs
+                // told about, and would otherwise look identical to a
+                // successful run that simply had nothing to bind.
+                Console.WriteLine("========== Join Report ==========");
+                Console.WriteLine($"Total:   {report.Total}");
+                Console.WriteLine($"Bound:   {report.Bound}");
+                Console.WriteLine($"Unbound: {report.Unbound}");
+                if (report.ReasonCounts.Count > 0)
+                {
+                    Console.WriteLine("Reasons:");
+                    foreach (var reason in report.ReasonCounts.OrderByDescending(r => r.Value).ThenBy(r => r.Key, StringComparer.Ordinal))
+                    {
+                        Console.WriteLine($"  {reason.Key,-24} {reason.Value}");
+                    }
+                }
+                Console.WriteLine();
+
+                var outputDir = Path.GetDirectoryName(Path.GetFullPath(outputPath));
+                if (!string.IsNullOrEmpty(outputDir))
+                {
+                    Directory.CreateDirectory(outputDir);
+                }
+                File.WriteAllText(outputPath, JsonSerializer.Serialize(manifest));
+                Console.WriteLine($"Wrote joined manifest: {outputPath}");
+
+                return 0;
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"Error: {ex.Message}");
+                if (verbose)
+                {
+                    Console.WriteLine(ex.StackTrace);
+                }
+                return 1;
+            }
+        }
+
+        /// <summary>
+        /// Resolves --reflection-sources to a concrete file list: a single
+        /// .cpp file used as-is, a directory searched recursively for
+        /// *.cpp, or a simple (non-recursive) glob against its parent
+        /// directory (e.g. "Source/*Component.cpp"). No "**" support here
+        /// - reflection .cpp files live in one gem's Source tree by O3DE
+        /// convention, so a directory search already covers the common
+        /// case without needing MultiGemBindingGenerator's full
+        /// multi-segment glob resolver.
+        /// </summary>
+        static List<string> ResolveReflectionSources(string path)
+        {
+            if (Directory.Exists(path))
+            {
+                return Directory.EnumerateFiles(path, "*.cpp", SearchOption.AllDirectories).ToList();
+            }
+
+            if (File.Exists(path))
+            {
+                return new List<string> { path };
+            }
+
+            var dir = Path.GetDirectoryName(path);
+            var pattern = Path.GetFileName(path);
+            if (!string.IsNullOrEmpty(dir) && Directory.Exists(dir) && !string.IsNullOrEmpty(pattern))
+            {
+                return Directory.GetFiles(dir, pattern, SearchOption.TopDirectoryOnly).ToList();
+            }
+
+            Console.WriteLine($"Warning: --reflection-sources path not found: {path}");
+            return new List<string>();
         }
     }
 }
