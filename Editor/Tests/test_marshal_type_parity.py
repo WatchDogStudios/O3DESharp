@@ -83,6 +83,26 @@ def test_every_cpp_marshal_tag_is_mapped_in_csharp():
 
 
 @pytest.mark.unit
+def test_every_csharp_case_is_emitted_by_cpp():
+    """The reverse direction: no C# case without a C++ tag that produces it.
+
+    A C# case for a tag the exporter never emits is dead code that reads as
+    working support. Vector2/Vector4/Color were exactly that until the C++
+    MarshalType enum, classifier, and stringifier gained them - the generator
+    looked ready for those types while every one of them arrived as `Object`
+    and mapped to `object`.
+    """
+    cpp = _cpp_marshal_tags()
+    csharp = _csharp_mapped_tags()
+    unreachable = sorted(csharp - cpp)
+    assert not unreachable, (
+        f"MapMarshalToCSharp has case(s) {unreachable} that the C++ exporter never emits. "
+        "Either the C++ MarshalType enum/classifier/stringifier is missing them (so those "
+        "types silently marshal as Object), or the C# cases are dead and should go."
+    )
+
+
+@pytest.mark.unit
 def test_tags_are_pascal_case_on_both_sides():
     # The mapper's switch is ordinal/case-sensitive. A casing drift on either
     # side is the same silent-`object` failure as a missing case.
