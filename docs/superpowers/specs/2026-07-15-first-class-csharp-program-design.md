@@ -247,3 +247,51 @@ Ordering principle: each sub-project ships standalone value; nothing later depen
 - Not upstreaming to `o3de/o3de` as a dependency of this program (may be attempted separately).
 - Not consoles/mobile here — that remains the Mono-AOT milestone in the Linux+AOT design
   (`docs/superpowers/specs/2026-07-02-linux-aot-support-design.md`).
+
+---
+
+## Addendum (2026-07-20): runtime strategy locked
+
+Two decisions that constrain every later sub-project. Recorded here so new work does not bake in
+CoreCLR-only assumptions.
+
+### D1. Consoles — Mono-AOT with an interpreter tail
+
+Consoles ban JIT, so Coral's CoreCLR host **cannot run there at all** — not a porting problem, a
+categorical one. The console backend is **Mono-AOT plus the interpreter** for the dispatch tail
+AOT cannot monomorphize.
+
+The interpreter is the point, not a fallback. O3DE's `BehaviorContext` is open-world: a
+runtime-computed method name has no static call site to AOT. Pure NativeAOT hard-fails on an
+un-instantiated generic; Mono degrades to interpreting it. That is why Mono has historically won on
+consoles, and it is why this is the console choice even though NativeAOT reuses more of the existing
+net9.0 investment.
+
+Consequences:
+- Three runtimes total: CoreCLR (editor), NativeAOT (desktop shipping), Mono-AOT (console shipping).
+- Only viable behind SP-1's frozen ABI seam (Approach A). Each runtime must be a thin `IManagedHost`
+  backend; anything that reaches around the seam into Coral-specific API blocks the console port.
+- Per-console toolchains are vendor/NDA-specific and cannot be built or tested in the development
+  environment. Design for the seam; validate on a desktop Mono-AOT proxy.
+
+### D2. Roslyn — editor-only, in-process; MSBuild still owns shipping
+
+Roslyn compiles user scripts **in-process in the Editor** for near-instant iteration (Lumina's
+model). Shipping builds continue through MSBuild → AOT.
+
+This split is what makes it safe. In-process Roslyn needs a JIT and open-world reflection, so a
+build that depends on it at runtime forecloses both NativeAOT and consoles. Confining it to the
+editor buys the iteration speed without touching the shipping path.
+
+Consequences:
+- Roslyn is an **editor-only** dependency. It must not appear in any shipping assembly's closure.
+- The MSBuild path stays the source of truth for what ships; the Roslyn path must produce
+  equivalent assemblies or the editor tests a different artifact than the game runs.
+- Pairs with, and does not replace, SP-6 (assemblies as assets).
+
+### Sequencing note
+
+Neither is startable today. Both depend on SP-1's ABI seam, whose C++ (SP-1a) has never been
+compiled against a real engine. D1 additionally needs a console SDK that does not exist in this
+environment. Each gets its own spec → plan cycle; **D2 is the nearer of the two** — it is
+editor-scoped, testable here, and has no vendor dependency.
