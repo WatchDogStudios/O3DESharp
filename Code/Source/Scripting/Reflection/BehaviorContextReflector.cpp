@@ -11,7 +11,10 @@
 #include <AzCore/Console/ILogger.h>
 #include <AzCore/std/containers/unordered_set.h>
 #include <AzCore/std/sort.h>
+#include <AzCore/Math/Color.h>
+#include <AzCore/Math/Vector2.h>
 #include <AzCore/Math/Vector3.h>
+#include <AzCore/Math/Vector4.h>
 #include <AzCore/Math/Quaternion.h>
 #include <AzCore/Math/Transform.h>
 #include <AzCore/Component/EntityId.h>
@@ -599,13 +602,25 @@ namespace O3DESharp
         {
             marshalType = ReflectedParameter::MarshalType::String;
         }
+        else if (typeId == azrtti_typeid<AZ::Vector2>())
+        {
+            marshalType = ReflectedParameter::MarshalType::Vector2;
+        }
         else if (typeId == azrtti_typeid<AZ::Vector3>())
         {
             marshalType = ReflectedParameter::MarshalType::Vector3;
         }
+        else if (typeId == azrtti_typeid<AZ::Vector4>())
+        {
+            marshalType = ReflectedParameter::MarshalType::Vector4;
+        }
         else if (typeId == azrtti_typeid<AZ::Quaternion>())
         {
             marshalType = ReflectedParameter::MarshalType::Quaternion;
+        }
+        else if (typeId == azrtti_typeid<AZ::Color>())
+        {
+            marshalType = ReflectedParameter::MarshalType::Color;
         }
         else if (typeId == azrtti_typeid<AZ::Transform>())
         {
