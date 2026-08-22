@@ -88,4 +88,17 @@ public class NativeReflectionAotTests
         var act = () => NativeReflection.SerializeArgumentsForTest(new object[] { new object() });
         act.Should().Throw<System.NotSupportedException>();
     }
+
+    [Theory]
+    [InlineData("[a]", "\"[a]\"")]
+    [InlineData("]", "\"]\"")]
+    [InlineData("[", "\"[\"")]
+    public void SerializeValue_StringsWithBracketsRoundTripCorrectly(string input, string expected)
+    {
+        // SerializeValue wraps the value in a List<object?>, serializes through
+        // the context, then strips the outer []. JSON escaping of brackets must
+        // survive this round-trip; a string "[a]" must deserialize back to "[a]",
+        // not lose its brackets or corrupt them.
+        NativeReflection.SerializeValueForTest(input).Should().Be(expected);
+    }
 }

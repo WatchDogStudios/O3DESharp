@@ -601,6 +601,13 @@ namespace O3DE.Reflection
         }
 
         /// <summary>
+        /// Test seam over <c>SerializeValue</c>. Verifies that the
+        /// wrap-serialize-substring logic correctly preserves JSON escaping
+        /// of strings containing literal bracket characters.
+        /// </summary>
+        internal static string SerializeValueForTest(object value) => SerializeValue(value);
+
+        /// <summary>
         /// Deserialize the JSON result envelope produced by Phase 18-A's
         /// GenericDispatcher::DispatchEBusEvent and friends. The envelope
         /// shapes are:
