@@ -101,6 +101,15 @@ namespace O3DESharp.SourceGenerators
 
                 foreach (var bus in buses.EnumerateArray())
                 {
+                    // A bus entry can be any JSON value in a malformed dump
+                    // (e.g. "ebuses": ["not_an_object", 123, null]) -
+                    // TryGetProperty throws InvalidOperationException on a
+                    // non-object element, so guard the ValueKind first
+                    // instead of relying solely on the catch below.
+                    if (bus.ValueKind != System.Text.Json.JsonValueKind.Object)
+                    {
+                        continue;
+                    }
                     if (!bus.TryGetProperty("name", out var busName) ||
                         busName.ValueKind != System.Text.Json.JsonValueKind.String)
                     {
@@ -114,6 +123,10 @@ namespace O3DESharp.SourceGenerators
 
                     foreach (var evt in events.EnumerateArray())
                     {
+                        if (evt.ValueKind != System.Text.Json.JsonValueKind.Object)
+                        {
+                            continue;
+                        }
                         if (!evt.TryGetProperty("name", out var eventName) ||
                             eventName.ValueKind != System.Text.Json.JsonValueKind.String)
                         {
@@ -133,12 +146,16 @@ namespace O3DESharp.SourceGenerators
                     }
                 }
             }
-            catch (System.Text.Json.JsonException)
+            catch (Exception ex) when (ex is System.Text.Json.JsonException or InvalidOperationException)
             {
                 // A corrupt dump degrades to an empty table. Failing the build
                 // over an optional optimisation input would be the worse
                 // outcome; an empty table simply routes every dispatch to the
-                // closed-world diagnostic instead.
+                // closed-world diagnostic instead. JsonException covers
+                // syntactically-broken JSON; InvalidOperationException is the
+                // backstop for a structurally-odd-but-syntactically-valid
+                // shape slipping past the ValueKind guards above (e.g. some
+                // other unanticipated JsonElement access on the wrong kind).
                 return new List<EventShape>();
             }
 
@@ -215,8 +232,11 @@ namespace O3DESharp.SourceGenerators
             return sb.ToString();
         }
 
+        // Roslyn's own answer to "turn this string into a valid C# string
+        // literal" - handles CR/LF/NEL/LS/PS and everything else illegal in
+        // a non-verbatim literal, which a hand-rolled \\ / " escape misses.
         private static string Literal(string value) =>
-            "\"" + value.Replace("\\", "\\\\").Replace("\"", "\\\"") + "\"";
+            Microsoft.CodeAnalysis.CSharp.SymbolDisplay.FormatLiteral(value, quote: true);
     }
 
     /// <summary>One reflected EBus event, reduced to what static dispatch needs.</summary>

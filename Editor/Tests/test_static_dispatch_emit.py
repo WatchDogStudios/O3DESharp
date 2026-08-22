@@ -154,3 +154,68 @@ def test_malformed_reflection_data_does_not_break_the_build(tmp_path):
         "a corrupt reflection dump must degrade to an empty table, not take the "
         "build down: " + result.stdout + result.stderr
     )
+
+
+@pytest.mark.slow
+def test_non_object_array_elements_degrade_to_an_empty_table(tmp_path):
+    # Syntactically valid JSON, structurally wrong: an "ebuses" array whose
+    # elements aren't objects. JsonElement.TryGetProperty throws
+    # InvalidOperationException on a non-object element - this must not
+    # escape uncaught (which would make Roslyn drop the whole generated
+    # file, silently deleting StaticEBusDispatch from the compilation).
+    if shutil.which("dotnet") is None:
+        pytest.skip("dotnet not available")
+    data = tmp_path / "reflection_data.json"
+    data.write_text(json.dumps({"ebuses": ["not_an_object", 123, None]}), encoding="utf-8")
+    result = subprocess.run(
+        [
+            "dotnet", "build", str(CORE_CSPROJ), "-c", "Release", "--nologo", "-t:Rebuild",
+            "-p:EmitCompilerGeneratedFiles=true",
+            f"-p:O3DESharpReflectionData={data}",
+        ],
+        capture_output=True, text=True, timeout=900,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    files = list(GENERATED.glob("*.g.cs"))
+    assert files, f"StaticDispatchGenerator emitted nothing into {GENERATED}"
+    emitted = "\n".join(f.read_text(encoding="utf-8") for f in files)
+    assert "internal static class StaticEBusDispatch" in emitted
+    assert "EntryCount => 0" in emitted
+
+
+@pytest.mark.slow
+def test_names_with_illegal_string_literal_characters_are_escaped(tmp_path):
+    # A bus/event name containing a raw newline is illegal unescaped inside
+    # a non-verbatim C# string literal (CS1010/CS1003). Literal() must
+    # escape it rather than splicing the raw character into generated source.
+    if shutil.which("dotnet") is None:
+        pytest.skip("dotnet not available")
+    fixture = {
+        "ebuses": [
+            {
+                "name": "Weird\nBus",
+                "events": [
+                    {"name": "Odd\nEvent", "is_broadcast": True, "parameters": []},
+                ],
+            },
+        ],
+    }
+    data = tmp_path / "reflection_data.json"
+    data.write_text(json.dumps(fixture), encoding="utf-8")
+    result = subprocess.run(
+        [
+            "dotnet", "build", str(CORE_CSPROJ), "-c", "Release", "--nologo", "-t:Rebuild",
+            "-p:EmitCompilerGeneratedFiles=true",
+            f"-p:O3DESharpReflectionData={data}",
+        ],
+        capture_output=True, text=True, timeout=900,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    files = list(GENERATED.glob("*.g.cs"))
+    assert files, f"StaticDispatchGenerator emitted nothing into {GENERATED}"
+    emitted = "\n".join(f.read_text(encoding="utf-8") for f in files)
+    assert r"Weird\nBus" in emitted
+    assert r"Odd\nEvent" in emitted
+    # The raw newline must never appear inside the quoted literal - that's
+    # exactly what would break the build.
+    assert "\"Weird\nBus\"" not in emitted
