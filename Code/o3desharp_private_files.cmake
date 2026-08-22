@@ -19,6 +19,7 @@ set(FILES
     Source/Render/O3DESharpFeatureProcessor.cpp
 
     # C# Scripting Support via Coral
+    Source/Scripting/HostAbi.h
     Source/Scripting/CoralHostManager.h
     Source/Scripting/CoralHostManager.cpp
     Source/Scripting/CoralNativeThunkHost.h
