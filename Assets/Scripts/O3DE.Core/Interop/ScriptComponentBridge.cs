@@ -74,6 +74,25 @@ namespace O3DE.Interop
             }
         }
 
+        /// <summary>
+        /// Drop every live handle and return how many were dropped.
+        ///
+        /// Called from HotReloadSwap: every registered instance lives in the
+        /// AssemblyLoadContext that is about to be unloaded, so a handle that
+        /// survives the swap resolves to an object in a dead ALC. Returning the
+        /// count makes "the swap actually released something" assertable
+        /// instead of assumed.
+        /// </summary>
+        public static int ClearAll()
+        {
+            lock (s_lock)
+            {
+                int dropped = s_instances.Count;
+                s_instances.Clear();
+                return dropped;
+            }
+        }
+
         /// <summary>Resolve a handle, or null if it is unknown or already released.</summary>
         public static object? Resolve(int handle)
         {
