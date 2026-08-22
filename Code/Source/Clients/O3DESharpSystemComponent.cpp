@@ -26,6 +26,7 @@
 
 #include <Render/O3DESharpFeatureProcessor.h>
 #include <Scripting/CoralHostManager.h>
+#include <Scripting/CoralHost.h>
 #include <Scripting/ScriptBindings.h>
 #include <Scripting/CSharpScriptComponent.h>
 #include <Scripting/Reflection/BehaviorContextReflector.h>
@@ -807,17 +808,34 @@ namespace O3DESharp
         }
         AZLOG_INFO("  Hot Reload: %s", config.enableHotReload ? "Enabled" : "Disabled");
 
-        // Initialize the Coral host
-        CoralHostStatus status = m_coralHostManager->Initialize(config);
+        // M3: initialise THROUGH the IManagedHost seam rather than calling the
+        // manager directly, so the editor exercises the same entry point
+        // NativeAotHost will. CoralHost::Initialize forwards to the manager's
+        // own Initialize(config) internally - the manager is still the owner
+        // of CLR bring-up and nothing about that path changed.
+        m_managedHost = AZStd::make_unique<CoralHost>(*m_coralHostManager, config);
+
+        const Abi::NativeImports imports = ScriptBindings::MakeNativeImports();
+        CoralHostStatus status = m_managedHost->Initialize(imports);
 
         switch (status)
         {
         case CoralHostStatus::Success:
             AZLOG_INFO("O3DESharpSystemComponent: Coral host initialized successfully");
-            
+
             // Register the interface so other systems can access the host
             CoralHostManagerInterface::Register(m_coralHostManager.get());
-            
+
+            // M3: register the ABI seam alongside it. Both are live on purpose -
+            // existing consumers keep using ICoralHostManager unchanged, while
+            // anything written against the frozen ABI resolves IManagedHost and
+            // works identically under NativeAotHost later.
+            ManagedHostInterface::Register(m_managedHost.get());
+            AZLOG_INFO(
+                "O3DESharpSystemComponent: IManagedHost registered (ABI v%u, hot-reload %s)",
+                Abi::HostAbiVersion,
+                m_managedHost->SupportsHotReload() ? "supported" : "unsupported");
+
             // Register internal calls (C++ functions exposed to C#)
             RegisterScriptBindings();
             break;
@@ -854,6 +872,19 @@ namespace O3DESharp
 
     void O3DESharpSystemComponent::ShutdownCoralHost()
     {
+        // M3: tear the seam down FIRST. The adapter holds a reference to the
+        // manager, so it must stop being reachable before the manager goes
+        // away - and any consumer holding a ManagedExports pointer must lose
+        // the interface before the ALC those pointers live in is unloaded.
+        if (m_managedHost)
+        {
+            if (ManagedHostInterface::Get() == m_managedHost.get())
+            {
+                ManagedHostInterface::Unregister(m_managedHost.get());
+            }
+            m_managedHost->InvalidateExports();
+        }
+
         if (m_coralHostManager)
         {
             // Unregister the interface first
@@ -864,9 +895,11 @@ namespace O3DESharp
 
             // Shutdown the Coral host
             m_coralHostManager->Shutdown();
-            
+
             AZLOG_INFO("O3DESharpSystemComponent: Coral host shutdown complete");
         }
+
+        m_managedHost.reset();
     }
 
     void O3DESharpSystemComponent::RegisterScriptBindings()

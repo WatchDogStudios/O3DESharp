@@ -131,3 +131,53 @@ def test_new_sources_are_in_the_build_file_list():
                   "Source/Scripting/CoralHost.h",
                   "Source/Scripting/CoralHost.cpp"):
         assert entry in files_cmake, f"{entry} is missing from o3desharp_private_files.cmake"
+
+
+SYSTEM_COMPONENT_H = GEM_ROOT / "Code" / "Source" / "Clients" / "O3DESharpSystemComponent.h"
+SYSTEM_COMPONENT_CPP = GEM_ROOT / "Code" / "Source" / "Clients" / "O3DESharpSystemComponent.cpp"
+
+
+@pytest.mark.unit
+def test_system_component_owns_a_managed_host():
+    header = _read(SYSTEM_COMPONENT_H)
+    assert re.search(r"AZStd::unique_ptr<CoralHost>\s+m_managedHost\s*;", header), (
+        "O3DESharpSystemComponent must own the CoralHost adapter."
+    )
+    assert "AZStd::unique_ptr<CoralHostManager> m_coralHostManager;" in header, (
+        "the existing manager member must survive - M3 wraps it, it does not replace it."
+    )
+
+
+@pytest.mark.unit
+def test_both_interfaces_are_registered_and_unregistered():
+    body = _read(SYSTEM_COMPONENT_CPP)
+    # The pre-existing registration must not be disturbed.
+    assert "CoralHostManagerInterface::Register(m_coralHostManager.get())" in body
+    assert "CoralHostManagerInterface::Unregister(m_coralHostManager.get())" in body
+    # ...and the new seam registered alongside it.
+    assert "ManagedHostInterface::Register(m_managedHost.get())" in body
+    assert "ManagedHostInterface::Unregister(m_managedHost.get())" in body
+
+
+@pytest.mark.unit
+def test_the_host_is_initialised_through_the_abi_struct():
+    body = _read(SYSTEM_COMPONENT_CPP)
+    assert "ScriptBindings::MakeNativeImports()" in body, (
+        "the seam must actually be exercised in the editor path, not just declared."
+    )
+    assert re.search(r"m_managedHost->Initialize\(", body), (
+        "InitializeCoralHost must drive the manager THROUGH CoralHost::Initialize, "
+        "so the editor exercises the same entry point NativeAotHost will."
+    )
+
+
+@pytest.mark.unit
+def test_manager_is_not_initialised_twice():
+    body = _read(SYSTEM_COMPONENT_CPP)
+    # CoralHost::Initialize calls m_manager.Initialize(config). A surviving
+    # direct call here would run CLR bring-up twice and return
+    # AlreadyInitialized on the second, which reads as a spurious warning.
+    assert "m_coralHostManager->Initialize(config)" not in body, (
+        "CoralHost::Initialize already drives the manager; a direct call here "
+        "would initialise it twice."
+    )
