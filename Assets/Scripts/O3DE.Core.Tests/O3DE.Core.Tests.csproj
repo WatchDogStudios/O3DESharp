@@ -46,6 +46,8 @@
     <Compile Include="..\O3DE.Core\Interop\ScriptComponentBridge.cs" Link="O3DE.Core\Interop\ScriptComponentBridge.cs" />
     <Compile Include="..\O3DE.Core\Interop\HostAbi.cs" Link="O3DE.Core\Interop\HostAbi.cs" />
     <Compile Include="..\O3DE.Core\Interop\ScriptTypeRegistry.cs" Link="O3DE.Core\Interop\ScriptTypeRegistry.cs" />
+    <Compile Include="..\O3DE.Core\Interop\ManagedExportsImpl.cs" Link="O3DE.Core\Interop\ManagedExportsImpl.cs" />
+    <Compile Include="..\O3DE.Core\Reflection\EBusHandlerRegistry.cs" Link="O3DE.Core\Reflection\EBusHandlerRegistry.cs" />
   </ItemGroup>
 
   <ItemGroup>
