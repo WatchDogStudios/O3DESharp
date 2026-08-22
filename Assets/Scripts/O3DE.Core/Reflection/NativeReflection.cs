@@ -329,6 +329,47 @@ namespace O3DE.Reflection
         #region EBus
 
         /// <summary>
+        /// Closed-world gate for the shipping NativeAOT build.
+        ///
+        /// Desktop NativeAOT supports only dispatch the generator could see at
+        /// compile time. A pair that is not in the generated table has no
+        /// validated argument shape, and handing an unvalidated argument blob to
+        /// BehaviorContext is memory-unsafe rather than merely wrong - so this
+        /// throws before the native call, never after.
+        ///
+        /// Throwing rather than returning null is the point: a null return is
+        /// indistinguishable from "no handlers were listening", which is exactly
+        /// the silent degrade the design rules out. The message names the site
+        /// and points at the build warning that predicted it.
+        ///
+        /// Compiled out entirely in the editor build.
+        /// </summary>
+        [System.Diagnostics.Conditional("O3DE_HOST_NATIVEAOT")]
+        private static void EnsureStaticallyDispatchable(string busName, string eventName, int argCount)
+        {
+#if O3DE_HOST_NATIVEAOT
+            if (!StaticEBusDispatch.TryGetShape(busName, eventName, out int arity, out _))
+            {
+                throw new NotSupportedException(
+                    $"EBus dispatch '{busName}.{eventName}' is not in this NativeAOT image's static " +
+                    $"dispatch table ({StaticEBusDispatch.EntryCount} entries, built from " +
+                    "reflection_data.json). Desktop NativeAOT supports closed-world dispatch only; " +
+                    "the build reported O3DESHARP1001 for any call site whose bus or event name is " +
+                    "not a compile-time constant. Constant-fold the name, regenerate " +
+                    "reflection_data.json if the bus is new, or ship the Mono backend.");
+            }
+
+            if (argCount != arity)
+            {
+                throw new NotSupportedException(
+                    $"EBus dispatch '{busName}.{eventName}' expects {arity} argument(s) but was " +
+                    $"given {argCount}. This NativeAOT image was built against a reflection_data.json " +
+                    "in which the event had a different signature; regenerate it and republish.");
+            }
+#endif
+        }
+
+        /// <summary>
         /// Broadcast an event on an EBus (sends to all handlers).
         /// </summary>
         /// <param name="busName">The EBus name</param>
@@ -337,6 +378,7 @@ namespace O3DE.Reflection
         /// <returns>The result if the event has a return value</returns>
         public static object? BroadcastEBusEvent(string busName, string eventName, params object[] args)
         {
+            EnsureStaticallyDispatchable(busName, eventName, args?.Length ?? 0);
             string argsJson = SerializeArguments(args);
             string resultJson;
             unsafe { resultJson = ReflectionInternalCalls.Reflection_BroadcastEBusEvent(busName, eventName, argsJson); }
@@ -424,6 +466,7 @@ namespace O3DE.Reflection
         /// <returns>The result if the event has a return value</returns>
         public static object? SendEBusEvent(string busName, string eventName, ulong entityId, params object[] args)
         {
+            EnsureStaticallyDispatchable(busName, eventName, args?.Length ?? 0);
             string argsJson = SerializeArguments(args);
             string resultJson;
             unsafe { resultJson = ReflectionInternalCalls.Reflection_SendEBusEvent(busName, eventName, (long)entityId, argsJson); }
