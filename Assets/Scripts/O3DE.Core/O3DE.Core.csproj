@@ -75,6 +75,25 @@
 
   <PropertyGroup Condition="'$(O3DESharpHostMode)' == 'NativeAot'">
     <DefineConstants>$(DefineConstants);O3DE_HOST_NATIVEAOT</DefineConstants>
+
+    <!--
+      IsAotCompatible turns on the trim, AOT and single-file analyzers. An
+      IL2xxx/IL3xxx warning in a NativeAOT build is a runtime failure waiting
+      to happen - reflection over a type the compiler removed, or serialization
+      that needs codegen the image does not have - so they are errors here,
+      not warnings that accumulate unnoticed.
+
+      Scoped to this mode only. The editor build is behaviour-preserving in M3
+      and must not gain new failure modes; HotReloadManager.cs is compiled in
+      Coral mode and would legitimately warn there.
+
+      Note this does NOT enable trimming of the CoreCLR artifacts - nothing in
+      this repo sets PublishTrimmed. NativeAOT necessarily eliminates dead code
+      as part of compiling, which is a property of the toolchain rather than an
+      opt-in here.
+    -->
+    <IsAotCompatible>true</IsAotCompatible>
+    <WarningsAsErrors>$(WarningsAsErrors);IL2026;IL2072;IL2075;IL3050;IL3051</WarningsAsErrors>
   </PropertyGroup>
 
   <PropertyGroup Condition="'$(O3DESharpHostMode)' != 'NativeAot'">
