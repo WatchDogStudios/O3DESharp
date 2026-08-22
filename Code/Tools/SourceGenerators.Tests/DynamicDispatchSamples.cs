@@ -7,6 +7,7 @@
 
 using O3DE;
 using O3DE.Reflection;
+using static O3DE.Reflection.NativeReflection;
 
 namespace O3DESharp.SourceGenerators.Smoke
 {
@@ -36,5 +37,36 @@ namespace O3DESharp.SourceGenerators.Smoke
             NativeReflection.SendEBusEvent(bus, evt, entityId); // OPEN-WORLD
             NativeReflection.BroadcastEBusEvent($"{bus}Notifications", "OnTick", dt); // OPEN-WORLD
         }
+
+        // Reached via `using static O3DE.Reflection.NativeReflection;` above,
+        // so the invocation expression is an unqualified IdentifierNameSyntax
+        // rather than a MemberAccessExpressionSyntax. Regression case for the
+        // syntactic pre-filter that used to only accept the qualified shape
+        // and silently skipped this one.
+        public static void UnqualifiedRuntimeComputedNames(string bus, float dt)
+        {
+            BroadcastEBusEvent(bus, "OnTick", dt); // OPEN-WORLD
+        }
+
+        // Same method names, unrelated type. Proves the analyzer's semantic
+        // ContainingType check - not just the method name - is what decides
+        // correctness: these look exactly like the open-world calls above,
+        // but must NOT warn.
+        public static void UnrelatedTypeSameMethodNames(string bus, string evt, float dt)
+        {
+            NotNativeReflection.BroadcastEBusEvent(bus, "OnTick", dt); // UNRELATED-TYPE-NO-WARN
+            NotNativeReflection.SendEBusEvent(bus, evt, dt); // UNRELATED-TYPE-NO-WARN
+        }
+    }
+
+    /// <summary>
+    /// Unrelated type with method names that collide with NativeReflection's
+    /// EBus API. Exists only so DynamicDispatchSamples.UnrelatedTypeSameMethodNames
+    /// can prove the analyzer discriminates by ContainingType, not by name.
+    /// </summary>
+    public static class NotNativeReflection
+    {
+        public static object? BroadcastEBusEvent(string busName, string eventName, params object[] args) => null;
+        public static object? SendEBusEvent(string busName, string eventName, params object[] args) => null;
     }
 }

@@ -75,6 +75,23 @@ def test_every_dynamic_site_is_flagged():
 
 
 @pytest.mark.slow
+def test_unrelated_type_with_same_method_names_is_silent():
+    # Same-named BroadcastEBusEvent/SendEBusEvent on a type that is NOT
+    # NativeReflection, called with genuinely dynamic (non-constant) args.
+    # Proves the analyzer's semantic ContainingType check - not just the
+    # method name - is what decides correctness.
+    output = _build()
+    text = SAMPLES.read_text(encoding="utf-8").splitlines()
+    unrelated = {i + 1 for i, line in enumerate(text) if "// UNRELATED-TYPE-NO-WARN" in line}
+    assert unrelated, "fixture is missing its UNRELATED-TYPE-NO-WARN tagged lines"
+    warned = {int(n) for n in re.findall(r"DynamicDispatchSamples\.cs\((\d+),\d+\): warning O3DESHARP1001", output)}
+    assert not (unrelated & warned), (
+        f"calls to a same-named method on an unrelated type must NOT warn; these did: "
+        f"{sorted(unrelated & warned)}. The ContainingType check is not discriminating correctly."
+    )
+
+
+@pytest.mark.slow
 def test_the_message_names_the_api_and_the_reason():
     output = _build()
     line = next((l for l in output.splitlines() if "O3DESHARP1001" in l), None)

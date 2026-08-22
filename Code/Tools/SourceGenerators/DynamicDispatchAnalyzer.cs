@@ -76,11 +76,22 @@ namespace O3DESharp.SourceGenerators
             var invocation = (InvocationExpressionSyntax)context.Node;
 
             // Cheap syntactic reject first: only four method names matter.
-            if (invocation.Expression is not MemberAccessExpressionSyntax member)
+            // Two syntax shapes reach here - `NativeReflection.Foo(...)`
+            // (MemberAccessExpressionSyntax) and an unqualified `Foo(...)`
+            // via `using static O3DE.Reflection.NativeReflection;`
+            // (IdentifierNameSyntax). The semantic ContainingType check
+            // below is what actually decides correctness in both cases;
+            // this is just a cheap pre-reject on the name.
+            string? methodName = invocation.Expression switch
+            {
+                MemberAccessExpressionSyntax member => member.Name.Identifier.Text,
+                IdentifierNameSyntax identifier => identifier.Identifier.Text,
+                _ => null,
+            };
+            if (methodName is null)
             {
                 return;
             }
-            string methodName = member.Name.Identifier.Text;
             if (methodName != BroadcastName && methodName != SendName &&
                 methodName != BroadcastResultName && methodName != SendResultName)
             {
@@ -94,6 +105,21 @@ namespace O3DESharp.SourceGenerators
                 return;
             }
             if (symbol.ContainingType?.ToDisplayString() != NativeReflectionFullName)
+            {
+                return;
+            }
+
+            // NativeReflection's own Result-suffixed wrappers forward their
+            // (necessarily non-constant, they're just method parameters) bus
+            // and event names to the plain Broadcast/Send methods internally
+            // - e.g. BroadcastResultEBusEvent calls BroadcastEBusEvent(busName,
+            // eventName, args). That's implementation plumbing inside
+            // NativeReflection itself, not a game call site the closed-world
+            // generator ever sees, and it would otherwise warn unconditionally
+            // on every use of the Result variants regardless of what the real
+            // caller passed. Skip it; the outer call (if reached from game
+            // code) is what actually gets analyzed.
+            if (context.ContainingSymbol?.ContainingType?.ToDisplayString() == NativeReflectionFullName)
             {
                 return;
             }
