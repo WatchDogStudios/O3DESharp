@@ -57,6 +57,21 @@
     -->
     <PackageReference Include="Microsoft.CodeAnalysis.CSharp" Version="4.4.0" PrivateAssets="all" />
     <PackageReference Include="Microsoft.CodeAnalysis.Analyzers" Version="3.3.4" PrivateAssets="all" />
+
+    <!--
+      StaticDispatchGenerator reads reflection_data.json. GeneratePathProperty +
+      the analyzer packaging below is the standard way to make a dependency
+      available INSIDE the compiler process - a plain PackageReference would be
+      resolved for the consumer, not for the analyzer host.
+    -->
+    <PackageReference Include="System.Text.Json" Version="8.0.5" GeneratePathProperty="true" PrivateAssets="all" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <None Include="$(PkgSystem_Text_Json)\lib\netstandard2.0\System.Text.Json.dll"
+          Pack="true" PackagePath="analyzers/dotnet/cs" Visible="false" />
+    <None Include="$(PkgSystem_Text_Json)\lib\netstandard2.0\System.Text.Json.dll"
+          CopyToOutputDirectory="PreserveNewest" Visible="false" />
   </ItemGroup>
 
   <!--

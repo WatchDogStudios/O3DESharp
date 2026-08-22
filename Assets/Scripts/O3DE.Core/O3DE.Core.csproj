@@ -150,6 +150,26 @@
   </ItemGroup>
 
   <!--
+    The reflected script surface, as dumped by the C++ ReflectionDataExporter.
+    StaticDispatchGenerator reads it to emit a compile-time (bus, event) table
+    so the shipping build can validate a dispatch without managed reflection.
+
+    Overridable so tests can point at a fixture. Absent is a normal state on a
+    fresh clone - the generator emits an empty table and the build succeeds.
+  -->
+  <PropertyGroup>
+    <O3DESharpReflectionData Condition="'$(O3DESharpReflectionData)' == ''">$(MSBuildThisFileDirectory)..\..\..\reflection_data.json</O3DESharpReflectionData>
+  </PropertyGroup>
+
+  <ItemGroup Condition="Exists('$(O3DESharpReflectionData)')">
+    <AdditionalFiles Include="$(O3DESharpReflectionData)" O3DESharpKind="ReflectionData" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <CompilerVisibleItemMetadata Include="AdditionalFiles" MetadataName="O3DESharpKind" />
+  </ItemGroup>
+
+  <!--
     Phase 18-E: O3DESharp source generators. The reference is marked
     OutputItemType=Analyzer so MSBuild loads the assembly as a Roslyn
     component rather than a regular reference. ReferenceOutputAssembly=
