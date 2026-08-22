@@ -46,6 +46,41 @@
     <Optimize Condition="'$(Configuration)' == 'Debug'">false</Optimize>
   </PropertyGroup>
 
+  <!--
+    M3 build-mode split. Coral (CoreCLR hosting, hot-reload, reflection) and
+    NativeAOT (static, no JIT, no hostfxr) are mutually exclusive PER BUILD
+    ARTIFACT - a NativeAOT image has nothing for nethost -> hostfxr to attach
+    to. They are two artifacts from one codebase, never a runtime switch.
+
+    This is a property rather than a fourth Configuration because the engine
+    slnx, CMake's include_external_msproject and the Configurations list above
+    are all wired for Debug/Profile/Release, and host mode is orthogonal to
+    optimisation level anyway (a Release Coral build and a Release NativeAOT
+    build are both wanted).
+
+    Default is Coral: everything that exists today keeps building exactly as
+    it did. Only the M4 publish passes -p:O3DESharpHostMode=NativeAot.
+  -->
+  <PropertyGroup>
+    <O3DESharpHostMode Condition="'$(O3DESharpHostMode)' == ''">Coral</O3DESharpHostMode>
+
+    <!--
+      O3DE.Core is the ONE assembly that carries the ManagedExports thunks.
+      ManagedExports is a single well-known type; if every consumer assembly
+      emitted its own copy the name would resolve ambiguously as soon as two
+      of them were referenced together.
+    -->
+    <O3DESharpEmitHostExports>true</O3DESharpEmitHostExports>
+  </PropertyGroup>
+
+  <PropertyGroup Condition="'$(O3DESharpHostMode)' == 'NativeAot'">
+    <DefineConstants>$(DefineConstants);O3DE_HOST_NATIVEAOT</DefineConstants>
+  </PropertyGroup>
+
+  <PropertyGroup Condition="'$(O3DESharpHostMode)' != 'NativeAot'">
+    <DefineConstants>$(DefineConstants);O3DE_HOST_CORAL</DefineConstants>
+  </PropertyGroup>
+
   <PropertyGroup Condition="'$(Configuration)' == 'Debug'">
     <DefineConstants>DEBUG;TRACE;O3DE_DEBUG</DefineConstants>
     <!--
@@ -82,6 +117,17 @@
       <HintPath>..\..\..\bin\Coral\Coral.Managed.dll</HintPath>
       <Private>false</Private>
     </Reference>
+  </ItemGroup>
+
+  <!--
+    Roslyn generators read MSBuild properties through AnalyzerConfigOptions,
+    but only ones explicitly published as CompilerVisibleProperty. Without
+    these two lines HostExportsGenerator sees neither the host mode nor the
+    emit flag and silently emits nothing.
+  -->
+  <ItemGroup>
+    <CompilerVisibleProperty Include="O3DESharpHostMode" />
+    <CompilerVisibleProperty Include="O3DESharpEmitHostExports" />
   </ItemGroup>
 
   <!--
