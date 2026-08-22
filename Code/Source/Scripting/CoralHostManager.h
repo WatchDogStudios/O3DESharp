@@ -25,6 +25,8 @@
 #include <Coral/Type.hpp>
 #include <Coral/ManagedObject.hpp>
 
+#include <Scripting/HostAbi.h>
+
 namespace O3DESharp
 {
     /**
@@ -53,19 +55,9 @@ namespace O3DESharp
         bool enableHotReload = true;            // Enable assembly hot-reloading
     };
 
-    /**
-     * Result of host initialization
-     */
-    enum class CoralHostStatus
-    {
-        Success,
-        NotInitialized,
-        CoralManagedNotFound,
-        CoralInitError,
-        DotNetNotFound,
-        AssemblyLoadFailed,
-        AlreadyInitialized
-    };
+    // CoralHostStatus now lives in HostAbi.h (included above) so that
+    // IManagedHost.h can see it without pulling in Coral headers. Kept as a
+    // single definition - see HostAbi.h for the enum and the rationale.
 
     /**
      * Interface for the Coral Host Manager - allows other systems to interact with C# scripting

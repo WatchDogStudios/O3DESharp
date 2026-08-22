@@ -11,6 +11,7 @@
 #include <AzCore/Memory/SystemAllocator.h>
 
 #include <Scripting/IManagedHost.h>
+#include <Scripting/CoralHostManager.h>
 #include <Scripting/CoralNativeThunkHost.h>
 
 namespace O3DESharp

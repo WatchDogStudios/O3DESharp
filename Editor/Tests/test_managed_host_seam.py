@@ -55,20 +55,42 @@ def test_coral_host_implements_all_four():
 
 
 @pytest.mark.unit
-def test_make_native_imports_assigns_every_abi_field():
+def test_make_native_imports_assigns_every_abi_field_in_order_to_the_matching_function():
+    # HostAbi.h field declaration order IS the source of truth for the ABI.
     abi_fields = re.findall(r"void\*\s+(\w+)\s*;", _read(HOST_ABI_H))
     native_imports = abi_fields[: abi_fields.index("Component_HasComponent") + 1]
 
     body = _read(SCRIPT_BINDINGS_CPP)
     m = re.search(r"MakeNativeImports\s*\(\s*\)", body)
     assert m, "ScriptBindings::MakeNativeImports must exist."
-    tail = body[m.end():]
+    # Bound the scan to just this function's body, not the rest of the file.
+    end = body.index("return imports;", m.end())
+    func_body = body[m.end():end]
 
-    missing = [f for f in native_imports if not re.search(rf"imports\.{f}\s*=", tail)]
-    assert not missing, (
-        f"MakeNativeImports leaves these ABI fields unassigned: {missing}. "
-        "An unassigned field is a null pointer the managed side may call."
+    # Ordered (field, function) pairs as they actually appear in the
+    # assignment sequence - this is the pairing that would catch a
+    # copy-paste swap between two adjacent fields (e.g. Transform_GetForward
+    # accidentally assigned &Transform_GetUp), which an unordered
+    # presence-only check cannot.
+    assignments = re.findall(r"imports\.(\w+)\s*=\s*reinterpret_cast<void\*>\(&(\w+)\)\s*;", func_body)
+
+    assert len(assignments) == len(native_imports), (
+        f"MakeNativeImports has {len(assignments)} field assignments, expected "
+        f"{len(native_imports)} (one per NativeImports field). An unassigned "
+        "field is a null pointer the managed side may call."
     )
+
+    for index, (expected_field, (assigned_field, assigned_fn)) in enumerate(zip(native_imports, assignments)):
+        assert assigned_field == expected_field, (
+            f"MakeNativeImports assignment #{index} is for '{assigned_field}', but "
+            f"HostAbi.h declares field #{index} as '{expected_field}'. Assignment "
+            "order must match declaration order exactly."
+        )
+        assert assigned_fn == expected_field, (
+            f"MakeNativeImports assigns imports.{assigned_field} the address of "
+            f"'{assigned_fn}', a name mismatch. Every field must be assigned the "
+            "address of the identically-named function."
+        )
 
 
 @pytest.mark.unit

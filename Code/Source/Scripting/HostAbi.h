@@ -10,6 +10,26 @@
 
 #include <AzCore/base.h>
 
+namespace O3DESharp
+{
+    //! Result of host initialization. Lives here (not in CoralHostManager.h)
+    //! so that IManagedHost.h - the seam every backend, including the
+    //! Coral-free NativeAotHost, implements - can see this type without
+    //! transitively pulling in CoralHostManager.h's Coral/HostInstance.hpp
+    //! etc. CoralHostManager.h includes this header for the same enum rather
+    //! than redeclaring it.
+    enum class CoralHostStatus
+    {
+        Success,
+        NotInitialized,
+        CoralManagedNotFound,
+        CoralInitError,
+        DotNetNotFound,
+        AssemblyLoadFailed,
+        AlreadyInitialized
+    };
+} // namespace O3DESharp
+
 namespace O3DESharp::Abi
 {
     //! Version of the frozen C++ <-> managed ABI. MUST equal

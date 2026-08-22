@@ -51,9 +51,19 @@ namespace O3DESharp
         // AddInternalCall/UploadInternalCalls upload of exactly these pointers.
         // Nothing about that path changes here.
         const CoralHostStatus status = m_manager.Initialize(m_config);
-        if (status != CoralHostStatus::Success)
+        if (status != CoralHostStatus::Success && status != CoralHostStatus::AlreadyInitialized)
         {
             return status;
+        }
+
+        if (status == CoralHostStatus::AlreadyInitialized)
+        {
+            // Not an error - CoralHostManager.cpp:122-126 returns this when
+            // some earlier caller already brought the CLR up. This CoralHost
+            // instance's own state (m_thunkHost, m_exportsValid) still needs
+            // wiring below, or GetExports() would wrongly and silently return
+            // nullptr forever with nothing in the log to explain why.
+            AZLOG_INFO("CoralHost::Initialize - manager already initialized; proceeding to wire exports");
         }
 
         m_thunkHost.SetHost(m_manager.GetHostInstance(), m_manager.GetScriptsDirectory());

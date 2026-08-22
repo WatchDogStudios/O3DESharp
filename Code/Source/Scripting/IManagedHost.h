@@ -12,7 +12,6 @@
 #include <AzCore/Interface/Interface.h>
 
 #include <Scripting/HostAbi.h>
-#include <Scripting/CoralHostManager.h>
 
 namespace O3DESharp
 {
