@@ -19,6 +19,24 @@
   -->
 
   <PropertyGroup>
+    <!--
+      Restore inherits PublishAot/RuntimeIdentifier from whichever project is
+      being NativeAOT-published (O3DE.Core.csproj's M4 publish path): MSBuild's
+      restore-graph walk (NuGet.targets' _GenerateRestoreProjectPathWalk)
+      propagates the command line's global properties to EVERY project reached
+      via ProjectReference, including this Analyzer-only one
+      (ReferenceOutputAssembly=false does not exempt it - that only stops the
+      output assembly from being linked, not the restore walk). Left alone,
+      Microsoft.NET.Publish.targets infers _RequiresILLinkPack=true purely from
+      the inherited PublishAot=true, which makes ProcessFrameworkReferences run
+      here too and fail restore with NETSDK1207 ("AOT compilation is not
+      supported for the target framework") - this project targets
+      netstandard2.0 because Roslyn analyzers require it, and is never itself
+      AOT-published. Pinning this false (a plain, non-global property) is not
+      overridden by the SDK's own conditional default further down, because
+      Sdk.targets imports after this project content evaluates.
+    -->
+    <_RequiresILLinkPack>false</_RequiresILLinkPack>
     <TargetFramework>netstandard2.0</TargetFramework>
     <ImplicitUsings>disable</ImplicitUsings>
     <Nullable>enable</Nullable>

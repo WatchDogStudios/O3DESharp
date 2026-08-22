@@ -184,14 +184,47 @@
     the user writing any of the Connect/Disconnect/dispatch glue.
   -->
   <ItemGroup>
+    <!--
+      GlobalPropertiesToRemove: ReferenceOutputAssembly="false" only stops
+      the analyzer's output from being linked into O3DE.Core - it does NOT
+      stop MSBuild's ProjectReference protocol from flowing this project's
+      own global properties (Configuration/RuntimeIdentifier/PublishAot/...)
+      down into the referenced project's restore+build. Since the analyzer
+      is netstandard2.0, letting PublishAot/RuntimeIdentifier leak in makes
+      restore fail with NETSDK1207 ("AOT compilation is not supported for
+      the target framework") the moment O3DE.Core itself is published AOT.
+      The analyzer doesn't need any of these to build.
+    -->
     <ProjectReference Include="..\..\..\Code\Tools\SourceGenerators\O3DESharp.SourceGenerators.csproj"
                       OutputItemType="Analyzer"
-                      ReferenceOutputAssembly="false" />
+                      ReferenceOutputAssembly="false"
+                      SkipGetTargetFrameworkProperties="true"
+                      GlobalPropertiesToRemove="RuntimeIdentifier;PublishAot;SelfContained;PublishReadyToRun;PublishSingleFile;PublishTrimmed" />
   </ItemGroup>
 
-  <!-- 
+  <!--
     Note: .NET SDK projects automatically include all *.cs files in the project directory.
     Do NOT add explicit <Compile Include="..." /> items - this causes NETSDK1022 duplicate errors.
   -->
+
+  <!--
+    NativeAOT's own SDK (Microsoft.DotNet.ILCompiler's Microsoft.NETCore.Native.Publish.targets,
+    target CopyNativeBinary) copies the shared library and its debug symbols into $(PublishDir)
+    AfterTargets="Publish", but never the Windows import library ($(TargetName).lib) or its
+    companion .exp, even though ILCompiler always produces both alongside the .dll for
+    NativeLib=Shared - they are left behind in the native intermediate output directory. Mirror
+    that same AfterTargets="Publish" shape here so a NativeAOT publish output directory is
+    actually complete: a native consumer statically linking against the exported symbols needs
+    the .lib, and o3desharp_nativeaot_publish.cmake (Task 17) deploys this directory verbatim.
+  -->
+  <Target Name="O3DESharpCopyNativeImportLib" AfterTargets="Publish"
+          Condition="'$(NativeLib)' == 'Shared' And '$(OS)' == 'Windows_NT'">
+    <ItemGroup>
+      <_O3DESharpNativeImportLibFiles Include="$(NativeOutputPath)$(TargetName).lib;$(NativeOutputPath)$(TargetName).exp"
+                                       Condition="Exists('$(NativeOutputPath)$(TargetName).lib')" />
+    </ItemGroup>
+    <Copy SourceFiles="@(_O3DESharpNativeImportLibFiles)" DestinationFolder="$(PublishDir)"
+          Condition="'@(_O3DESharpNativeImportLibFiles)' != ''" />
+  </Target>
 
 </Project>

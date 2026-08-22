@@ -284,6 +284,20 @@ if(O3DESHARP_BUNDLE_DOTNET_RUNTIME)
     endif()
 endif()
 
+# Publish O3DE.Core as a NativeAOT shared library for the shipping desktop build
+# (M4, experimental). OFF keeps the Coral/CoreCLR path as the only artifact.
+# The two are mutually exclusive per launcher, never a runtime switch.
+option(O3DESHARP_PUBLISH_NATIVEAOT
+    "Publish O3DE.Core as a NativeAOT shared library for shipping (experimental)" OFF)
+
+if(O3DESHARP_PUBLISH_NATIVEAOT)
+    include(o3desharp_nativeaot_publish.cmake)
+    o3de_sharp_publish_nativeaot(O3DESHARP_NATIVEAOT_DIR)
+    if(TARGET ${gem_name}.PublishNativeAot)
+        message(STATUS "O3DESharp: NativeAOT image -> ${O3DESHARP_NATIVEAOT_DIR}")
+    endif()
+endif()
+
 get_property(gem_root_for_bindings GLOBAL PROPERTY "@GEMROOT:${gem_name}@")
 set(BINDING_GENERATOR_SOURCE_DIR "${gem_root_for_bindings}/Code/Tools/BindingGenerator")
 set(BINDING_GENERATOR_BINARY_DIR "${CMAKE_BINARY_DIR}/Gems/O3DESharp/BindingGenerator")
@@ -594,6 +608,30 @@ if(O3DESHARP_BUNDLE_DOTNET_RUNTIME AND TARGET ${gem_name}.StageRuntimeBundle)
         message(STATUS "O3DESharp: private .NET runtime bundle will be deployed to Bin/Scripts/dotnet/ for runtime and export")
     else()
         message(STATUS "O3DESharp: runtime bundle not yet built at ${O3DESHARP_RUNTIME_BUNDLE_DIR} - build ${gem_name}.StageRuntimeBundle then re-run CMake configure to deploy it")
+    endif()
+endif()
+
+# Deploy the NativeAOT scripting image (M4, opt-in via
+# O3DESHARP_PUBLISH_NATIVEAOT) into Bin/Scripts/aot - deliberately NOT
+# Bin/Scripts, where the managed O3DE.Core.dll lives. The native image has the
+# same filename, and a launcher that loaded the wrong one would fail in a way
+# that reads as an unrelated bug. Keeping them in sibling directories makes the
+# artifact a launcher uses an explicit choice.
+#
+# Same first-configure caveat as the runtime bundle: PublishNativeAot only
+# produces the directory at BUILD time, so build that target once and re-run
+# CMake configure for the glob to pick it up.
+if(O3DESHARP_PUBLISH_NATIVEAOT AND TARGET ${gem_name}.PublishNativeAot)
+    file(GLOB O3DESHARP_NATIVEAOT_FILES "${O3DESHARP_NATIVEAOT_DIR}/*")
+    if(O3DESHARP_NATIVEAOT_FILES)
+        ly_add_target_files(
+            TARGETS ${gem_name}.Clients ${gem_name}.Servers ${gem_name}.Unified
+            FILES ${O3DESHARP_NATIVEAOT_FILES}
+            OUTPUT_SUBDIRECTORY "Bin/Scripts/aot"
+        )
+        message(STATUS "O3DESharp: NativeAOT scripting image will be deployed to Bin/Scripts/aot/")
+    else()
+        message(STATUS "O3DESharp: NativeAOT image not yet built at ${O3DESHARP_NATIVEAOT_DIR} - build ${gem_name}.PublishNativeAot then re-run CMake configure to deploy it")
     endif()
 endif()
 
