@@ -72,6 +72,15 @@ function(o3de_sharp_publish_nativeaot out_dir_var)
         VERBATIM
     )
 
+    # The O3DE.Core csproj references Coral via HintPath into the staged
+    # bin/Coral/Coral.Managed.dll (produced by StageCoral, not tracked in git -
+    # see .gitignore), so this publish must run after Coral is staged, not
+    # just after it is built. Same hazard, same guard as the sibling O3DE.Core
+    # custom target in CMakeLists.txt.
+    if(TARGET ${gem_name}.StageCoral)
+        add_dependencies(${gem_name}.PublishNativeAot ${gem_name}.StageCoral)
+    endif()
+
     # Computed locally rather than relying on the including file's
     # relative_o3desharp_gem_root, which is referenced above its own assignment
     # in CMakeLists.txt - same reasoning as o3desharp_runtime_bundle.cmake.

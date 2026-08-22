@@ -33,8 +33,19 @@
       supported for the target framework") - this project targets
       netstandard2.0 because Roslyn analyzers require it, and is never itself
       AOT-published. Pinning this false (a plain, non-global property) is not
-      overridden by the SDK's own conditional default further down, because
-      Sdk.targets imports after this project content evaluates.
+      overridden by the SDK's own conditional default further down: that
+      default lives inside a target guarded by Condition="'$(_RequiresILLinkPack)'
+      == ''", evaluated at build time, and _RequiresILLinkPack itself is never
+      a global property (unlike PublishAot, which arrives as a genuinely
+      global property and would beat any project-level override of the same
+      name - setting PublishAot=false here would NOT have worked).
+
+      Safe only while this project stays netstandard2.0 - the SDK's
+      analyzer-inference rules that would otherwise need _RequiresILLinkPack
+      are all gated on TargetFrameworkIdentifier == .NETCoreApp. If this
+      project is ever retargeted to a .NETCoreApp TFM with IsAotCompatible /
+      IsTrimmable set, this pin would silently suppress the ILLink pack with
+      no diagnostic - revisit then.
     -->
     <_RequiresILLinkPack>false</_RequiresILLinkPack>
     <TargetFramework>netstandard2.0</TargetFramework>
