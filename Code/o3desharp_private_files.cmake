@@ -23,6 +23,8 @@ set(FILES
     Source/Scripting/IManagedHost.h
     Source/Scripting/CoralHost.h
     Source/Scripting/CoralHost.cpp
+    Source/Scripting/NativeAotHost.h
+    Source/Scripting/NativeAotHost.cpp
     Source/Scripting/CoralHostManager.h
     Source/Scripting/CoralHostManager.cpp
     Source/Scripting/CoralNativeThunkHost.h
