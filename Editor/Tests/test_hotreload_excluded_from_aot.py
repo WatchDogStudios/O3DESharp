@@ -43,9 +43,10 @@ def test_file_is_guarded_by_the_host_mode_symbol():
 def test_file_still_has_no_callers():
     # The guard is only safe while nothing references it. If a caller appears,
     # that caller needs guarding too - and this test is the reminder.
+    # Scan the entire repo (Assets/ and Code/ and any other C# sources).
     hits = []
-    for path in (GEM_ROOT / "Assets").rglob("*.cs"):
-        if path == HOT_RELOAD or "obj" in path.parts or "bin" in path.parts:
+    for path in GEM_ROOT.rglob("*.cs"):
+        if path == HOT_RELOAD or any(part in ("obj", "bin", ".git", ".claude", ".worktrees", ".superpowers") for part in path.parts):
             continue
         if "HotReloadManager" in path.read_text(encoding="utf-8", errors="ignore"):
             hits.append(str(path))
