@@ -82,7 +82,7 @@
   </PropertyGroup>
 
   <PropertyGroup Condition="'$(Configuration)' == 'Debug'">
-    <DefineConstants>DEBUG;TRACE;O3DE_DEBUG</DefineConstants>
+    <DefineConstants>$(DefineConstants);DEBUG;TRACE;O3DE_DEBUG</DefineConstants>
     <!--
       vsdbg / Rider / VS managed attach against an embedded CoreCLR
       (Coral delegate-host mode) was returning E_INVALIDARG from
@@ -103,11 +103,11 @@
   </PropertyGroup>
 
   <PropertyGroup Condition="'$(Configuration)' == 'Profile'">
-    <DefineConstants>TRACE;O3DE_PROFILE</DefineConstants>
+    <DefineConstants>$(DefineConstants);TRACE;O3DE_PROFILE</DefineConstants>
   </PropertyGroup>
 
   <PropertyGroup Condition="'$(Configuration)' == 'Release'">
-    <DefineConstants>TRACE;O3DE_RELEASE</DefineConstants>
+    <DefineConstants>$(DefineConstants);TRACE;O3DE_RELEASE</DefineConstants>
   </PropertyGroup>
 
   <!-- Reference to Coral.Managed for interop support -->
