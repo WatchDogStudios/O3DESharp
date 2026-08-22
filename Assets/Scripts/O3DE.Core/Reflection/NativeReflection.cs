@@ -12,6 +12,8 @@ using System.Runtime.CompilerServices;
 using System.Text.Json;
 using Coral.Managed.Interop;
 
+[assembly: System.Runtime.CompilerServices.InternalsVisibleTo("O3DE.Core.Tests")]
+
 namespace O3DE.Reflection
 {
     /// <summary>
@@ -539,8 +541,17 @@ namespace O3DE.Reflection
                 elements.Add(SerializeArgumentToObject(arg));
             }
 
-            return JsonSerializer.Serialize(elements);
+            return JsonSerializer.Serialize(elements, NativeReflectionJsonContext.Default.ListObject);
         }
+
+        /// <summary>
+        /// Test seam over <c>SerializeArguments</c>. The wire format is a
+        /// contract with the C++ marshaler
+        /// (O3DESharp::Marshaling::JsonValueToBehaviorParameter) and a change
+        /// to it breaks every EBus call silently at runtime, so it is asserted
+        /// directly rather than inferred from a round trip.
+        /// </summary>
+        internal static string SerializeArgumentsForTest(object[] args) => SerializeArguments(args);
 
         private static object? SerializeArgumentToObject(object arg)
         {
@@ -580,7 +591,13 @@ namespace O3DE.Reflection
 
         private static string SerializeValue(object value)
         {
-            return JsonSerializer.Serialize(SerializeArgumentToObject(value));
+            // Wrapped in a single-element list so the one registered
+            // List<object?> type info covers both call sites; the context does
+            // not need a second bare-object entry point.
+            var single = new List<object?> { SerializeArgumentToObject(value) };
+            string json = JsonSerializer.Serialize(single, NativeReflectionJsonContext.Default.ListObject);
+            // Strip the wrapping brackets to preserve the previous bare-value shape.
+            return json.Substring(1, json.Length - 2);
         }
 
         /// <summary>
