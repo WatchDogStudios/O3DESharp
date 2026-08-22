@@ -121,6 +121,76 @@ namespace O3DESharp
         AZLOG_INFO("ScriptBindings: Internal calls registered successfully");
     }
 
+    Abi::NativeImports ScriptBindings::MakeNativeImports()
+    {
+        // Field order here IS the ABI and must match, exactly:
+        //   Assets/Scripts/O3DE.Core/Interop/HostAbi.cs
+        //   Code/Source/Scripting/HostAbi.h
+        //   Assets/Scripts/O3DE.Core/InternalCalls.cs
+        // Editor/Tests/test_host_abi_contract.py fails the build if the three
+        // declarations drift; test_managed_host_seam.py fails if any field here
+        // is left unassigned, because an unassigned field is a null pointer the
+        // managed side may call.
+        Abi::NativeImports imports{};
+        imports.version = Abi::HostAbiVersion;
+
+        imports.Log_Info = reinterpret_cast<void*>(&Log_Info);
+        imports.Log_Warning = reinterpret_cast<void*>(&Log_Warning);
+        imports.Log_Error = reinterpret_cast<void*>(&Log_Error);
+
+        imports.Entity_IsValid = reinterpret_cast<void*>(&Entity_IsValid);
+        imports.Entity_GetName = reinterpret_cast<void*>(&Entity_GetName);
+        imports.Entity_SetName = reinterpret_cast<void*>(&Entity_SetName);
+        imports.Entity_IsActive = reinterpret_cast<void*>(&Entity_IsActive);
+        imports.Entity_Activate = reinterpret_cast<void*>(&Entity_Activate);
+        imports.Entity_Deactivate = reinterpret_cast<void*>(&Entity_Deactivate);
+        imports.Entity_Destroy = reinterpret_cast<void*>(&Entity_Destroy);
+        imports.Entity_FindByName = reinterpret_cast<void*>(&Entity_FindByName);
+        imports.Entity_GetChildCount = reinterpret_cast<void*>(&Entity_GetChildCount);
+        imports.Entity_GetChildAtIndex = reinterpret_cast<void*>(&Entity_GetChildAtIndex);
+        imports.Entity_GetChildren = reinterpret_cast<void*>(&Entity_GetChildren);
+
+        imports.Transform_GetWorldPosition = reinterpret_cast<void*>(&Transform_GetWorldPosition);
+        imports.Transform_SetWorldPosition = reinterpret_cast<void*>(&Transform_SetWorldPosition);
+        imports.Transform_GetLocalPosition = reinterpret_cast<void*>(&Transform_GetLocalPosition);
+        imports.Transform_SetLocalPosition = reinterpret_cast<void*>(&Transform_SetLocalPosition);
+        imports.Transform_GetWorldRotation = reinterpret_cast<void*>(&Transform_GetWorldRotation);
+        imports.Transform_SetWorldRotation = reinterpret_cast<void*>(&Transform_SetWorldRotation);
+        imports.Transform_GetWorldRotationEuler = reinterpret_cast<void*>(&Transform_GetWorldRotationEuler);
+        imports.Transform_SetWorldRotationEuler = reinterpret_cast<void*>(&Transform_SetWorldRotationEuler);
+        imports.Transform_GetLocalScale = reinterpret_cast<void*>(&Transform_GetLocalScale);
+        imports.Transform_SetLocalScale = reinterpret_cast<void*>(&Transform_SetLocalScale);
+        imports.Transform_GetLocalUniformScale = reinterpret_cast<void*>(&Transform_GetLocalUniformScale);
+        imports.Transform_SetLocalUniformScale = reinterpret_cast<void*>(&Transform_SetLocalUniformScale);
+        imports.Transform_GetForward = reinterpret_cast<void*>(&Transform_GetForward);
+        imports.Transform_GetRight = reinterpret_cast<void*>(&Transform_GetRight);
+        imports.Transform_GetUp = reinterpret_cast<void*>(&Transform_GetUp);
+        imports.Transform_GetParentId = reinterpret_cast<void*>(&Transform_GetParentId);
+        imports.Transform_SetParent = reinterpret_cast<void*>(&Transform_SetParent);
+
+        imports.Input_IsKeyDown = reinterpret_cast<void*>(&Input_IsKeyDown);
+        imports.Input_IsKeyPressed = reinterpret_cast<void*>(&Input_IsKeyPressed);
+        imports.Input_IsKeyReleased = reinterpret_cast<void*>(&Input_IsKeyReleased);
+        imports.Input_IsMouseButtonDown = reinterpret_cast<void*>(&Input_IsMouseButtonDown);
+        imports.Input_IsMouseButtonPressed = reinterpret_cast<void*>(&Input_IsMouseButtonPressed);
+        imports.Input_IsMouseButtonReleased = reinterpret_cast<void*>(&Input_IsMouseButtonReleased);
+        imports.Input_GetMousePosition = reinterpret_cast<void*>(&Input_GetMousePosition);
+        imports.Input_GetMouseDelta = reinterpret_cast<void*>(&Input_GetMouseDelta);
+        imports.Input_GetAxis = reinterpret_cast<void*>(&Input_GetAxis);
+
+        imports.Time_GetDeltaTime = reinterpret_cast<void*>(&Time_GetDeltaTime);
+        imports.Time_GetTotalTime = reinterpret_cast<void*>(&Time_GetTotalTime);
+        imports.Time_GetTimeScale = reinterpret_cast<void*>(&Time_GetTimeScale);
+        imports.Time_SetTimeScale = reinterpret_cast<void*>(&Time_SetTimeScale);
+        imports.Time_GetFrameCount = reinterpret_cast<void*>(&Time_GetFrameCount);
+
+        imports.Physics_Raycast = reinterpret_cast<void*>(&Physics_Raycast);
+
+        imports.Component_HasComponent = reinterpret_cast<void*>(&Component_HasComponent);
+
+        return imports;
+    }
+
     // ============================================================
     // Logging Implementation
     // ============================================================
