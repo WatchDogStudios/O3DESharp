@@ -47,10 +47,20 @@ def _declared_fields():
 
 
 def _wired_assignments():
-    """(name -> cast type text) from NativeImportsWiring.cs's Apply body."""
+    """(name -> cast type text) from NativeImportsWiring.cs's Apply body for InternalCalls only."""
+    text = _read(WIRING_CS)
+    # Match only "InternalCalls." assignments, not "ReflectionInternalCalls."
+    pattern = re.compile(
+        r"(?<!Reflection)InternalCalls\.(\w+)\s*=\s*\((delegate\*\s+unmanaged<[^>]*>)\)\(void\*\)imports\.\1\s*;"
+    )
+    return {name: cast for name, cast in pattern.findall(text)}
+
+
+def _reflection_wired_assignments():
+    """(name -> cast type text) from NativeImportsWiring.cs's Apply body for ReflectionInternalCalls."""
     text = _read(WIRING_CS)
     pattern = re.compile(
-        r"InternalCalls\.(\w+)\s*=\s*\((delegate\*\s+unmanaged<[^>]*>)\)\(void\*\)imports\.\1\s*;"
+        r"ReflectionInternalCalls\.(\w+)\s*=\s*\((delegate\*\s+unmanaged<[^>]*>)\)\(void\*\)imports\.\1\s*;"
     )
     return {name: cast for name, cast in pattern.findall(text)}
 
@@ -112,6 +122,20 @@ def test_no_extra_fields_wired_that_do_not_exist_on_internal_calls():
     wired = _wired_assignments()
     extra = sorted(set(wired) - set(declared))
     assert not extra, f"NativeImportsWiring.Apply assigns fields InternalCalls.cs does not declare: {extra}"
+
+
+@pytest.mark.unit
+def test_no_extra_reflection_fields_wired_that_do_not_exist():
+    # Import the reflection field reader from the reflection test
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("test_reflection", GEM_ROOT / "Editor" / "Tests" / "test_native_imports_wiring_reflection.py")
+    reflection_test = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(reflection_test)
+
+    reflection_declared = reflection_test._reflection_fields()
+    reflection_wired = _reflection_wired_assignments()
+    extra = sorted(set(reflection_wired) - set(reflection_declared))
+    assert not extra, f"NativeImportsWiring.Apply assigns ReflectionInternalCalls fields that do not exist: {extra}"
 
 
 @pytest.mark.unit

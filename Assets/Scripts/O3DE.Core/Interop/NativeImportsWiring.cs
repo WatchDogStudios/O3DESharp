@@ -23,6 +23,7 @@
 #if O3DE_HOST_NATIVEAOT
 
 using Coral.Managed.Interop;
+using O3DE.Reflection;
 
 namespace O3DE.Interop
 {
@@ -93,6 +94,31 @@ namespace O3DE.Interop
             InternalCalls.Physics_Raycast = (delegate* unmanaged<Vector3, Vector3, float, RaycastHit>)(void*)imports.Physics_Raycast;
 
             InternalCalls.Component_HasComponent = (delegate* unmanaged<ulong, NativeString, Bool32>)(void*)imports.Component_HasComponent;
+
+            ReflectionInternalCalls.Reflection_GetClassNames = (delegate* unmanaged<NativeString>)(void*)imports.Reflection_GetClassNames;
+            ReflectionInternalCalls.Reflection_GetMethodNames = (delegate* unmanaged<NativeString, NativeString>)(void*)imports.Reflection_GetMethodNames;
+            ReflectionInternalCalls.Reflection_GetPropertyNames = (delegate* unmanaged<NativeString, NativeString>)(void*)imports.Reflection_GetPropertyNames;
+            ReflectionInternalCalls.Reflection_GetEBusNames = (delegate* unmanaged<NativeString>)(void*)imports.Reflection_GetEBusNames;
+            ReflectionInternalCalls.Reflection_GetEBusEventNames = (delegate* unmanaged<NativeString, NativeString>)(void*)imports.Reflection_GetEBusEventNames;
+            ReflectionInternalCalls.Reflection_ClassExists = (delegate* unmanaged<NativeString, Bool32>)(void*)imports.Reflection_ClassExists;
+            ReflectionInternalCalls.Reflection_MethodExists = (delegate* unmanaged<NativeString, NativeString, Bool32>)(void*)imports.Reflection_MethodExists;
+
+            ReflectionInternalCalls.Reflection_InvokeStaticMethod = (delegate* unmanaged<NativeString, NativeString, NativeString, NativeString>)(void*)imports.Reflection_InvokeStaticMethod;
+            ReflectionInternalCalls.Reflection_InvokeInstanceMethod = (delegate* unmanaged<NativeString, NativeString, long, NativeString, NativeString>)(void*)imports.Reflection_InvokeInstanceMethod;
+            ReflectionInternalCalls.Reflection_InvokeGlobalMethod = (delegate* unmanaged<NativeString, NativeString, NativeString>)(void*)imports.Reflection_InvokeGlobalMethod;
+
+            ReflectionInternalCalls.Reflection_GetProperty = (delegate* unmanaged<NativeString, NativeString, long, NativeString>)(void*)imports.Reflection_GetProperty;
+            ReflectionInternalCalls.Reflection_SetProperty = (delegate* unmanaged<NativeString, NativeString, long, NativeString, Bool32>)(void*)imports.Reflection_SetProperty;
+            ReflectionInternalCalls.Reflection_GetGlobalProperty = (delegate* unmanaged<NativeString, NativeString>)(void*)imports.Reflection_GetGlobalProperty;
+            ReflectionInternalCalls.Reflection_SetGlobalProperty = (delegate* unmanaged<NativeString, NativeString, Bool32>)(void*)imports.Reflection_SetGlobalProperty;
+
+            ReflectionInternalCalls.Reflection_BroadcastEBusEvent = (delegate* unmanaged<NativeString, NativeString, NativeString, NativeString>)(void*)imports.Reflection_BroadcastEBusEvent;
+            ReflectionInternalCalls.Reflection_SendEBusEvent = (delegate* unmanaged<NativeString, NativeString, long, NativeString, NativeString>)(void*)imports.Reflection_SendEBusEvent;
+            ReflectionInternalCalls.Reflection_RegisterEBusHandler = (delegate* unmanaged<NativeString, ulong, long, long>)(void*)imports.Reflection_RegisterEBusHandler;
+            ReflectionInternalCalls.Reflection_UnregisterEBusHandler = (delegate* unmanaged<long, void>)(void*)imports.Reflection_UnregisterEBusHandler;
+
+            ReflectionInternalCalls.Reflection_CreateInstance = (delegate* unmanaged<NativeString, NativeString, long>)(void*)imports.Reflection_CreateInstance;
+            ReflectionInternalCalls.Reflection_DestroyInstance = (delegate* unmanaged<NativeString, long, void>)(void*)imports.Reflection_DestroyInstance;
         }
     }
 }
