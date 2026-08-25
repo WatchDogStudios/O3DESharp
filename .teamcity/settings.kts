@@ -166,10 +166,28 @@ object CSharpLinux : BuildType({
             """.trimIndent()
         }
         script {
+            name = "Run SourceGenerators xUnit tests"
+            scriptContent = """
+                set -e
+                "${'$'}HOME/.dotnet/dotnet" test Code/Tools/SourceGenerators.UnitTests/SourceGenerators.Tests.csproj -c Release --nologo --logger "console;verbosity=normal"
+            """.trimIndent()
+        }
+        script {
             name = "Run O3DE.Core xUnit tests"
             scriptContent = """
                 set -e
                 "${'$'}HOME/.dotnet/dotnet" test Assets/Scripts/O3DE.Core.Tests/O3DE.Core.Tests.csproj -c Release --nologo --logger "console;verbosity=normal"
+            """.trimIndent()
+        }
+        script {
+            // Second pass with O3DE_HOST_NATIVEAOT defined. The closed-world
+            // runtime guards are [Conditional("O3DE_HOST_NATIVEAOT")], so the
+            // Coral run above compiles their bodies away entirely - without
+            // this step the guard tests exist but never execute.
+            name = "Run O3DE.Core xUnit tests (NativeAOT host mode)"
+            scriptContent = """
+                set -e
+                "${'$'}HOME/.dotnet/dotnet" test Assets/Scripts/O3DE.Core.Tests/O3DE.Core.Tests.csproj -c Release -p:O3DESharpHostMode=NativeAot --nologo --logger "console;verbosity=normal"
             """.trimIndent()
         }
     }
@@ -277,9 +295,25 @@ object CSharpWindows : BuildType({
             """.trimIndent()
         }
         script {
+            name = "Run SourceGenerators xUnit tests"
+            scriptContent = """
+                "%LOCALAPPDATA%\Microsoft\dotnet\dotnet.exe" test Code/Tools/SourceGenerators.UnitTests/SourceGenerators.Tests.csproj -c Release --nologo --logger "console;verbosity=normal"
+                if %errorlevel% neq 0 exit /b %errorlevel%
+            """.trimIndent()
+        }
+        script {
             name = "Run O3DE.Core xUnit tests"
             scriptContent = """
                 "%LOCALAPPDATA%\Microsoft\dotnet\dotnet.exe" test Assets/Scripts/O3DE.Core.Tests/O3DE.Core.Tests.csproj -c Release --nologo --logger "console;verbosity=normal"
+                if %errorlevel% neq 0 exit /b %errorlevel%
+            """.trimIndent()
+        }
+        script {
+            // See the Linux counterpart: the closed-world guards only exist
+            // when O3DE_HOST_NATIVEAOT is defined, so they need their own run.
+            name = "Run O3DE.Core xUnit tests (NativeAOT host mode)"
+            scriptContent = """
+                "%LOCALAPPDATA%\Microsoft\dotnet\dotnet.exe" test Assets/Scripts/O3DE.Core.Tests/O3DE.Core.Tests.csproj -c Release -p:O3DESharpHostMode=NativeAot --nologo --logger "console;verbosity=normal"
                 if %errorlevel% neq 0 exit /b %errorlevel%
             """.trimIndent()
         }

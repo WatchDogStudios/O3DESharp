@@ -10,6 +10,29 @@
     <RootNamespace>O3DE.Core.Tests</RootNamespace>
   </PropertyGroup>
 
+  <!--
+    Mirror O3DE.Core.csproj's host-mode switch. This project compiles
+    O3DE.Core's *sources* (see the ItemGroup below), so without the same
+    DefineConstants wiring every `#if O3DE_HOST_NATIVEAOT` block in
+    NativeReflection.cs - and in the tests that exercise it - compiles to
+    nothing, and the guard tests silently reduce to no-ops.
+
+      dotnet test Assets/Scripts/O3DE.Core.Tests/ -p:O3DESharpHostMode=NativeAot
+
+    runs the same suite with the closed-world guards actually live.
+  -->
+  <PropertyGroup>
+    <O3DESharpHostMode Condition="'$(O3DESharpHostMode)' == ''">Coral</O3DESharpHostMode>
+  </PropertyGroup>
+
+  <PropertyGroup Condition="'$(O3DESharpHostMode)' == 'NativeAot'">
+    <DefineConstants>$(DefineConstants);O3DE_HOST_NATIVEAOT</DefineConstants>
+  </PropertyGroup>
+
+  <PropertyGroup Condition="'$(O3DESharpHostMode)' != 'NativeAot'">
+    <DefineConstants>$(DefineConstants);O3DE_HOST_CORAL</DefineConstants>
+  </PropertyGroup>
+
   <ItemGroup>
     <PackageReference Include="coverlet.collector" Version="6.0.0">
       <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
