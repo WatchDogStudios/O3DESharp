@@ -22,16 +22,16 @@ namespace O3DE.Core.Tests.Interop;
 /// </summary>
 public class HostAbiLayoutTests
 {
-    // 47 = the number of delegate* unmanaged fields on O3DE.InternalCalls
-    // (InternalCalls.cs:30-106). ReflectionInternalCalls is registered
-    // separately by GenericDispatcher and is deliberately NOT part of ABI v1.
-    private const int NativeImportCount = 47;
+    // 67 = the count of IntPtr fields in NativeImports. This includes 47
+    // fields from ABI v1 (O3DE.InternalCalls from InternalCalls.cs:30-106)
+    // and 20 ReflectionInternalCalls fields added in ABI v2.
+    private const int NativeImportCount = 67;
     private const int ManagedExportCount = 5;
 
     [Fact]
-    public void Version_IsOne()
+    public void Version_IsTwo()
     {
-        HostAbi.Version.Should().Be(1u,
+        HostAbi.Version.Should().Be(2u,
             "the version field is what lets ABI v2 add ReflectionInternalCalls without silent misreads");
     }
 
@@ -53,11 +53,15 @@ public class HostAbiLayoutTests
     [Fact]
     public void NativeImports_FirstAndLastFieldsAreAtTheExpectedOffsets()
     {
-        // Pins both ends of the struct: Log_Info is the first pointer after
-        // the version word, Component_HasComponent is the last one.
+        // Pins the boundaries: Log_Info is the first pointer after the
+        // version word. Component_HasComponent is the last v1 field
+        // (Reflection fields added in v2 follow). This pins v1 stability.
         Marshal.OffsetOf<NativeImports>(nameof(NativeImports.Log_Info))
             .Should().Be(new IntPtr(IntPtr.Size));
         Marshal.OffsetOf<NativeImports>(nameof(NativeImports.Component_HasComponent))
+            .Should().Be(new IntPtr(47 * IntPtr.Size));
+        // Pin the v2 end: Reflection_DestroyInstance is the last field added in v2.
+        Marshal.OffsetOf<NativeImports>(nameof(NativeImports.Reflection_DestroyInstance))
             .Should().Be(new IntPtr(NativeImportCount * IntPtr.Size));
     }
 
