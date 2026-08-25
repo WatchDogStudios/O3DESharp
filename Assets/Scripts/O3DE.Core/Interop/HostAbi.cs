@@ -33,7 +33,7 @@ namespace O3DE.Interop
         /// that reads a version it does not recognise must refuse to run
         /// rather than reinterpret pointers.
         /// </summary>
-        public const uint Version = 1;
+        public const uint Version = 2;
     }
 
     /// <summary>
@@ -130,6 +130,30 @@ namespace O3DE.Interop
         // Component
         // ============================================================
         public IntPtr Component_HasComponent;
+
+        // ============================================================
+        // Reflection (added in HostAbiVersion 2)
+        // ============================================================
+        public IntPtr Reflection_GetClassNames;
+        public IntPtr Reflection_GetMethodNames;
+        public IntPtr Reflection_GetPropertyNames;
+        public IntPtr Reflection_GetEBusNames;
+        public IntPtr Reflection_GetEBusEventNames;
+        public IntPtr Reflection_ClassExists;
+        public IntPtr Reflection_MethodExists;
+        public IntPtr Reflection_InvokeStaticMethod;
+        public IntPtr Reflection_InvokeInstanceMethod;
+        public IntPtr Reflection_InvokeGlobalMethod;
+        public IntPtr Reflection_GetProperty;
+        public IntPtr Reflection_SetProperty;
+        public IntPtr Reflection_GetGlobalProperty;
+        public IntPtr Reflection_SetGlobalProperty;
+        public IntPtr Reflection_BroadcastEBusEvent;
+        public IntPtr Reflection_SendEBusEvent;
+        public IntPtr Reflection_RegisterEBusHandler;
+        public IntPtr Reflection_UnregisterEBusHandler;
+        public IntPtr Reflection_CreateInstance;
+        public IntPtr Reflection_DestroyInstance;
     }
 
     /// <summary>

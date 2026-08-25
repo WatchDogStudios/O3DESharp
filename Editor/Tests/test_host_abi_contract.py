@@ -63,6 +63,14 @@ def _csharp_internal_call_fields():
     return re.findall(r"internal\s+static\s+delegate\*\s+unmanaged<[^>]*>\s+(\w+)\s*;", text)
 
 
+REFLECTION_CS = GEM_ROOT / "Assets" / "Scripts" / "O3DE.Core" / "Reflection" / "NativeReflection.cs"
+
+
+def _csharp_reflection_internal_call_fields():
+    text = _read(REFLECTION_CS)
+    return re.findall(r"internal\s+static\s+delegate\*\s+unmanaged<[^>]*>\s+(\w+)\s*;", text)
+
+
 def _csharp_struct_fields(struct_name):
     body = _extract_block(_read(HOST_ABI_CS), rf"struct\s+{struct_name}\b", str(HOST_ABI_CS))
     return re.findall(r"public\s+IntPtr\s+(\w+)\s*;", body)
@@ -81,8 +89,15 @@ def test_native_imports_mirrors_internal_calls_exactly():
         "Adding one is an ABI change: mirror it in BOTH HostAbi.cs and HostAbi.h and "
         "bump HostAbi.Version / HostAbiVersion together."
     )
-    assert _csharp_struct_fields("NativeImports") == internal_calls, (
-        "NativeImports (C#) must mirror O3DE.InternalCalls field-for-field, in order."
+    reflection_calls = _csharp_reflection_internal_call_fields()
+    assert len(reflection_calls) == 20, (
+        f"O3DE.Reflection.ReflectionInternalCalls declares {len(reflection_calls)} function "
+        "pointers, not 20. Adding one is an ABI change: mirror it in BOTH HostAbi.cs and "
+        "HostAbi.h and bump HostAbi.Version / HostAbiVersion together."
+    )
+    assert _csharp_struct_fields("NativeImports") == internal_calls + reflection_calls, (
+        "NativeImports (C#) must mirror O3DE.InternalCalls, then "
+        "O3DE.Reflection.ReflectionInternalCalls, field-for-field, in that order."
     )
 
 

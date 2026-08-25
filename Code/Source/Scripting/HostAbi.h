@@ -39,7 +39,7 @@ namespace O3DESharp::Abi
     //! Bump only when a field is added, removed or reordered in either struct
     //! below. A host that reads an unrecognised version must refuse to run
     //! rather than reinterpret pointers.
-    inline constexpr AZ::u32 HostAbiVersion = 1;
+    inline constexpr AZ::u32 HostAbiVersion = 2;
 
     //! Function pointers C++ exposes to managed code.
     //!
@@ -48,8 +48,8 @@ namespace O3DESharp::Abi
     //! field here without inserting it there and every pointer after it is
     //! reinterpreted, with no diagnostic from either compiler.
     //!
-    //! O3DE.Reflection.ReflectionInternalCalls is registered separately by
-    //! GenericDispatcher and is deliberately NOT part of v1.
+    //! O3DE.Reflection.ReflectionInternalCalls fields were added in v2 (see
+    //! the block below) - previously deliberately excluded from v1.
     //!
     //! Under Coral (editor) this struct is populated by
     //! ScriptBindings::MakeNativeImports and is descriptive - the actual
@@ -135,6 +135,30 @@ namespace O3DESharp::Abi
         // Component
         // ============================================================
         void* Component_HasComponent;
+
+        // ============================================================
+        // Reflection (added in HostAbiVersion 2)
+        // ============================================================
+        void* Reflection_GetClassNames;
+        void* Reflection_GetMethodNames;
+        void* Reflection_GetPropertyNames;
+        void* Reflection_GetEBusNames;
+        void* Reflection_GetEBusEventNames;
+        void* Reflection_ClassExists;
+        void* Reflection_MethodExists;
+        void* Reflection_InvokeStaticMethod;
+        void* Reflection_InvokeInstanceMethod;
+        void* Reflection_InvokeGlobalMethod;
+        void* Reflection_GetProperty;
+        void* Reflection_SetProperty;
+        void* Reflection_GetGlobalProperty;
+        void* Reflection_SetGlobalProperty;
+        void* Reflection_BroadcastEBusEvent;
+        void* Reflection_SendEBusEvent;
+        void* Reflection_RegisterEBusHandler;
+        void* Reflection_UnregisterEBusHandler;
+        void* Reflection_CreateInstance;
+        void* Reflection_DestroyInstance;
     };
 
     //! Function pointers managed code exposes to C++. Frozen signatures:
@@ -172,7 +196,7 @@ namespace O3DESharp::Abi
     // followed by pointers pads up to pointer alignment on both 32- and
     // 64-bit, so (1 + N) * sizeof(void*) holds on both.
     static_assert(
-        sizeof(NativeImports) == (1 + 47) * sizeof(void*),
+        sizeof(NativeImports) == (1 + 47 + 20) * sizeof(void*),
         "NativeImports layout drifted from O3DE.Interop.NativeImports - see HostAbi.cs");
     static_assert(
         sizeof(ManagedExports) == (1 + 5) * sizeof(void*),
