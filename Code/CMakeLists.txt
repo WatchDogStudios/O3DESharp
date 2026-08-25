@@ -29,6 +29,20 @@ endif()
 # Sets DOTNET_EXECUTABLE in this scope, used by binding generator and C# test custom targets below.
 o3de_sharp_netverify()
 
+# Coral's own cmake/CMakeLists.txt does an independent
+# find_program(DOTNET_EXE NAMES dotnet REQUIRED) rather than accepting our
+# resolved DOTNET_EXECUTABLE. That's fine when a system-wide dotnet is on
+# PATH, but o3de_sharp_netverify() can instead auto-download a private copy
+# under ${CMAKE_BINARY_DIR}/.dotnet when none is found (the common case on a
+# bare Linux CI image) - a location Coral's raw find_program() call has no
+# way to see, so its configure fails with "dotnet not found" even though we
+# just resolved one. Prepending its directory to CMAKE_PROGRAM_PATH before
+# FetchContent_MakeAvailable(Coral) below lets Coral's own find_program()
+# pick up the same dotnet we already verified.
+get_filename_component(_o3desharp_dotnet_dir "${DOTNET_EXECUTABLE}" DIRECTORY)
+list(PREPEND CMAKE_PROGRAM_PATH "${_o3desharp_dotnet_dir}")
+unset(_o3desharp_dotnet_dir)
+
 # CORAL CLONE INFO
 # ===========================
 # NOTE(Mikael A.): Stay on main, do not change to internal coral branch!
@@ -445,6 +459,17 @@ set_property(DIRECTORY APPEND PROPERTY O3DE_SUBDIRECTORY_INSTALL_CODE [[
         ly_target_include_system_directories(TARGET o3desharp::${coralLibrary}
             INTERFACE
                 "${LY_ROOT_FOLDER}/include/Coral")
+
+        # Same dl/pthread requirement as the dev-side FetchContent build above
+        # (HostInstance.cpp dlopen()s hostfxr and uses threads; Coral never links
+        # these itself) - an exported installer build linking this IMPORTED lib
+        # on an older-glibc Linux (dl/pthread not yet folded into libc) needs it
+        # declared here too, since installer trees don't have the dev-side fixup.
+        if(UNIX AND NOT APPLE)
+            find_package(Threads REQUIRED)
+            set_property(TARGET o3desharp::${coralLibrary} APPEND PROPERTY
+                INTERFACE_LINK_LIBRARIES ${CMAKE_DL_LIBS} Threads::Threads)
+        endif()
     endforeach()
 ]]
 )
@@ -477,6 +502,14 @@ foreach(coralLibrary ${coralLibraries})
                     /wd4146  # Suppress C4146 in code that includes Coral headers
                     /wd4459  # Suppress C4459 - Coral's global typedefs conflict with AzCore template params
             )
+        elseif(UNIX AND NOT APPLE)
+            # HostInstance.cpp dlopen()s hostfxr and spins up threads; Coral's own
+            # cmake/CMakeLists.txt never links dl/pthread for it (premake5-native.lua
+            # doesn't either - no Linux filter block exists there). Harmless no-op on
+            # glibc >= 2.34 (dl/pthread folded into libc) but required on older glibc
+            # (Ubuntu 20.04, Debian 11, etc.) where they're still separate shared objects.
+            find_package(Threads REQUIRED)
+            target_link_libraries(${coralLibrary} PUBLIC ${CMAKE_DL_LIBS} Threads::Threads)
         endif()
     else()
         message(WARNING "O3DESharp: Coral target '${coralLibrary}' not found. Check if the Coral repository structure has changed.")
