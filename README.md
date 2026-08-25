@@ -14,11 +14,7 @@ O3DESharp enables game developers to write gameplay logic in C# instead of (or a
 - **Familiar API**: Entity/Component model similar to other popular engines
 - **Automated Reflection**: Automatic access to any type reflected to O3DE's BehaviorContext
 
-## What's New (Phase 16 → Phase 18-E)
-
-Recent iterations added the editor + workflow polish that was always
-the missing half of "hot reload", and most recently the second half of
-EBus support — C# can now both send and *receive* EBus events:
+## What's New 
 
 - **First-class EBus handlers** (Phase 18-E). Decorate any partial
   `ScriptComponent` subclass with `[EBus("BusName")]` and individual
