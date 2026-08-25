@@ -87,19 +87,38 @@ namespace O3DESharp.BindingGenerator.Generation
             // root now recursively globs **/*.cs, so any stale gem subdirectory
             // left behind from a previous run (now excluded or absent from
             // this run's gem set) would get compiled in unintentionally.
-            // ponytail: Full directory wipe; upgrade to targeted-prune if
-            // we ever need non-generated content in outputDir.
+            //
+            // bin/ and obj/ are skipped: the consolidated .csproj lives at
+            // outputDir root, so those are MSBuild's own output for it -
+            // wiping them forces a from-scratch rebuild every time (and
+            // this now runs on every Editor startup).
+            //
+            // A directory we can't remove (DLL loaded by a running Editor,
+            // MSBuild node holding a handle) is a warning, not a failed
+            // run - the worst case is one stale gem bucket compiled in,
+            // which is strictly better than generating nothing at all.
             if (Directory.Exists(outputDir))
             {
-                try
+                foreach (var subdir in SafeGetDirectories(outputDir))
                 {
-                    var di = new DirectoryInfo(outputDir);
-                    foreach (var subdir in di.GetDirectories())
+                    if (subdir.Name.Equals("bin", StringComparison.OrdinalIgnoreCase) ||
+                        subdir.Name.Equals("obj", StringComparison.OrdinalIgnoreCase))
+                    {
+                        continue;
+                    }
+                    try
                     {
                         subdir.Delete(recursive: true);
                     }
-                    // Also clean up the old consolidated .csproj if it exists,
-                    // in case the set of gems changed and we're regenerating.
+                    catch (Exception e)
+                    {
+                        Console.WriteLine($"[ReflectionGen] WARNING: could not remove stale directory {subdir.FullName}: {e.Message}");
+                    }
+                }
+                // Also clean up the old consolidated .csproj if it exists,
+                // in case the set of gems changed and we're regenerating.
+                try
+                {
                     var oldCsproj = Path.Combine(outputDir, "O3DESharp.GeneratedBindings.csproj");
                     if (File.Exists(oldCsproj))
                     {
@@ -108,11 +127,7 @@ namespace O3DESharp.BindingGenerator.Generation
                 }
                 catch (Exception e)
                 {
-                    return new ReflectionGenerationResult
-                    {
-                        Success = false,
-                        ErrorMessage = $"Failed to clean output directory {outputDir}: {e.Message}"
-                    };
+                    Console.WriteLine($"[ReflectionGen] WARNING: could not remove stale O3DESharp.GeneratedBindings.csproj: {e.Message}");
                 }
             }
 
@@ -342,6 +357,24 @@ namespace O3DESharp.BindingGenerator.Generation
         /// &lt;Project&gt;/Generated/CSharp/ - assuming the caller passed
         /// --output &lt;Project&gt;/Generated/CSharp/).
         /// </summary>
+        /// <summary>
+        /// Subdirectories of <paramref name="dir"/>, or an empty array if
+        /// the listing itself fails (permissions, transient lock). Never
+        /// throws - a cleanup pass must not take down generation.
+        /// </summary>
+        private static DirectoryInfo[] SafeGetDirectories(string dir)
+        {
+            try
+            {
+                return new DirectoryInfo(dir).GetDirectories();
+            }
+            catch (Exception e)
+            {
+                Console.WriteLine($"[ReflectionGen] WARNING: could not list {dir} for cleanup: {e.Message}");
+                return Array.Empty<DirectoryInfo>();
+            }
+        }
+
         private void EmitProjectFile(string outputDir, ISet<string> includedGemKeys)
         {
             const string assemblyName = "O3DESharp.GeneratedBindings";

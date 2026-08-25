@@ -401,7 +401,7 @@ namespace O3DESharp.BindingGenerator
                 Console.WriteLine($"Project files:  {result.CsprojFilesWritten}");
                 Console.WriteLine($"Output:         {outputDir}");
                 Console.WriteLine();
-                Console.WriteLine($"To build: cd {outputDir}/<GemBucket> && dotnet build");
+                Console.WriteLine($"To build: cd {outputDir} && dotnet build");
                 Console.WriteLine($"The built DLL auto-deploys to <Project>/Bin/Scripts/ where Coral picks it up.");
                 return 0;
             }

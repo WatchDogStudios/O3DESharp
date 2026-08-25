@@ -508,7 +508,7 @@ public class ReflectionGeneratorTests : IDisposable
     // ============================================================
 
     [Fact]
-    public void StalGemSubdirectories_AreCleanedUpOnRegeneration()
+    public void StaleGemSubdirectories_AreCleanedUpOnRegeneration()
     {
         // Regression for consolidated-project blast-radius bug:
         // before the fix, regenerating without a gem would leave its
@@ -573,5 +573,56 @@ public class ReflectionGeneratorTests : IDisposable
         var csproj = File.ReadAllText(csprojPath1);
         csproj.Should().NotContain("GemB", "consolidated .csproj should not reference excluded gems");
         csproj.Should().Contain("O3DESharp.GeneratedBindings", "must still be the assembly name");
+    }
+
+    [Fact]
+    public void GemDroppedFromReflectionData_IsCleanedUpWithoutAnyDenylist()
+    {
+        // The production scenario the cleanup actually exists for: a gem
+        // is disabled, so it simply stops appearing in reflection_data.json
+        // on the next export. No excludeGems involved.
+        var jsonBoth = """
+        {
+            "classes": [
+                { "name": "ClassA", "type_id": "{aaaa4444-0000-0000-0000-000000000000}", "source_gem_name": "GemA", "methods": [], "properties": [] },
+                { "name": "ClassB", "type_id": "{bbbb4444-0000-0000-0000-000000000000}", "source_gem_name": "GemB", "methods": [], "properties": [] }
+            ],
+            "ebuses": [], "global_methods": [], "global_properties": []
+        }
+        """;
+        var jsonPath = Path.Combine(_outputDir, "reflection_data.json");
+        File.WriteAllText(jsonPath, jsonBoth);
+
+        var gen = new ReflectionBindingGenerator(rootNamespace: "O3DE.Generated", verbose: false);
+        gen.Generate(jsonPath, _outputDir).Success.Should().BeTrue();
+        File.Exists(Path.Combine(_outputDir, "GemB", "Classes", "ClassB.g.cs")).Should().BeTrue();
+
+        // MSBuild's own output for the consolidated project, which lives at
+        // the output root - regeneration must not wipe the incremental cache.
+        var objDir = Path.Combine(_outputDir, "obj");
+        Directory.CreateDirectory(objDir);
+        var objMarker = Path.Combine(objDir, "project.assets.json");
+        File.WriteAllText(objMarker, "{}");
+        var binMarker = Path.Combine(_outputDir, "bin", "Release", "net9.0", "O3DESharp.GeneratedBindings.dll");
+        Directory.CreateDirectory(Path.GetDirectoryName(binMarker)!);
+        File.WriteAllText(binMarker, "stale-but-not-ours-to-delete");
+
+        var jsonAOnly = """
+        {
+            "classes": [
+                { "name": "ClassA", "type_id": "{aaaa4444-0000-0000-0000-000000000000}", "source_gem_name": "GemA", "methods": [], "properties": [] }
+            ],
+            "ebuses": [], "global_methods": [], "global_properties": []
+        }
+        """;
+        File.WriteAllText(jsonPath, jsonAOnly);
+
+        gen.Generate(jsonPath, _outputDir).Success.Should().BeTrue();
+
+        File.Exists(Path.Combine(_outputDir, "GemA", "Classes", "ClassA.g.cs")).Should().BeTrue("GemA is still reflected");
+        Directory.Exists(Path.Combine(_outputDir, "GemB")).Should().BeFalse(
+            "GemB vanished from reflection_data.json, so its stale .g.cs must not survive into the compiled output");
+        File.Exists(objMarker).Should().BeTrue("obj/ is MSBuild's incremental cache, not generator output");
+        File.Exists(binMarker).Should().BeTrue("bin/ is MSBuild's build output, not generator output");
     }
 }
