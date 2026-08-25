@@ -919,7 +919,13 @@ What this does:
 on your `PATH`; builds without it fail with `MSB3073` exit code 123. CMake's Visual
 Studio generator inherits a developer environment and is not affected.
 
-**Key restrictions of NativeAOT builds:**
+**Key restrictions and limitations of NativeAOT builds:**
+- **Not yet end-to-end runnable.** The ABI seam, publish pipeline, and closed-world
+  diagnostic are complete and verified; wiring `NativeImports` into `O3DE.InternalCalls`
+  under `O3DE_HOST_NATIVEAOT` is the remaining step before a published image can actually
+  call back into the engine. The published image loads and exports the ABI entry point
+  correctly, but cannot yet dispatch native calls (e.g., `Debug.Log`, entity/transform
+  APIs). This is unbuilt and required before real games can ship with this artifact.
 - **No hot-reload.** `NativeAotHost::SupportsHotReload()` returns false unconditionally.
   AOT images are editor-only by design; use the Coral path (the default) for iteration.
 - **Closed-world dispatch only.** `O3DESHARP1001` at build time for any non-constant

@@ -19,6 +19,7 @@ namespace O3DE.Core.Tests.Interop;
 /// relies on - handles are never 0 (0 is the native "no handle" sentinel),
 /// they are not reused while live, and resolving a stale handle is safe.
 /// </summary>
+[Collection("GlobalScriptState")]
 public class ScriptComponentBridgeTests
 {
     [Fact]

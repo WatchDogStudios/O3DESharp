@@ -17,6 +17,7 @@ namespace O3DE.Core.Tests.Interop;
 /// `static () => new T()` factories is AOT-safe and behaves identically in
 /// the editor, so both artifacts share one code path.
 /// </summary>
+[Collection("GlobalScriptState")]
 public class ScriptTypeRegistryTests : IDisposable
 {
     public ScriptTypeRegistryTests() => ScriptTypeRegistry.Clear();
@@ -103,7 +104,7 @@ public class ScriptTypeRegistryTests : IDisposable
         var a = ScriptComponentBridge.Register(new object());
         var b = ScriptComponentBridge.Register(new object());
 
-        ScriptComponentBridge.ClearAll().Should().BeGreaterThanOrEqualTo(2);
+        ScriptComponentBridge.ClearAll().Should().Be(2);
 
         ScriptComponentBridge.Resolve(a).Should().BeNull();
         ScriptComponentBridge.Resolve(b).Should().BeNull();

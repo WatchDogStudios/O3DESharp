@@ -20,6 +20,7 @@ namespace O3DE.Core.Tests.Interop;
 /// caller is native code across an [UnmanagedCallersOnly] boundary, where an
 /// escaping exception terminates the process rather than being catchable.
 /// </summary>
+[Collection("GlobalScriptState")]
 public class ManagedExportsImplTests : IDisposable
 {
     public ManagedExportsImplTests()
