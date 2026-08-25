@@ -48,8 +48,11 @@ namespace O3DESharp
             Float,
             Double,
             String,
+            Vector2,
             Vector3,
+            Vector4,
             Quaternion,
+            Color,
             Transform,
             EntityId,
             Object,     // Complex object requiring special handling

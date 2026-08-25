@@ -632,10 +632,16 @@ namespace O3DESharp
             return "Double";
         case ReflectedParameter::MarshalType::String:
             return "String";
+        case ReflectedParameter::MarshalType::Vector2:
+            return "Vector2";
         case ReflectedParameter::MarshalType::Vector3:
             return "Vector3";
+        case ReflectedParameter::MarshalType::Vector4:
+            return "Vector4";
         case ReflectedParameter::MarshalType::Quaternion:
             return "Quaternion";
+        case ReflectedParameter::MarshalType::Color:
+            return "Color";
         case ReflectedParameter::MarshalType::Transform:
             return "Transform";
         case ReflectedParameter::MarshalType::EntityId:

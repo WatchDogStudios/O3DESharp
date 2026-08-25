@@ -226,15 +226,10 @@ namespace O3DE.Reflection
         /// <returns>The result as a dynamic object, or null for void methods</returns>
         public static object? InvokeStaticMethod(string className, string methodName, params object[] args)
         {
-            // The native dispatcher (GenericDispatcher::Reflection_InvokeStaticMethod)
-            // currently returns {"error":"Not fully implemented"} unconditionally.
-            // Throwing here makes the gap obvious instead of letting callers parse a
-            // success-shaped JSON envelope that never arrives.
-            throw new NotImplementedException(
-                "NativeReflection.InvokeStaticMethod is not yet implemented in the native " +
-                "dispatcher (see Code/Source/Scripting/Reflection/GenericDispatcher.cpp). " +
-                "Use direct API methods (e.g. Entity / Transform / Physics) for now, or " +
-                "extend the dispatcher to parse argsJson and call BehaviorMethod::Call.");
+            string argsJson = SerializeArguments(args);
+            string resultJson;
+            unsafe { resultJson = ReflectionInternalCalls.Reflection_InvokeStaticMethod(className, methodName, argsJson); }
+            return DeserializeResult(resultJson);
         }
 
         /// <summary>
@@ -246,10 +241,21 @@ namespace O3DE.Reflection
         /// <returns>The result as a dynamic object, or null for void methods</returns>
         public static object? InvokeInstanceMethod(NativeObject instance, string methodName, params object[] args)
         {
-            // Native dispatcher stub returns "Not fully implemented". See InvokeStaticMethod above.
-            throw new NotImplementedException(
-                "NativeReflection.InvokeInstanceMethod is not yet implemented in the native dispatcher. " +
-                "Use direct API methods for now.");
+            if (instance == null) { throw new ArgumentNullException(nameof(instance)); }
+            if (!instance.IsValid)
+            {
+                throw new InvalidOperationException(
+                    $"Cannot invoke '{methodName}' on an invalid NativeObject ({instance.TypeName}).");
+            }
+
+            string argsJson = SerializeArguments(args);
+            string resultJson;
+            unsafe
+            {
+                resultJson = ReflectionInternalCalls.Reflection_InvokeInstanceMethod(
+                    instance.TypeName, methodName, instance.Handle, argsJson);
+            }
+            return DeserializeResult(resultJson);
         }
 
         /// <summary>
@@ -260,10 +266,10 @@ namespace O3DE.Reflection
         /// <returns>The result as a dynamic object, or null for void methods</returns>
         public static object? InvokeGlobalMethod(string methodName, params object[] args)
         {
-            // Native dispatcher stub returns "Not fully implemented". See InvokeStaticMethod above.
-            throw new NotImplementedException(
-                "NativeReflection.InvokeGlobalMethod is not yet implemented in the native dispatcher. " +
-                "Use direct API methods for now.");
+            string argsJson = SerializeArguments(args);
+            string resultJson;
+            unsafe { resultJson = ReflectionInternalCalls.Reflection_InvokeGlobalMethod(methodName, argsJson); }
+            return DeserializeResult(resultJson);
         }
 
         #endregion
@@ -279,10 +285,21 @@ namespace O3DE.Reflection
         /// <returns>The property value</returns>
         public static T? GetProperty<T>(NativeObject instance, string propertyName)
         {
-            // Native dispatcher stub. See InvokeStaticMethod above.
-            throw new NotImplementedException(
-                "NativeReflection.GetProperty is not yet implemented in the native dispatcher. " +
-                "Use direct API methods for now.");
+            if (instance == null) { throw new ArgumentNullException(nameof(instance)); }
+            if (!instance.IsValid)
+            {
+                throw new InvalidOperationException(
+                    $"Cannot get property '{propertyName}' on an invalid NativeObject ({instance.TypeName}).");
+            }
+
+            string resultJson;
+            unsafe
+            {
+                resultJson = ReflectionInternalCalls.Reflection_GetProperty(
+                    instance.TypeName, propertyName, instance.Handle);
+            }
+            object? raw = DeserializeResult(resultJson);
+            return CoerceEBusResult<T>(raw, "GetProperty", instance.TypeName, propertyName, /*busId*/ null);
         }
 
         /// <summary>
@@ -293,10 +310,30 @@ namespace O3DE.Reflection
         /// <param name="value">The value to set</param>
         public static void SetProperty(NativeObject instance, string propertyName, object value)
         {
-            // Native dispatcher stub. See InvokeStaticMethod above.
-            throw new NotImplementedException(
-                "NativeReflection.SetProperty is not yet implemented in the native dispatcher. " +
-                "Use direct API methods for now.");
+            if (instance == null) { throw new ArgumentNullException(nameof(instance)); }
+            if (!instance.IsValid)
+            {
+                throw new InvalidOperationException(
+                    $"Cannot set property '{propertyName}' on an invalid NativeObject ({instance.TypeName}).");
+            }
+
+            // Reflection_SetProperty (GenericDispatcher::SetProperty) parses valueJson
+            // as a single bare JSON value - not a single-element array - and marshals it
+            // directly against the setter's one value parameter. Use SerializeValue
+            // (bare), not SerializeArguments (wraps in an array).
+            string valueJson = SerializeValue(value);
+            bool ok;
+            unsafe
+            {
+                ok = ReflectionInternalCalls.Reflection_SetProperty(
+                    instance.TypeName, propertyName, instance.Handle, valueJson);
+            }
+            if (!ok)
+            {
+                throw new InvalidOperationException(
+                    $"Failed to set property '{instance.TypeName}.{propertyName}' " +
+                    "(native dispatcher rejected the call - see the native log for details).");
+            }
         }
 
         /// <summary>
@@ -307,9 +344,10 @@ namespace O3DE.Reflection
         /// <returns>The property value</returns>
         public static T? GetGlobalProperty<T>(string propertyName)
         {
-            // Native dispatcher stub. See InvokeStaticMethod above.
-            throw new NotImplementedException(
-                "NativeReflection.GetGlobalProperty is not yet implemented in the native dispatcher.");
+            string resultJson;
+            unsafe { resultJson = ReflectionInternalCalls.Reflection_GetGlobalProperty(propertyName); }
+            object? raw = DeserializeResult(resultJson);
+            return CoerceEBusResult<T>(raw, "GetGlobalProperty", "(global)", propertyName, /*busId*/ null);
         }
 
         /// <summary>
@@ -319,9 +357,19 @@ namespace O3DE.Reflection
         /// <param name="value">The value to set</param>
         public static void SetGlobalProperty(string propertyName, object value)
         {
-            // Native dispatcher stub. See InvokeStaticMethod above.
-            throw new NotImplementedException(
-                "NativeReflection.SetGlobalProperty is not yet implemented in the native dispatcher.");
+            // Reflection_SetGlobalProperty (GenericDispatcher::SetGlobalProperty) wraps
+            // valueJson into a single-element array itself before dispatching through
+            // the setter's BehaviorMethod - the value handed across the wire must be
+            // bare, same as SetProperty above.
+            string valueJson = SerializeValue(value);
+            bool ok;
+            unsafe { ok = ReflectionInternalCalls.Reflection_SetGlobalProperty(propertyName, valueJson); }
+            if (!ok)
+            {
+                throw new InvalidOperationException(
+                    $"Failed to set global property '{propertyName}' " +
+                    "(native dispatcher rejected the call - see the native log for details).");
+            }
         }
 
         #endregion
