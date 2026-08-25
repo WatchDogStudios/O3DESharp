@@ -82,6 +82,40 @@ namespace O3DESharp.BindingGenerator.Generation
                 };
             }
 
+            // Clean up stale gem-keyed subdirectories from previous runs
+            // before regenerating. The consolidated .csproj at <outputDir>
+            // root now recursively globs **/*.cs, so any stale gem subdirectory
+            // left behind from a previous run (now excluded or absent from
+            // this run's gem set) would get compiled in unintentionally.
+            // ponytail: Full directory wipe; upgrade to targeted-prune if
+            // we ever need non-generated content in outputDir.
+            if (Directory.Exists(outputDir))
+            {
+                try
+                {
+                    var di = new DirectoryInfo(outputDir);
+                    foreach (var subdir in di.GetDirectories())
+                    {
+                        subdir.Delete(recursive: true);
+                    }
+                    // Also clean up the old consolidated .csproj if it exists,
+                    // in case the set of gems changed and we're regenerating.
+                    var oldCsproj = Path.Combine(outputDir, "O3DESharp.GeneratedBindings.csproj");
+                    if (File.Exists(oldCsproj))
+                    {
+                        File.Delete(oldCsproj);
+                    }
+                }
+                catch (Exception e)
+                {
+                    return new ReflectionGenerationResult
+                    {
+                        Success = false,
+                        ErrorMessage = $"Failed to clean output directory {outputDir}: {e.Message}"
+                    };
+                }
+            }
+
             Console.WriteLine($"[ReflectionGen] Loading {jsonPath}");
             ReflectionDocument doc;
             try

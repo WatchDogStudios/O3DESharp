@@ -502,4 +502,76 @@ public class ReflectionGeneratorTests : IDisposable
         cs.Should().Contain("public static object Method(",
             "unknown marshal_type falls back to System.Object");
     }
+
+    // ============================================================
+    // Stale gem cleanup: consolidated project doesn't pick up old files
+    // ============================================================
+
+    [Fact]
+    public void StalGemSubdirectories_AreCleanedUpOnRegeneration()
+    {
+        // Regression for consolidated-project blast-radius bug:
+        // before the fix, regenerating without a gem would leave its
+        // old .g.cs files on disk, and the new consolidated .csproj's
+        // recursive **/*.cs glob would pick them up and compile them in.
+        //
+        // Test: (1) generate for {GemA, GemB}, (2) regenerate for {GemA}
+        // only (GemB excluded), (3) assert GemB's directory is gone.
+
+        // Step 1: Generate for {GemA, GemB}
+        var jsonBoth = """
+        {
+            "classes": [
+                { "name": "ClassA", "type_id": "{aaaa3333-0000-0000-0000-000000000000}", "source_gem_name": "GemA", "methods": [], "properties": [] },
+                { "name": "ClassB", "type_id": "{bbbb3333-0000-0000-0000-000000000000}", "source_gem_name": "GemB", "methods": [], "properties": [] }
+            ],
+            "ebuses": [], "global_methods": [], "global_properties": []
+        }
+        """;
+        var jsonPath = Path.Combine(_outputDir, "reflection_data.json");
+        File.WriteAllText(jsonPath, jsonBoth);
+
+        var gen = new ReflectionBindingGenerator(rootNamespace: "O3DE.Generated", verbose: false);
+        var result1 = gen.Generate(jsonPath, _outputDir, includeGems: null, excludeGems: null);
+        result1.Success.Should().BeTrue();
+
+        // Verify both gems' directories and files exist
+        Directory.Exists(Path.Combine(_outputDir, "GemA", "Classes")).Should().BeTrue("GemA should be generated");
+        File.Exists(Path.Combine(_outputDir, "GemA", "Classes", "ClassA.g.cs")).Should().BeTrue("ClassA.g.cs should exist");
+        Directory.Exists(Path.Combine(_outputDir, "GemB", "Classes")).Should().BeTrue("GemB should be generated");
+        File.Exists(Path.Combine(_outputDir, "GemB", "Classes", "ClassB.g.cs")).Should().BeTrue("ClassB.g.cs should exist");
+
+        var csprojPath1 = Path.Combine(_outputDir, "O3DESharp.GeneratedBindings.csproj");
+        File.Exists(csprojPath1).Should().BeTrue("consolidated .csproj should be generated");
+
+        // Step 2: Regenerate for {GemA} only (GemB excluded)
+        var jsonAOnly = """
+        {
+            "classes": [
+                { "name": "ClassA", "type_id": "{aaaa3333-0000-0000-0000-000000000000}", "source_gem_name": "GemA", "methods": [], "properties": [] },
+                { "name": "ClassB", "type_id": "{bbbb3333-0000-0000-0000-000000000000}", "source_gem_name": "GemB", "methods": [], "properties": [] }
+            ],
+            "ebuses": [], "global_methods": [], "global_properties": []
+        }
+        """;
+        File.WriteAllText(jsonPath, jsonAOnly);
+
+        var result2 = gen.Generate(jsonPath, _outputDir, includeGems: null, excludeGems: new HashSet<string> { "GemB" });
+        result2.Success.Should().BeTrue();
+
+        // Step 3: Verify stale GemB directory is gone
+        Directory.Exists(Path.Combine(_outputDir, "GemA", "Classes")).Should().BeTrue("GemA must still exist");
+        File.Exists(Path.Combine(_outputDir, "GemA", "Classes", "ClassA.g.cs")).Should().BeTrue("ClassA.g.cs must still exist");
+        Directory.Exists(Path.Combine(_outputDir, "GemB")).Should().BeFalse(
+            "GemB's entire directory must be deleted during regeneration - it's no longer in the gem set");
+        File.Exists(Path.Combine(_outputDir, "GemB", "Classes", "ClassB.g.cs")).Should().BeFalse(
+            "GemB's stale .g.cs files must not exist after regeneration");
+
+        // Step 4: Verify the new .csproj only covers GemA
+        // (sanity check that the csproj was regenerated and doesn't
+        // accidentally reference stale gem buckets)
+        var csproj = File.ReadAllText(csprojPath1);
+        csproj.Should().NotContain("GemB", "consolidated .csproj should not reference excluded gems");
+        csproj.Should().Contain("O3DESharp.GeneratedBindings", "must still be the assembly name");
+    }
 }
