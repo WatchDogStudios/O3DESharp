@@ -252,6 +252,9 @@ CSPROJ_TEMPLATE = r'''<Project Sdk="Microsoft.NET.Sdk">
     <Reference Include="O3DE.Core">
       <HintPath>{o3de_core_path}</HintPath>
     </Reference>
+    <Reference Include="O3DESharp.GeneratedBindings">
+      <HintPath>{generated_bindings_path}</HintPath>
+    </Reference>
   </ItemGroup>
 
   <!-- Auto-deploy after every Build so IDE rebuilds (Rider/VS) and the C#
@@ -646,10 +649,26 @@ class CSharpProjectManager:
     def _get_o3de_core_path(self) -> str:
         """
         Get the path to O3DE.Core.dll for project references.
-        
+
         Returns the deployed location in the project's Bin/Scripts folder.
         """
         return str(self.project_path / "Bin" / "Scripts" / "O3DE.Core.dll")
+
+    def _get_generated_bindings_path(self) -> str:
+        """
+        Get the path to O3DESharp.GeneratedBindings.dll for project
+        references.
+
+        Returns the deployed location in the project's Bin/Scripts folder -
+        same layout as O3DE.Core.dll. The DLL may not exist yet on a fresh
+        checkout (it's produced by the BuildGeneratedBindings CMake target
+        or the Editor-startup auto-sync, both of which need
+        reflection_data.json to exist first); referencing a path that
+        doesn't exist yet is fine for MSBuild (compiles once it appears)
+        and matches how O3DE.Core.dll is already referenced before it's
+        necessarily been built.
+        """
+        return str(self.project_path / "Bin" / "Scripts" / "O3DESharp.GeneratedBindings.dll")
 
     def get_user_assembly_path(self) -> str:
         """Get the current user assembly path."""
@@ -1229,7 +1248,8 @@ class CSharpProjectManager:
             
             # Create .csproj file
             csproj_content = CSPROJ_TEMPLATE.format(
-                o3de_core_path=self.o3de_core_path
+                o3de_core_path=self.o3de_core_path,
+                generated_bindings_path=self._get_generated_bindings_path(),
             )
             csproj_path = project_dir / f"{project_name}.csproj"
             csproj_path.write_text(csproj_content)
