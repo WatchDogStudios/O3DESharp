@@ -26,6 +26,8 @@
 
 #include <Coral/Assembly.hpp>
 
+#include <Scripting/Reflection/GenericDispatcher.h>
+
 namespace O3DESharp
 {
     void ScriptBindings::RegisterAll(Coral::ManagedAssembly* assembly)
@@ -187,6 +189,31 @@ namespace O3DESharp
         imports.Physics_Raycast = reinterpret_cast<void*>(&Physics_Raycast);
 
         imports.Component_HasComponent = reinterpret_cast<void*>(&Component_HasComponent);
+
+        imports.Reflection_GetClassNames = reinterpret_cast<void*>(&GenericDispatcherInternalCalls::Reflection_GetClassNames);
+        imports.Reflection_GetMethodNames = reinterpret_cast<void*>(&GenericDispatcherInternalCalls::Reflection_GetMethodNames);
+        imports.Reflection_GetPropertyNames = reinterpret_cast<void*>(&GenericDispatcherInternalCalls::Reflection_GetPropertyNames);
+        imports.Reflection_GetEBusNames = reinterpret_cast<void*>(&GenericDispatcherInternalCalls::Reflection_GetEBusNames);
+        imports.Reflection_GetEBusEventNames = reinterpret_cast<void*>(&GenericDispatcherInternalCalls::Reflection_GetEBusEventNames);
+        imports.Reflection_ClassExists = reinterpret_cast<void*>(&GenericDispatcherInternalCalls::Reflection_ClassExists);
+        imports.Reflection_MethodExists = reinterpret_cast<void*>(&GenericDispatcherInternalCalls::Reflection_MethodExists);
+
+        imports.Reflection_InvokeStaticMethod = reinterpret_cast<void*>(&GenericDispatcherInternalCalls::InvokeStaticMethod);
+        imports.Reflection_InvokeInstanceMethod = reinterpret_cast<void*>(&GenericDispatcherInternalCalls::InvokeInstanceMethod);
+        imports.Reflection_InvokeGlobalMethod = reinterpret_cast<void*>(&GenericDispatcherInternalCalls::InvokeGlobalMethod);
+
+        imports.Reflection_GetProperty = reinterpret_cast<void*>(&GenericDispatcherInternalCalls::GetProperty);
+        imports.Reflection_SetProperty = reinterpret_cast<void*>(&GenericDispatcherInternalCalls::SetProperty);
+        imports.Reflection_GetGlobalProperty = reinterpret_cast<void*>(&GenericDispatcherInternalCalls::GetGlobalProperty);
+        imports.Reflection_SetGlobalProperty = reinterpret_cast<void*>(&GenericDispatcherInternalCalls::SetGlobalProperty);
+
+        imports.Reflection_BroadcastEBusEvent = reinterpret_cast<void*>(&GenericDispatcherInternalCalls::BroadcastEBusEvent);
+        imports.Reflection_SendEBusEvent = reinterpret_cast<void*>(&GenericDispatcherInternalCalls::SendEBusEvent);
+        imports.Reflection_RegisterEBusHandler = reinterpret_cast<void*>(&GenericDispatcherInternalCalls::RegisterEBusHandler);
+        imports.Reflection_UnregisterEBusHandler = reinterpret_cast<void*>(&GenericDispatcherInternalCalls::UnregisterEBusHandler);
+
+        imports.Reflection_CreateInstance = reinterpret_cast<void*>(&GenericDispatcherInternalCalls::CreateInstance);
+        imports.Reflection_DestroyInstance = reinterpret_cast<void*>(&GenericDispatcherInternalCalls::DestroyInstance);
 
         return imports;
     }
