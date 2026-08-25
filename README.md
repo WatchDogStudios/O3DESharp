@@ -889,6 +889,51 @@ Known limitations:
 The default (`O3DESHARP_BUNDLE_DOTNET_RUNTIME=OFF`) keeps today's
 framework-dependent behavior: players still need .NET 9 installed.
 
+### Shipping with NativeAOT (experimental)
+
+M4 adds an **opt-in, experimental** second alternative: publishing O3DE.Core as a
+NativeAOT shared library, so a shipped desktop game can run C# scripts with **no
+CoreCLR or Coral dependency at all**, only the compiled native image and the
+launcher's native host.
+
+```bash
+cmake -S . -B build -DO3DESHARP_PUBLISH_NATIVEAOT=ON
+cmake --build build --target O3DESharp.PublishNativeAot
+# Re-run configure once more so the produced image gets queued for deploy
+# (its file list isn't known until the publish above has actually run):
+cmake -S . -B build
+```
+
+What this does:
+- Publishes `Assets/Scripts/O3DE.Core/O3DE.Core.csproj` with `dotnet publish -c Release
+  -r <rid> -p:PublishAot=true -p:NativeLib=Shared` for the desktop RID matching the host
+  platform (`win-x64`, `linux-x64`, `osx-x64`, or `osx-arm64`), which compiles O3DE's
+  scripting surface to native code with no interpreter.
+- Stages the compiled image into the build tree and deploys it to `Bin/Scripts/aot/`,
+  deliberately separate from `Bin/Scripts/` — the native O3DE.Core and the managed
+  one share a filename, and a launcher loading the wrong one fails in a way that reads
+  as an unrelated bug.
+
+**Windows command-line builds:** ILCompiler's native link step shells out to
+`vswhere.exe`. Ensure `C:\Program Files (x86)\Microsoft Visual Studio\Installer` is
+on your `PATH`; builds without it fail with `MSB3073` exit code 123. CMake's Visual
+Studio generator inherits a developer environment and is not affected.
+
+**Key restrictions of NativeAOT builds:**
+- **No hot-reload.** `NativeAotHost::SupportsHotReload()` returns false unconditionally.
+  AOT images are editor-only by design; use the Coral path (the default) for iteration.
+- **Closed-world dispatch only.** `O3DESHARP1001` at build time for any non-constant
+  bus or event name; `NotSupportedException` at runtime if such a call is reached. To
+  add a bus dynamically, constant-fold its name in the dispatch call, regenerate
+  `reflection_data.json` if the bus is new, or stay on the Coral artifact.
+- **Mutually exclusive per launcher.** `O3DESHARP_BUNDLE_DOTNET_RUNTIME` (M2, CoreCLR +
+  Coral) and `O3DESHARP_PUBLISH_NATIVEAOT` (M4) target different launchers and are
+  never both active for the same game build.
+- **Platform verification.** `win-x64` is verified; `linux-x64` is authored but not
+  verified. macOS and consoles are not in scope for M4.
+
+The default (`O3DESHARP_PUBLISH_NATIVEAOT=OFF`) keeps today's Coral/CoreCLR behavior.
+
 ### Development Workflow vs Export
 
 **During Development:**
