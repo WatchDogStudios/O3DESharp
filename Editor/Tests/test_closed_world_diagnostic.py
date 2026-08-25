@@ -97,8 +97,14 @@ def test_the_message_names_the_api_and_the_reason():
     line = next((l for l in output.splitlines() if "O3DESHARP1001" in l), None)
     assert line, "expected at least one O3DESHARP1001 line"
     assert "NativeAOT" in line, "the message must say WHICH build config this breaks"
-    for token in ("BroadcastEBusEvent", "SendEBusEvent"):
-        if token in line:
-            break
-    else:
-        pytest.fail("the message must name the API being called")
+    # The diagnostic covers 12 NativeReflection dispatch methods now (EBus
+    # plus InvokeStaticMethod/InvokeInstanceMethod/InvokeGlobalMethod/
+    # GetProperty/SetProperty/GetGlobalProperty/SetGlobalProperty/
+    # CreateInstance), and the first O3DESHARP1001 line in a full `dotnet
+    # build` is whichever project's compiler output happens to come first -
+    # not necessarily the EBus samples. Assert the message SHAPE (it names
+    # some API and some argument kind) rather than hardcoding two method
+    # names from when this diagnostic only covered EBus.
+    assert re.search(r"'\w+' is called with a non-constant \w+ name", line), (
+        f"the message must name the API being called: {line!r}"
+    )

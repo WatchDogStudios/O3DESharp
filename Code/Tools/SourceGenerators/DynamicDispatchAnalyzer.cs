@@ -5,7 +5,9 @@
  * SPDX-License-Identifier: Apache-2.0 OR MIT
  */
 
+using System.Collections.Generic;
 using System.Collections.Immutable;
+using System.Linq;
 using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.CSharp;
 using Microsoft.CodeAnalysis.CSharp.Syntax;
@@ -53,13 +55,32 @@ namespace O3DESharp.SourceGenerators
                 "are out of scope by design and are diagnosed here rather than degrading " +
                 "silently at runtime.");
 
-        // Method name -> (bus arg index, event arg index). Both must be
-        // constant for the call to be statically dispatchable.
-        private const string BroadcastName = "BroadcastEBusEvent";
-        private const string SendName = "SendEBusEvent";
-        private const string BroadcastResultName = "BroadcastResultEBusEvent";
-        private const string SendResultName = "SendResultEBusEvent";
         private const string NativeReflectionFullName = "O3DE.Reflection.NativeReflection";
+
+        // Method name -> the call-site argument position(s) that must be
+        // constant, and the human-readable name for each (used in the
+        // diagnostic message as "non-constant {kind} name"). Not every
+        // watched method checks the same positions as the EBus methods -
+        // e.g. InvokeInstanceMethod's class name comes from
+        // instance.TypeName at runtime, not a call-site literal, so only its
+        // method-name argument (position 1) is checked. DestroyInstance has
+        // no name-shaped call-site argument at all and is not in this table.
+        private static readonly Dictionary<string, (int Index, string Kind)[]> s_watchedMethods =
+            new()
+            {
+                ["BroadcastEBusEvent"] = new[] { (0, "bus"), (1, "event") },
+                ["SendEBusEvent"] = new[] { (0, "bus"), (1, "event") },
+                ["BroadcastResultEBusEvent"] = new[] { (0, "bus"), (1, "event") },
+                ["SendResultEBusEvent"] = new[] { (0, "bus"), (1, "event") },
+                ["InvokeStaticMethod"] = new[] { (0, "class"), (1, "method") },
+                ["InvokeInstanceMethod"] = new[] { (1, "method") },
+                ["InvokeGlobalMethod"] = new[] { (0, "method") },
+                ["GetProperty"] = new[] { (1, "property") },
+                ["SetProperty"] = new[] { (1, "property") },
+                ["GetGlobalProperty"] = new[] { (0, "property") },
+                ["SetGlobalProperty"] = new[] { (0, "property") },
+                ["CreateInstance"] = new[] { (0, "class") },
+            };
 
         public override ImmutableArray<DiagnosticDescriptor> SupportedDiagnostics =>
             ImmutableArray.Create(s_rule);
@@ -75,8 +96,8 @@ namespace O3DESharp.SourceGenerators
         {
             var invocation = (InvocationExpressionSyntax)context.Node;
 
-            // Cheap syntactic reject first: only four method names matter.
-            // Two syntax shapes reach here - `NativeReflection.Foo(...)`
+            // Cheap syntactic reject first: only the watched method names
+            // matter. Two syntax shapes reach here - `NativeReflection.Foo(...)`
             // (MemberAccessExpressionSyntax) and an unqualified `Foo(...)`
             // via `using static O3DE.Reflection.NativeReflection;`
             // (IdentifierNameSyntax). The semantic ContainingType check
@@ -92,8 +113,7 @@ namespace O3DESharp.SourceGenerators
             {
                 return;
             }
-            if (methodName != BroadcastName && methodName != SendName &&
-                methodName != BroadcastResultName && methodName != SendResultName)
+            if (!s_watchedMethods.TryGetValue(methodName, out (int Index, string Kind)[] checkedArgs))
             {
                 return;
             }
@@ -125,20 +145,18 @@ namespace O3DESharp.SourceGenerators
             }
 
             var args = invocation.ArgumentList.Arguments;
-            if (args.Count < 2)
+            int maxIndex = checkedArgs.Max(c => c.Index);
+            if (args.Count <= maxIndex)
             {
                 return;
             }
 
-            // Argument 0 is the bus name, argument 1 the event name, on all
-            // four overloads (the addressed variants take the bus id third).
-            if (!IsConstant(context, args[0].Expression))
+            foreach ((int index, string kind) in checkedArgs)
             {
-                Report(context, args[0].Expression, methodName, "bus");
-            }
-            if (!IsConstant(context, args[1].Expression))
-            {
-                Report(context, args[1].Expression, methodName, "event");
+                if (!IsConstant(context, args[index].Expression))
+                {
+                    Report(context, args[index].Expression, methodName, kind);
+                }
             }
         }
 
