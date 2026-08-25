@@ -50,6 +50,12 @@
          Compile globs. See comment on EmitCompilerGeneratedFiles. -->
     <Compile Remove="generated/**/*.cs" />
     <None Include="generated/**/*.cs" />
+
+    <!-- This directory is shared with the sibling SourceGenerators.Tests.csproj
+         (xUnit tests added for StaticDispatchGenerator's parsing logic). This
+         project has no xunit/FluentAssertions references and isn't meant to -
+         exclude that file from this project's default Compile glob. -->
+    <Compile Remove="StaticDispatchGeneratorTests.cs" />
   </ItemGroup>
 
   <ItemGroup>

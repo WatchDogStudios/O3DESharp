@@ -1,0 +1,64 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    Unit tests for the O3DESharp Roslyn source generators (Phase 18-E /
+    NativeAOT reflection dispatch). Deliberately separate from
+    SourceGenerators.Smoke.csproj: the smoke project drives the generator
+    pipeline end-to-end against real consumer code, while this project
+    references O3DESharp.SourceGenerators.csproj as a PLAIN library (not
+    OutputItemType="Analyzer") so tests can call its static parsing methods
+    directly - StaticDispatchGenerator.ParseReflectionData in particular -
+    without standing up a full Roslyn generator test harness.
+  -->
+
+  <PropertyGroup>
+    <TargetFramework>net9.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <IsPackable>false</IsPackable>
+    <IsTestProject>true</IsTestProject>
+    <RootNamespace>O3DESharp.SourceGenerators.Tests</RootNamespace>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- StaticDispatchGenerator implements IIncrementalGenerator / carries
+         [Generator] - loading the type (even just to call one of its plain
+         static methods) pulls in Microsoft.CodeAnalysis at runtime. The
+         generator project references it PrivateAssets="all" (correct there:
+         it must not flow to the generator's own consumers), so this test
+         project needs its own copy to actually run. -->
+    <PackageReference Include="Microsoft.CodeAnalysis.CSharp" Version="4.4.0" />
+    <PackageReference Include="coverlet.collector" Version="6.0.0">
+      <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
+      <PrivateAssets>all</PrivateAssets>
+    </PackageReference>
+    <PackageReference Include="FluentAssertions" Version="6.12.0" />
+    <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.8.0" />
+    <PackageReference Include="xunit" Version="2.6.2" />
+    <PackageReference Include="xunit.runner.visualstudio" Version="2.5.4">
+      <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
+      <PrivateAssets>all</PrivateAssets>
+    </PackageReference>
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- This directory is shared with SourceGenerators.Smoke.csproj, whose
+         sample .cs files the SDK's default Compile glob would otherwise pull
+         into this project too (they reference O3DE.Core types this project
+         doesn't - and shouldn't - depend on). Keep this project to just its
+         own test files. -->
+    <Compile Remove="DynamicDispatchSamples.cs" />
+    <Compile Remove="SmokeTestComponent.cs" />
+    <Compile Remove="generated/**/*.cs" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\SourceGenerators\O3DESharp.SourceGenerators.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Using Include="Xunit" />
+    <Using Include="FluentAssertions" />
+  </ItemGroup>
+
+</Project>

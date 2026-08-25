@@ -71,6 +71,14 @@ namespace O3DESharp.SourceGenerators
                     sourceContext.AddSource(
                         "O3DE.Reflection.StaticEBusDispatch.g.cs",
                         SourceText.From(Emit(events), Encoding.UTF8));
+
+                    var parsedPerFile = texts.Select(ParseReflectionData).ToImmutableArray();
+                    var classes = parsedPerFile.SelectMany(p => p.Classes).ToImmutableArray();
+                    var globalMethods = parsedPerFile.SelectMany(p => p.GlobalMethods).ToImmutableArray();
+                    var globalProperties = parsedPerFile.SelectMany(p => p.GlobalProperties).ToImmutableArray();
+                    sourceContext.AddSource(
+                        "O3DE.Reflection.StaticReflectionDispatch.g.cs",
+                        SourceText.From(EmitReflectionDispatch(classes, globalMethods, globalProperties), Encoding.UTF8));
                 });
         }
 
@@ -162,6 +170,112 @@ namespace O3DESharp.SourceGenerators
             return results;
         }
 
+        /// <summary>
+        /// Parses the same reflection_data.json into the wider closed-world
+        /// surface: classes (+ their method/property names), global methods,
+        /// global properties, and - reusing <see cref="ParseEvents"/> rather
+        /// than re-parsing the "ebuses" array a second time - the set of known
+        /// bus names. Public: exercised directly by
+        /// SourceGenerators.Tests/StaticDispatchGeneratorTests.cs, which calls
+        /// this without standing up a full Roslyn generator pipeline.
+        /// </summary>
+        public static ParsedReflectionData ParseReflectionData(string json)
+        {
+            var busNames = ParseEvents(json)
+                .Select(e => e.BusName)
+                .Distinct(StringComparer.Ordinal)
+                .ToImmutableArray();
+
+            var classes = ImmutableArray<ClassShape>.Empty;
+            var globalMethods = ImmutableArray<string>.Empty;
+            var globalProperties = ImmutableArray<string>.Empty;
+
+            if (!string.IsNullOrWhiteSpace(json))
+            {
+                try
+                {
+                    using var document = System.Text.Json.JsonDocument.Parse(json);
+                    classes = ParseClasses(document.RootElement);
+                    globalMethods = ParseNamedEntries(document.RootElement, "global_methods");
+                    globalProperties = ParseNamedEntries(document.RootElement, "global_properties");
+                }
+                catch (Exception ex) when (ex is System.Text.Json.JsonException or InvalidOperationException)
+                {
+                    // Same graceful degradation as ParseEvents: a corrupt or
+                    // structurally-odd dump yields empty sets, never a build
+                    // failure.
+                    classes = ImmutableArray<ClassShape>.Empty;
+                    globalMethods = ImmutableArray<string>.Empty;
+                    globalProperties = ImmutableArray<string>.Empty;
+                }
+            }
+
+            return new ParsedReflectionData(classes, globalMethods, globalProperties, busNames);
+        }
+
+        private static ImmutableArray<ClassShape> ParseClasses(System.Text.Json.JsonElement root)
+        {
+            var results = new List<ClassShape>();
+            if (!root.TryGetProperty("classes", out var classes) ||
+                classes.ValueKind != System.Text.Json.JsonValueKind.Array)
+            {
+                return results.ToImmutableArray();
+            }
+
+            foreach (var cls in classes.EnumerateArray())
+            {
+                // Same defensive ValueKind guard as ParseEvents: a malformed
+                // "classes" entry (non-object) must not throw.
+                if (cls.ValueKind != System.Text.Json.JsonValueKind.Object)
+                {
+                    continue;
+                }
+                if (!cls.TryGetProperty("name", out var className) ||
+                    className.ValueKind != System.Text.Json.JsonValueKind.String)
+                {
+                    continue;
+                }
+
+                var methodNames = ParseNamedEntries(cls, "methods");
+                var propertyNames = ParseNamedEntries(cls, "properties");
+
+                results.Add(new ClassShape(className.GetString()!, methodNames, propertyNames));
+            }
+
+            return results.ToImmutableArray();
+        }
+
+        /// <summary>
+        /// Reads the "name" field out of each object in a JSON array property -
+        /// shared shape for "methods", "properties", "global_methods", and
+        /// "global_properties", all of which are just arrays-of-named-things
+        /// as far as static dispatch cares.
+        /// </summary>
+        private static ImmutableArray<string> ParseNamedEntries(System.Text.Json.JsonElement parent, string propertyName)
+        {
+            var results = new List<string>();
+            if (!parent.TryGetProperty(propertyName, out var array) ||
+                array.ValueKind != System.Text.Json.JsonValueKind.Array)
+            {
+                return results.ToImmutableArray();
+            }
+
+            foreach (var item in array.EnumerateArray())
+            {
+                if (item.ValueKind != System.Text.Json.JsonValueKind.Object)
+                {
+                    continue;
+                }
+                if (item.TryGetProperty("name", out var name) &&
+                    name.ValueKind == System.Text.Json.JsonValueKind.String)
+                {
+                    results.Add(name.GetString()!);
+                }
+            }
+
+            return results.ToImmutableArray();
+        }
+
         // -----------------------------------------------------------
         // Emit
         // -----------------------------------------------------------
@@ -227,6 +341,148 @@ namespace O3DESharp.SourceGenerators
             sb.AppendLine("                default: return false;");
             sb.AppendLine("            }");
             sb.AppendLine("        }");
+            sb.AppendLine();
+            sb.AppendLine("        /// <summary>");
+            sb.AppendLine("        /// Whether a bus by this name is in the reflected surface, regardless");
+            sb.AppendLine("        /// of event name - needed by EBusHandlerRegistry.Register, which only");
+            sb.AppendLine("        /// has the bus name to guard against at that point.");
+            sb.AppendLine("        /// </summary>");
+            sb.AppendLine("        internal static bool BusExists(string busName)");
+            sb.AppendLine("        {");
+            sb.AppendLine("            switch (busName)");
+            sb.AppendLine("            {");
+            foreach (var busGroup in distinct.GroupBy(e => e.BusName, StringComparer.Ordinal))
+            {
+                sb.AppendLine($"                case {Literal(busGroup.Key)}: return true;");
+            }
+            sb.AppendLine("                default: return false;");
+            sb.AppendLine("            }");
+            sb.AppendLine("        }");
+            sb.AppendLine("    }");
+            sb.AppendLine("}");
+            return sb.ToString();
+        }
+
+        private static string EmitReflectionDispatch(
+            ImmutableArray<ClassShape> classes,
+            ImmutableArray<string> globalMethods,
+            ImmutableArray<string> globalProperties)
+        {
+            var distinctClasses = classes
+                .GroupBy(c => c.ClassName, StringComparer.Ordinal)
+                .Select(g => g.First())
+                .OrderBy(c => c.ClassName, StringComparer.Ordinal)
+                .ToList();
+
+            var distinctGlobalMethods = globalMethods
+                .Distinct(StringComparer.Ordinal)
+                .OrderBy(m => m, StringComparer.Ordinal)
+                .ToList();
+
+            var distinctGlobalProperties = globalProperties
+                .Distinct(StringComparer.Ordinal)
+                .OrderBy(p => p, StringComparer.Ordinal)
+                .ToList();
+
+            var sb = new StringBuilder();
+            sb.AppendLine("// <auto-generated>");
+            sb.AppendLine("//   This file was generated by O3DESharp.SourceGenerators (StaticDispatchGenerator).");
+            sb.AppendLine("//   Source: reflection_data.json. DO NOT EDIT.");
+            sb.AppendLine("// </auto-generated>");
+            sb.AppendLine("#nullable enable");
+            sb.AppendLine();
+            sb.AppendLine("namespace O3DE.Reflection");
+            sb.AppendLine("{");
+            sb.AppendLine("    /// <summary>");
+            sb.AppendLine("    /// Compile-time table built from the reflected classes, global methods,");
+            sb.AppendLine("    /// and global properties - the non-EBus half of the closed-world surface");
+            sb.AppendLine("    /// (see StaticEBusDispatch for the EBus half). A generated switch rather");
+            sb.AppendLine("    /// than a Dictionary, for the same reason: resolved when the compiler");
+            sb.AppendLine("    /// runs, not built as runtime state during startup.");
+            sb.AppendLine("    /// </summary>");
+            sb.AppendLine("    internal static class StaticReflectionDispatch");
+            sb.AppendLine("    {");
+
+            sb.AppendLine("        internal static bool ClassExists(string className)");
+            sb.AppendLine("        {");
+            sb.AppendLine("            switch (className)");
+            sb.AppendLine("            {");
+            foreach (var cls in distinctClasses)
+            {
+                sb.AppendLine($"                case {Literal(cls.ClassName)}: return true;");
+            }
+            sb.AppendLine("                default: return false;");
+            sb.AppendLine("            }");
+            sb.AppendLine("        }");
+            sb.AppendLine();
+
+            sb.AppendLine("        internal static bool MethodExists(string className, string methodName)");
+            sb.AppendLine("        {");
+            sb.AppendLine("            switch (className)");
+            sb.AppendLine("            {");
+            foreach (var cls in distinctClasses)
+            {
+                sb.AppendLine($"                case {Literal(cls.ClassName)}:");
+                sb.AppendLine("                    switch (methodName)");
+                sb.AppendLine("                    {");
+                foreach (var method in cls.MethodNames.Distinct(StringComparer.Ordinal))
+                {
+                    sb.AppendLine($"                        case {Literal(method)}: return true;");
+                }
+                sb.AppendLine("                        default: return false;");
+                sb.AppendLine("                    }");
+            }
+            sb.AppendLine("                default: return false;");
+            sb.AppendLine("            }");
+            sb.AppendLine("        }");
+            sb.AppendLine();
+
+            sb.AppendLine("        internal static bool PropertyExists(string className, string propertyName)");
+            sb.AppendLine("        {");
+            sb.AppendLine("            switch (className)");
+            sb.AppendLine("            {");
+            foreach (var cls in distinctClasses)
+            {
+                sb.AppendLine($"                case {Literal(cls.ClassName)}:");
+                sb.AppendLine("                    switch (propertyName)");
+                sb.AppendLine("                    {");
+                foreach (var property in cls.PropertyNames.Distinct(StringComparer.Ordinal))
+                {
+                    sb.AppendLine($"                        case {Literal(property)}: return true;");
+                }
+                sb.AppendLine("                        default: return false;");
+                sb.AppendLine("                    }");
+            }
+            sb.AppendLine("                default: return false;");
+            sb.AppendLine("            }");
+            sb.AppendLine("        }");
+            sb.AppendLine();
+
+            sb.AppendLine("        internal static bool GlobalMethodExists(string methodName)");
+            sb.AppendLine("        {");
+            sb.AppendLine("            switch (methodName)");
+            sb.AppendLine("            {");
+            foreach (var method in distinctGlobalMethods)
+            {
+                sb.AppendLine($"                case {Literal(method)}: return true;");
+            }
+            sb.AppendLine("                default: return false;");
+            sb.AppendLine("            }");
+            sb.AppendLine("        }");
+            sb.AppendLine();
+
+            sb.AppendLine("        internal static bool GlobalPropertyExists(string propertyName)");
+            sb.AppendLine("        {");
+            sb.AppendLine("            switch (propertyName)");
+            sb.AppendLine("            {");
+            foreach (var property in distinctGlobalProperties)
+            {
+                sb.AppendLine($"                case {Literal(property)}: return true;");
+            }
+            sb.AppendLine("                default: return false;");
+            sb.AppendLine("            }");
+            sb.AppendLine("        }");
+
             sb.AppendLine("    }");
             sb.AppendLine("}");
             return sb.ToString();
@@ -241,4 +497,57 @@ namespace O3DESharp.SourceGenerators
 
     /// <summary>One reflected EBus event, reduced to what static dispatch needs.</summary>
     internal sealed record EventShape(string BusName, string EventName, int Arity, bool IsBroadcast);
+
+    /// <summary>One reflected class, reduced to what static dispatch needs.</summary>
+    internal sealed record ClassShape(string ClassName, ImmutableArray<string> MethodNames, ImmutableArray<string> PropertyNames);
+
+    /// <summary>
+    /// The wider closed-world surface parsed from reflection_data.json:
+    /// classes (+ their methods/properties), global methods, global
+    /// properties, and known bus names. Consumed both by the generator's own
+    /// emission (<see cref="StaticDispatchGenerator"/>'s internal
+    /// EmitReflectionDispatch) and directly by unit tests, which is why the
+    /// lookup methods here are public even though the rest of this file's
+    /// surface is internal - a test assembly has no InternalsVisibleTo grant
+    /// onto the generator.
+    /// </summary>
+    public sealed class ParsedReflectionData
+    {
+        internal ImmutableArray<ClassShape> Classes { get; }
+        internal ImmutableArray<string> GlobalMethods { get; }
+        internal ImmutableArray<string> GlobalProperties { get; }
+        internal ImmutableArray<string> BusNames { get; }
+
+        internal ParsedReflectionData(
+            ImmutableArray<ClassShape> classes,
+            ImmutableArray<string> globalMethods,
+            ImmutableArray<string> globalProperties,
+            ImmutableArray<string> busNames)
+        {
+            Classes = classes;
+            GlobalMethods = globalMethods;
+            GlobalProperties = globalProperties;
+            BusNames = busNames;
+        }
+
+        public bool ClassExists(string className) =>
+            Classes.Any(c => string.Equals(c.ClassName, className, StringComparison.Ordinal));
+
+        public bool MethodExists(string className, string methodName) =>
+            Classes.Any(c => string.Equals(c.ClassName, className, StringComparison.Ordinal) &&
+                              c.MethodNames.Any(m => string.Equals(m, methodName, StringComparison.Ordinal)));
+
+        public bool PropertyExists(string className, string propertyName) =>
+            Classes.Any(c => string.Equals(c.ClassName, className, StringComparison.Ordinal) &&
+                              c.PropertyNames.Any(p => string.Equals(p, propertyName, StringComparison.Ordinal)));
+
+        public bool GlobalMethodExists(string methodName) =>
+            GlobalMethods.Any(m => string.Equals(m, methodName, StringComparison.Ordinal));
+
+        public bool GlobalPropertyExists(string propertyName) =>
+            GlobalProperties.Any(p => string.Equals(p, propertyName, StringComparison.Ordinal));
+
+        public bool BusExists(string busName) =>
+            BusNames.Any(b => string.Equals(b, busName, StringComparison.Ordinal));
+    }
 }
