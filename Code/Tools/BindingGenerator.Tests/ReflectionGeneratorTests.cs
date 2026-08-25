@@ -384,6 +384,25 @@ public class ReflectionGeneratorTests : IDisposable
     }
 
     [Fact]
+    public void GeneratedProject_ReferencesSourceGeneratorsAsAnalyzer()
+    {
+        var json = """
+        {
+            "classes": [
+                { "name": "ClassA", "type_id": "{dddd1111-0000-0000-0000-000000000000}", "source_gem_name": "GemA", "methods": [], "properties": [] }
+            ],
+            "ebuses": [], "global_methods": [], "global_properties": []
+        }
+        """;
+        var dir = GenerateFromJson(json);
+        var csproj = File.ReadAllText(Path.Combine(dir, "O3DESharp.GeneratedBindings.csproj"));
+
+        csproj.Should().Contain("O3DESharp.SourceGenerators.csproj");
+        csproj.Should().Contain("OutputItemType=\"Analyzer\"");
+        csproj.Should().Contain("ReferenceOutputAssembly=\"false\"");
+    }
+
+    [Fact]
     public void Generate_ExcludeGems_OmitsDeniedGemFromOutput()
     {
         var json = """

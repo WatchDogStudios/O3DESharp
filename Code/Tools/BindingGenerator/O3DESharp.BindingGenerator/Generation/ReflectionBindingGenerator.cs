@@ -439,6 +439,9 @@ namespace O3DESharp.BindingGenerator.Generation
             sb.AppendLine("      <HintPath>$(MSBuildProjectDirectory)\\..\\..\\Bin\\Scripts\\O3DE.Core.dll</HintPath>");
             sb.AppendLine("      <Private>false</Private>");
             sb.AppendLine("    </Reference>");
+            sb.AppendLine("    <ProjectReference Include=\"..\\..\\Code\\Tools\\SourceGenerators\\O3DESharp.SourceGenerators.csproj\"");
+            sb.AppendLine("                      OutputItemType=\"Analyzer\"");
+            sb.AppendLine("                      ReferenceOutputAssembly=\"false\" />");
             sb.AppendLine("  </ItemGroup>");
             sb.AppendLine();
             sb.AppendLine("  <!-- Auto-deploy after every Build. ContinueOnError prevents a");
