@@ -180,6 +180,17 @@ if(TARGET Coral.Managed)
     # traces from there land as `<unknown source>`. The PDB is small
     # (a few hundred KB) and shipping it has zero cost for users who
     # never debug into Coral.
+    # BYPRODUCTS is load-bearing on Ninja (WatchDogStudios/O3DESharp#3): without
+    # it, these four staged paths have no declared producing rule anywhere in
+    # the build graph. ly_add_target_files() below asks for them again by exact
+    # path (not by target) to deploy them to the launchers, and on a fresh
+    # clone - where they don't exist on disk yet - Ninja can't resolve that
+    # request ("no known rule to make it") even though this target's COMMAND
+    # does write them; add_custom_target()'s commands have no declared outputs
+    # on their own. A pre-packaged release tree never hits this because the
+    # files are already present, so there's nothing for Ninja to need a rule
+    # for. Same pattern already used below for the O3DE.Core custom target's
+    # BYPRODUCTS, for the identical reason.
     add_custom_target(${gem_name}.StageCoral ALL
         COMMENT "O3DESharp: Staging Coral.Managed files for deployment"
         COMMAND ${CMAKE_COMMAND} -E make_directory "${CORAL_STAGING_DIR}"
@@ -194,6 +205,11 @@ if(TARGET Coral.Managed)
             "${CORAL_STAGING_DIR}/Coral.Managed.runtimeconfig.json"
         COMMAND ${CMAKE_COMMAND} -E copy_if_different
             "${CORAL_MANAGED_OUTPUT}/Coral.Managed.deps.json"
+            "${CORAL_STAGING_DIR}/Coral.Managed.deps.json"
+        BYPRODUCTS
+            "${CORAL_STAGING_DIR}/Coral.Managed.dll"
+            "${CORAL_STAGING_DIR}/Coral.Managed.pdb"
+            "${CORAL_STAGING_DIR}/Coral.Managed.runtimeconfig.json"
             "${CORAL_STAGING_DIR}/Coral.Managed.deps.json"
         DEPENDS Coral.Managed
     )
@@ -237,6 +253,11 @@ if(EXISTS "${O3DE_CORE_SCRIPTS_DIR}/O3DE.Core.csproj" OR EXISTS "${O3DE_CORE_BUI
     # source-level breakpoints in O3DE.Core methods - without the PDB
     # next to the DLL, attach succeeds but stepping into framework
     # code shows up as `<unknown source>`.
+    # BYPRODUCTS is load-bearing on Ninja, same reasoning and same reported
+    # failure as StageCoral above (WatchDogStudios/O3DESharp#3) - without it,
+    # a fresh clone hits "no known rule to make it" for O3DE.Core.dll at the
+    # launchers' runtime-dependency step instead of Coral.Managed.dll's, the
+    # next file ly_add_target_files() asks for by path below.
     add_custom_target(${gem_name}.StageO3DECore ALL
         COMMENT "O3DESharp: Staging O3DE.Core files for deployment"
         COMMAND ${CMAKE_COMMAND} -E make_directory "${O3DE_CORE_STAGING_DIR}"
@@ -247,6 +268,10 @@ if(EXISTS "${O3DE_CORE_SCRIPTS_DIR}/O3DE.Core.csproj" OR EXISTS "${O3DE_CORE_BUI
         # them only if present so a Release build without a PDB doesn't fail.
         COMMAND ${CMAKE_COMMAND} -DSRC=${O3DE_CORE_BUILD_OUTPUT}/O3DE.Core.pdb -DDST=${O3DE_CORE_STAGING_DIR}/O3DE.Core.pdb -P "${CMAKE_CURRENT_LIST_DIR}/o3desharp_copy_if_exists.cmake"
         COMMAND ${CMAKE_COMMAND} -DSRC=${O3DE_CORE_BUILD_OUTPUT}/O3DE.Core.deps.json -DDST=${O3DE_CORE_STAGING_DIR}/O3DE.Core.deps.json -P "${CMAKE_CURRENT_LIST_DIR}/o3desharp_copy_if_exists.cmake"
+        BYPRODUCTS
+            "${O3DE_CORE_STAGING_DIR}/O3DE.Core.dll"
+            "${O3DE_CORE_STAGING_DIR}/O3DE.Core.pdb"
+            "${O3DE_CORE_STAGING_DIR}/O3DE.Core.deps.json"
     )
 
     # NOTE: build-ordering dependencies (O3DE.Core, StageCoral) are wired in a
