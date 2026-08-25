@@ -108,13 +108,40 @@ release from the gem repository rather than copying files into the engine.
 
 ## Installation
 
-1. Enable the O3DESharp Gem in your project:
+1. Enable the O3DESharp Gem in your project — either the CLI:
    ```bash
    o3de register --gem-path Gems/O3DESharp
    o3de enable-gem --gem-name O3DESharp --project-path /path/to/your/project
    ```
+   or the Project Manager GUI: open your project, go to **Gems**, find
+   O3DESharp in the catalog, and toggle it on.
 
-2. Rebuild your project. CMake's `O3DESharp.StageCoral` and
+2. **Re-configure CMake, not just rebuild — this step is easy to miss and
+   is the #1 cause of "I enabled the gem but nothing shows up."** Enabling
+   a gem only adds it to your project's `enabled_gems.cmake`; the gem's
+   own targets (including the Editor module that registers **Tools > C#
+   Scripting**) only enter the build graph on a fresh CMake *configure*,
+   not a plain build. Project Manager's **Build Project** button does not
+   reliably re-run configure on its own build directory — if it just
+   invokes an incremental build against the existing (stale) CMake cache,
+   the build can report success while never having added O3DESharp to the
+   Editor at all.
+
+   Symptom if you hit this: the gem shows as enabled, the project builds
+   without errors, but **Tools > C# Scripting never appears in the Editor
+   menu bar**, and it stays that way no matter how many times you rebuild.
+
+   Fix: force a real reconfigure, then build:
+   ```bash
+   cmake -S . -B build -G "Ninja Multi-Config"   # or your usual generator/build dir
+   cmake --build build --config profile
+   ```
+   If that still doesn't pick up the gem, delete `build/CMakeCache.txt`
+   (or the whole `build/` directory for a fully clean slate) and
+   reconfigure from scratch — a corrupted/stale cache from before the gem
+   was enabled can otherwise persist indefinitely.
+
+   Once this succeeds, CMake's `O3DESharp.StageCoral` and
    `O3DESharp.StageO3DECore` custom targets stage `Coral.Managed.dll`,
    `O3DE.Core.dll`, and their runtimeconfig/deps next to the engine
    binaries automatically — no manual copy step.
@@ -696,6 +723,27 @@ This approach means that:
 
 ## Troubleshooting
 
+### "Tools > C# Scripting" menu doesn't appear in the Editor
+
+The gem shows as enabled in Project Manager, the project builds without
+errors, but the **Tools > C# Scripting** submenu (C# Project Manager,
+Create C# Project, Build C# Projects, Reload Scripts, etc.) never shows up
+in the Editor's menu bar — no matter how many times you rebuild.
+
+This menu is registered natively in C++
+(`O3DESharpEditorSystemComponent::OnMenuBindingHook`, `Code/Source/Tools/
+O3DESharpEditorSystemComponent.cpp`) via the Editor's ActionManager, and it
+registers unconditionally whenever the O3DESharp Editor module is actually
+loaded. If the menu is missing, the module isn't loaded for that project —
+almost always because **enabling the gem updated
+`enabled_gems.cmake` but the project's CMake build directory was never
+re-configured**, only rebuilt against its existing (stale) build graph. A
+plain rebuild can succeed and still never have added O3DESharp to the
+Editor at all. See step 2 under [Installation](#installation) for the
+fix — force a real `cmake -S . -B build` reconfigure (not just `cmake
+--build`), and if that doesn't resolve it, delete `build/CMakeCache.txt`
+and reconfigure from a clean slate.
+
 ### ".NET runtime not found"
 
 Ensure the .NET 9.0 SDK is installed and available in your PATH:
@@ -709,17 +757,14 @@ This error occurs when the Coral .NET hosting files haven't been deployed to you
 
 **Solution 1: Use the C# Project Manager (Recommended)**
 
-1. In the O3DE Editor, open the Python console (**Tools > Python Console**,
-   or `View > Python Console` depending on your Editor build) and run:
+1. In the O3DE Editor, open **Tools > C# Scripting > C# Project Manager...**
+   (if that submenu is missing entirely, see
+   ["Tools > C# Scripting" menu doesn't appear](#tools--c-scripting-menu-doesnt-appear-in-the-editor)
+   above first). If you'd rather drive it from the Python console instead:
    ```python
    import csharp_editor_bootstrap
    csharp_editor_bootstrap.open_csharp_project_manager()
    ```
-   This opens the **C# Project Manager** dialog. (There is currently no
-   registered `Tools >` menu entry for it — `register_menus()` in
-   `Editor/Scripts/csharp_editor_bootstrap.py` only logs these Python
-   console commands to the Console panel on Editor startup; it does not
-   call the ActionManager API to add a real menu item yet.)
 2. In the **Settings** section, check the **Deployment** status
 3. Click **Deploy Coral** to automatically copy the required files
 4. If auto-detection fails, click **Browse...** to manually select the Coral.Managed build output directory
