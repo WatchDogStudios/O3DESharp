@@ -9,9 +9,10 @@
 None of this C++ can be compiled in the authoring environment (no O3DE engine
 SDK), so the properties that matter and are checkable from source are checked
 here: the interface has exactly the four methods the design specifies, CoralHost
-implements all of them, MakeNativeImports assigns every one of the 47 ABI
-fields, and the wrapping refactor did not delete the Coral upload path it is
-supposed to preserve.
+implements all of them, MakeNativeImports assigns every one of the 67 ABI
+fields (47 from v1 plus the 20 Reflection_* fields added in HostAbiVersion 2),
+and the wrapping refactor did not delete the Coral upload path it is supposed
+to preserve.
 """
 
 import re
@@ -54,11 +55,44 @@ def test_coral_host_implements_all_four():
         )
 
 
+# The 20 Reflection_* fields added in HostAbiVersion 2 are assigned from the
+# GenericDispatcherInternalCalls namespace rather than from a free function of
+# the same name. Seven of those C++ symbols carry the Reflection_ prefix
+# themselves; the other thirteen do not (the *string* name Coral registers
+# always has the prefix - GenericDispatcher.cpp - but the symbol doesn't).
+REFLECTION_NAMESPACE = "GenericDispatcherInternalCalls"
+REFLECTION_PREFIXED_SYMBOLS = {
+    "Reflection_GetClassNames",
+    "Reflection_GetMethodNames",
+    "Reflection_GetPropertyNames",
+    "Reflection_GetEBusNames",
+    "Reflection_GetEBusEventNames",
+    "Reflection_ClassExists",
+    "Reflection_MethodExists",
+}
+
+
+def _expected_function_for(field):
+    """The exact expression MakeNativeImports must take the address of."""
+    if not field.startswith("Reflection_"):
+        # v1 fields: free function of the identical name.
+        return field
+    if field in REFLECTION_PREFIXED_SYMBOLS:
+        return f"{REFLECTION_NAMESPACE}::{field}"
+    return f"{REFLECTION_NAMESPACE}::{field[len('Reflection_'):]}"
+
+
 @pytest.mark.unit
 def test_make_native_imports_assigns_every_abi_field_in_order_to_the_matching_function():
     # HostAbi.h field declaration order IS the source of truth for the ABI.
+    # Slice at the LAST NativeImports field - everything after it belongs to
+    # the ManagedExports struct, which MakeNativeImports does not populate.
     abi_fields = re.findall(r"void\*\s+(\w+)\s*;", _read(HOST_ABI_H))
-    native_imports = abi_fields[: abi_fields.index("Component_HasComponent") + 1]
+    native_imports = abi_fields[: abi_fields.index("Reflection_DestroyInstance") + 1]
+    assert len(native_imports) == 67, (
+        f"NativeImports declares {len(native_imports)} function-pointer fields, not 67 "
+        "(47 from v1 + 20 Reflection_* added in v2). Adding one is an ABI change."
+    )
 
     body = _read(SCRIPT_BINDINGS_CPP)
     m = re.search(r"MakeNativeImports\s*\(\s*\)", body)
@@ -72,7 +106,9 @@ def test_make_native_imports_assigns_every_abi_field_in_order_to_the_matching_fu
     # copy-paste swap between two adjacent fields (e.g. Transform_GetForward
     # accidentally assigned &Transform_GetUp), which an unordered
     # presence-only check cannot.
-    assignments = re.findall(r"imports\.(\w+)\s*=\s*reinterpret_cast<void\*>\(&(\w+)\)\s*;", func_body)
+    # [\w:]+ (not \w+): the v2 assignments name a namespace-qualified symbol,
+    # e.g. &GenericDispatcherInternalCalls::InvokeInstanceMethod.
+    assignments = re.findall(r"imports\.(\w+)\s*=\s*reinterpret_cast<void\*>\(&([\w:]+)\)\s*;", func_body)
 
     assert len(assignments) == len(native_imports), (
         f"MakeNativeImports has {len(assignments)} field assignments, expected "
@@ -86,10 +122,11 @@ def test_make_native_imports_assigns_every_abi_field_in_order_to_the_matching_fu
             f"HostAbi.h declares field #{index} as '{expected_field}'. Assignment "
             "order must match declaration order exactly."
         )
-        assert assigned_fn == expected_field, (
+        expected_fn = _expected_function_for(expected_field)
+        assert assigned_fn == expected_fn, (
             f"MakeNativeImports assigns imports.{assigned_field} the address of "
-            f"'{assigned_fn}', a name mismatch. Every field must be assigned the "
-            "address of the identically-named function."
+            f"'{assigned_fn}', expected '{expected_fn}'. A field wired to the wrong "
+            "function is a silently mis-dispatched call under NativeAOT."
         )
 
 
