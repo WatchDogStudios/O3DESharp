@@ -2,6 +2,8 @@
 
 O3DESharp is a Gem that adds C# scripting support to the Open 3D Engine (O3DE) using the [Coral](https://github.com/WatchDogStudios/Coral) .NET host library (a fork of [StudioCherno/Coral](https://github.com/StudioCherno/Coral) with WD-Studios-specific fixes).
 
+> **Full documentation lives in the [GitHub Wiki](https://github.com/WatchDogStudios/O3DESharp/wiki)** - this README covers the essentials; the wiki has the in-depth [Scripting Guide](https://github.com/WatchDogStudios/O3DESharp/wiki/Scripting-Guide), [Generated Bindings Guide](https://github.com/WatchDogStudios/O3DESharp/wiki/Generated-Bindings-Guide) / [Generating Bindings](https://github.com/WatchDogStudios/O3DESharp/wiki/Generating-Bindings) quick start, [NativeAOT Desktop Shipping](https://github.com/WatchDogStudios/O3DESharp/wiki/NativeAOT-Desktop-Shipping), and [Advanced Features](https://github.com/WatchDogStudios/O3DESharp/wiki/Advanced-Features).
+
 ## Overview
 
 O3DESharp enables game developers to write gameplay logic in C# instead of (or alongside) C++ and Lua. It provides:
@@ -582,6 +584,8 @@ To disable auto-reload for a session: Tools → C# Scripting → uncheck
 ## Architecture
 
 See the gems [Technical Design Document (In Progress).](https://hackmd.io/@MWD09WiVQ1O6VGcMVslq8w/rJHN3HjNZg/edit)
+
+See also the wiki's [NativeAOT Desktop Shipping](https://github.com/WatchDogStudios/O3DESharp/wiki/NativeAOT-Desktop-Shipping) page for the ABI seam, closed-world dispatch, and current NativeAOT status in more depth than fits below.
 
 ## C# Binding Generation Workflow
 
