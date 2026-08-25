@@ -1371,6 +1371,12 @@ def sync_generated_bindings(invoker, project_path, config, output_dir, on_log=No
         log("========== Binding Generation Complete ==========", "SUCCESS")
         log(f"Classes generated: {result_obj.classes_generated}", "SUCCESS")
         log(f"EBuses generated: {result_obj.ebuses_generated}", "SUCCESS")
+        log(f"Files written: {result_obj.files_written}", "SUCCESS")
+        if result_obj.processed_gems:
+            log(f"Processed gems: {', '.join(result_obj.processed_gems[:8])}", "INFO")
+            if len(result_obj.processed_gems) > 8:
+                log(f"  ... and {len(result_obj.processed_gems) - 8} more", "INFO")
+        log(f"Output directory: {out_dir}", "INFO")
         for w in (result_obj.warnings or []):
             log(f"Warning: {w}", "WARNING")
 
@@ -1396,8 +1402,13 @@ def sync_generated_bindings(invoker, project_path, config, output_dir, on_log=No
         def _on_build_finished(success, failed_csprojs):
             if success:
                 log("========== Binding Auto-Build Complete ==========", "SUCCESS")
+                log(
+                    "DLLs deployed to Bin/Scripts/. The CSharpAssemblyWatcher should fire "
+                    "the hot-reload bus and Coral will pick up the new wrappers within a few "
+                    "seconds - no editor restart needed.", "SUCCESS")
             else:
-                log(f"{len(failed_csprojs)} binding csproj(s) failed to build", "ERROR")
+                failed_list = "\n".join(f"  • {Path(p).name}" for p in failed_csprojs)
+                log(f"{len(failed_csprojs)} binding csproj(s) failed to build:\n{failed_list}", "ERROR")
             finished({
                 "success": success, "stage": "build",
                 "message": "build complete" if success else f"{len(failed_csprojs)} csproj(s) failed",
@@ -2563,10 +2574,16 @@ Status: {status['message']}"""
         else:
             self.binding_status_label.setText(f"Error: {result['message']}")
             failed_list = "\n".join(f"  • {Path(p).name}" for p in result["failed_csprojs"])
+            guidance = (
+                f"\n\nCheck the log for MSBuild output. The generated .g.cs files are still in "
+                f"{output_dir} - inspect them, fix any issue (or report a generator bug), "
+                f"and manually run `dotnet build` to retry."
+                if result["stage"] == "build" else ""
+            )
             QMessageBox.warning(
                 self,
                 "Binding Generation Failed" if result["stage"] == "generate" else "Binding Auto-Build Failed",
-                f"{result['message']}" + (f"\n\n{failed_list}" if failed_list else ""),
+                f"{result['message']}" + (f"\n\n{failed_list}" if failed_list else "") + guidance,
             )
 
     # ==================== End Binding Generation Methods ====================
