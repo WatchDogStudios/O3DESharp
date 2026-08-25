@@ -111,4 +111,28 @@ def test_sync_generated_bindings_calls_invoker_with_reflection_source():
     # (csharp_editor_tools.py:2390) so the editor flow stays on the
     # reflection backend by default.
     assert config.source == "reflection"
+    # ...and output_directory, which is what actually steers where the
+    # generator writes. output_dir alone is only used to glob for the
+    # emitted csproj afterwards, so leaving config.output_directory at its
+    # relative dataclass default silently generates into the generator
+    # tool's own working directory.
+    assert config.output_directory == "/fake/project/Generated/CSharp"
     worker.wait(5000)  # let the background thread finish before test teardown
+
+
+@pytest.mark.unit
+def test_make_binding_invoker_passes_config_flag():
+    """The reflectionBackendExcludedGems denylist only takes effect when
+    the CLI is told where binding_config.json is - ClangSharpInvoker's own
+    _build_arguments never emits --config, so the Editor path has to."""
+    import csharp_editor_tools
+    from csharp_binding_generator import BindingGeneratorConfig
+
+    gem_root = Path(__file__).resolve().parents[2]
+    invoker = csharp_editor_tools.make_binding_invoker(str(gem_root))
+    invoker.tool_path = str(gem_root / "O3DESharp.BindingGenerator.dll")
+
+    args = invoker._build_arguments(str(gem_root), BindingGeneratorConfig(), False)
+
+    assert "--config" in args
+    assert str(gem_root / "binding_config.json") in args

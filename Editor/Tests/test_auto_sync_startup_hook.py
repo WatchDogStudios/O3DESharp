@@ -82,6 +82,62 @@ def test_auto_sync_generated_bindings_never_shows_a_dialog():
 
 
 @pytest.mark.unit
+def test_auto_sync_skips_when_reflection_data_missing():
+    """Fresh checkout: nothing has exported reflection_data.json yet, so
+    there is nothing to generate from - skip instead of firing a doomed
+    generate (and don't raise)."""
+    import csharp_editor_bootstrap
+
+    tools = MagicMock()
+    with patch.object(csharp_editor_bootstrap, "_import_csharp_editor_tools", return_value=tools):
+        # azlmbr.paths.projectroot is the stub's "/fake/project"
+        csharp_editor_bootstrap.auto_sync_generated_bindings()
+
+    tools.sync_generated_bindings.assert_not_called()
+
+
+def _prepare_project(tmp_path, stamp_offset):
+    """reflection_data.json + a .last_synced stamp offset_seconds newer
+    (positive) or older (negative) than it."""
+    import os
+
+    generated = tmp_path / "Generated"
+    (generated / "CSharp").mkdir(parents=True)
+    reflection_data = generated / "reflection_data.json"
+    reflection_data.write_text("{}", encoding="utf-8")
+    stamp = generated / "CSharp" / ".last_synced"
+    stamp.write_text("", encoding="utf-8")
+    mtime = reflection_data.stat().st_mtime + stamp_offset
+    os.utime(stamp, (mtime, mtime))
+    return stamp
+
+
+def _run_auto_sync_against(tmp_path):
+    import azlmbr.paths as paths
+    import csharp_editor_bootstrap
+
+    tools = MagicMock()
+    with patch.object(paths, "projectroot", str(tmp_path)), \
+            patch.object(csharp_editor_bootstrap, "_import_csharp_editor_tools", return_value=tools):
+        csharp_editor_bootstrap.auto_sync_generated_bindings()
+    return tools
+
+
+@pytest.mark.unit
+def test_auto_sync_skips_when_stamp_is_newer_than_reflection_data(tmp_path):
+    """Nothing changed since the last successful sync - don't pay for a
+    full regenerate + dotnet build + hot-reload on every Editor launch."""
+    _prepare_project(tmp_path, stamp_offset=60)
+    _run_auto_sync_against(tmp_path).sync_generated_bindings.assert_not_called()
+
+
+@pytest.mark.unit
+def test_auto_sync_runs_when_reflection_data_is_newer_than_stamp(tmp_path):
+    _prepare_project(tmp_path, stamp_offset=-60)
+    _run_auto_sync_against(tmp_path).sync_generated_bindings.assert_called_once()
+
+
+@pytest.mark.unit
 def test_auto_sync_generated_bindings_is_non_fatal_on_exception():
     import csharp_editor_bootstrap
 

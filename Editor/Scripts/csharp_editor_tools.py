@@ -1310,6 +1310,56 @@ class _BindingBuildWorker(QThread):
         self.finished_signal.emit(len(failed) == 0, failed)
 
 
+def _resolve_binding_config_path(project_path):
+    """
+    Locate binding_config.json: the O3DE project root first, then the gem
+    root (where this repo ships one, and where the CMake GenerateBindings
+    target's WORKING_DIRECTORY already points). Returns a Path or None.
+    """
+    candidates = []
+    if project_path:
+        candidates.append(Path(project_path) / "binding_config.json")
+    candidates.append(Path(__file__).resolve().parents[2] / "binding_config.json")
+    for candidate in candidates:
+        try:
+            if candidate.is_file():
+                return candidate
+        except OSError:
+            continue
+    return None
+
+
+def make_binding_invoker(project_path):
+    """
+    Build a ClangSharpInvoker that passes `--config <binding_config.json>`
+    explicitly.
+
+    ClangSharpInvoker._build_arguments never emits --config, so the CLI
+    falls back to resolving the literal "binding_config.json" against the
+    generator process's own working directory (the tool's build output) and
+    never finds the real file - which silently drops
+    reflectionBackendExcludedGems on every Editor-driven run. The CMake
+    path only works because its target sets WORKING_DIRECTORY to the gem
+    root. This subclass makes the Editor path explicit rather than
+    accidental.
+    """
+    try:
+        from csharp_binding_generator import ClangSharpInvoker
+    except ImportError:
+        from .csharp_binding_generator import ClangSharpInvoker
+
+    binding_config = _resolve_binding_config_path(project_path)
+
+    class _InvokerWithExplicitConfig(ClangSharpInvoker):
+        def _build_arguments(self, project_path, config, force_regenerate):
+            args = super()._build_arguments(project_path, config, force_regenerate)
+            if binding_config is not None:
+                args.extend(["--config", str(binding_config)])
+            return args
+
+    return _InvokerWithExplicitConfig()
+
+
 def sync_generated_bindings(invoker, project_path, config, output_dir, on_log=None, on_finished=None):
     """
     Runs the reflection-backend generate -> build chain in the background
@@ -1350,6 +1400,13 @@ def sync_generated_bindings(invoker, project_path, config, output_dir, on_log=No
     finished = on_finished or (lambda result: None)
 
     config.source = "reflection"
+    # The generator resolves --output relative to ITS OWN working
+    # directory, so a caller that only passes output_dir here (and leaves
+    # config.output_directory at the dataclass default "Generated/CSharp")
+    # would emit into the generator tool's build folder while we glob for
+    # the csproj under output_dir and find nothing. Set it here, once, so
+    # every caller gets it right instead of each remembering to.
+    config.output_directory = output_dir
 
     def _on_generation_finished(result_obj, out_dir):
         if result_obj is None:
@@ -1384,9 +1441,13 @@ def sync_generated_bindings(invoker, project_path, config, output_dir, on_log=No
         csprojs = sorted(glob.glob(str(out_dir) + "/**/*.csproj", recursive=True))
         if not csprojs:
             log("No .csproj emitted; skipping auto-build.", "WARNING")
+            # Not a success: nothing was compiled and nothing was deployed,
+            # so reporting success here is indistinguishable from a clean
+            # build+deploy to the caller (and would let the startup hook
+            # stamp itself "up to date" over an empty output).
             finished({
-                "success": True, "stage": "generate",
-                "message": "generated, no csproj to build",
+                "success": False, "stage": "generate",
+                "message": f"generation produced no .csproj under {out_dir} - nothing to build",
                 "classes_generated": result_obj.classes_generated,
                 "ebuses_generated": result_obj.ebuses_generated,
                 "files_written": result_obj.files_written,
@@ -2432,16 +2493,10 @@ Status: {status['message']}"""
             return
         try:
             try:
-                from csharp_binding_generator import (
-                    BindingGeneratorConfig,
-                    ClangSharpInvoker,
-                )
+                from csharp_binding_generator import BindingGeneratorConfig
                 from gem_dependency_resolver import GemDependencyResolver
             except ImportError:
-                from .csharp_binding_generator import (
-                    BindingGeneratorConfig,
-                    ClangSharpInvoker,
-                )
+                from .csharp_binding_generator import BindingGeneratorConfig
                 from .gem_dependency_resolver import GemDependencyResolver
 
             selected_gem = self.binding_gems_combo.currentText()
@@ -2475,7 +2530,8 @@ Status: {status['message']}"""
                         )
 
             config = BindingGeneratorConfig()
-            config.output_directory = output_dir
+            # config.output_directory is set by sync_generated_bindings()
+            # from the output_dir argument - both callers share that.
             config.root_namespace = "O3DE.Generated"
             config.separate_gem_directories = True
             config.generate_per_gem_projects = True
@@ -2526,7 +2582,7 @@ Status: {status['message']}"""
             # when done, both marshalled back to this widget on the UI
             # thread via Qt's queued connections.
             self._binding_worker = sync_generated_bindings(
-                invoker=ClangSharpInvoker(),
+                invoker=make_binding_invoker(project_path),
                 project_path=project_path,
                 config=config,
                 output_dir=output_dir,
