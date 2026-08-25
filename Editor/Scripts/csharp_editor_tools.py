@@ -1310,6 +1310,119 @@ class _BindingBuildWorker(QThread):
         self.finished_signal.emit(len(failed) == 0, failed)
 
 
+def sync_generated_bindings(invoker, project_path, config, output_dir, on_log=None, on_finished=None):
+    """
+    Runs the reflection-backend generate -> build chain in the background
+    on a QThread, with no dependency on a live Project Manager dialog.
+    Used by both the dialog's "Generate Bindings" button
+    (_generate_bindings) and the Editor-startup auto-sync hook
+    (csharp_editor_bootstrap.auto_sync_generated_bindings).
+
+    Args:
+        invoker: a ClangSharpInvoker (or compatible) instance whose
+            generate_bindings(project_path, config, output_callback) is
+            used for the generation phase.
+        project_path: str, the O3DE project path.
+        config: a BindingGeneratorConfig-like object; config.source is
+            forced to "reflection" here regardless of its current value.
+        output_dir: str, where generated .g.cs + the consolidated
+            O3DESharp.GeneratedBindings.csproj land.
+        on_log(line: str, level: str): called for every log line from
+            either phase. Optional - defaults to a no-op.
+        on_finished(result: dict): called exactly once when the whole
+            chain finishes or fails, with keys:
+                success: bool
+                stage: "generate" or "build" (which phase the result is from)
+                message: str, human-readable summary
+                classes_generated: int
+                ebuses_generated: int
+                files_written: int
+                failed_csprojs: list[str] (empty on success)
+            Optional - defaults to a no-op.
+
+    Returns the started, _track_worker()'ed _BindingGenerationWorker. Most
+    callers can ignore the return value; it's exposed so a caller that
+    wants to keep something disabled until the whole chain completes (like
+    the dialog's Generate button) can hold a reference without needing a
+    second module-level registry.
+    """
+    log = on_log or (lambda line, level: None)
+    finished = on_finished or (lambda result: None)
+
+    config.source = "reflection"
+
+    def _on_generation_finished(result_obj, out_dir):
+        if result_obj is None:
+            log("Binding worker returned no result.", "ERROR")
+            finished({
+                "success": False, "stage": "generate", "message": "worker returned no result",
+                "classes_generated": 0, "ebuses_generated": 0, "files_written": 0, "failed_csprojs": [],
+            })
+            return
+
+        if not result_obj.success:
+            log(f"Binding generation failed: {result_obj.error_message}", "ERROR")
+            finished({
+                "success": False, "stage": "generate", "message": result_obj.error_message,
+                "classes_generated": 0, "ebuses_generated": 0, "files_written": 0, "failed_csprojs": [],
+            })
+            return
+
+        log("========== Binding Generation Complete ==========", "SUCCESS")
+        log(f"Classes generated: {result_obj.classes_generated}", "SUCCESS")
+        log(f"EBuses generated: {result_obj.ebuses_generated}", "SUCCESS")
+        for w in (result_obj.warnings or []):
+            log(f"Warning: {w}", "WARNING")
+
+        import glob
+        csprojs = sorted(glob.glob(str(out_dir) + "/**/*.csproj", recursive=True))
+        if not csprojs:
+            log("No .csproj emitted; skipping auto-build.", "WARNING")
+            finished({
+                "success": True, "stage": "generate",
+                "message": "generated, no csproj to build",
+                "classes_generated": result_obj.classes_generated,
+                "ebuses_generated": result_obj.ebuses_generated,
+                "files_written": result_obj.files_written,
+                "failed_csprojs": [],
+            })
+            return
+
+        log(f"Auto-building {len(csprojs)} binding csproj(s)...", "INFO")
+        build_worker = _BindingBuildWorker(csprojs)
+        _track_worker(build_worker)
+        build_worker.log_line.connect(lambda line: log(line, "INFO"))
+
+        def _on_build_finished(success, failed_csprojs):
+            if success:
+                log("========== Binding Auto-Build Complete ==========", "SUCCESS")
+            else:
+                log(f"{len(failed_csprojs)} binding csproj(s) failed to build", "ERROR")
+            finished({
+                "success": success, "stage": "build",
+                "message": "build complete" if success else f"{len(failed_csprojs)} csproj(s) failed",
+                "classes_generated": result_obj.classes_generated,
+                "ebuses_generated": result_obj.ebuses_generated,
+                "files_written": result_obj.files_written,
+                "failed_csprojs": failed_csprojs,
+            })
+
+        build_worker.finished_signal.connect(_on_build_finished)
+        build_worker.start()
+
+    worker = _BindingGenerationWorker(
+        invoker=invoker,
+        project_path=project_path,
+        config=config,
+        output_dir=output_dir,
+    )
+    _track_worker(worker)
+    worker.log_line.connect(lambda line: log(line, "INFO"))
+    worker.finished_signal.connect(_on_generation_finished)
+    worker.start()
+    return worker
+
+
 class _ProjectBuildWorker(QThread):
     """
     Runs CSharpProjectManager.build_project() on a background thread so
@@ -2401,17 +2514,14 @@ Status: {status['message']}"""
             # emits log_line for each stdout line and finished_signal
             # when done, both marshalled back to this widget on the UI
             # thread via Qt's queued connections.
-            self._binding_worker = _BindingGenerationWorker(
+            self._binding_worker = sync_generated_bindings(
                 invoker=ClangSharpInvoker(),
                 project_path=project_path,
                 config=config,
                 output_dir=output_dir,
+                on_log=lambda line, level: self._log(line, level),
+                on_finished=lambda result: self._on_sync_generated_bindings_finished(result, output_dir),
             )
-            _track_worker(self._binding_worker)
-            self._binding_worker.log_line.connect(
-                lambda line: self._log(line, "INFO"))
-            self._binding_worker.finished_signal.connect(self._on_binding_generation_finished)
-            self._binding_worker.start()
 
         except Exception as e:
             import traceback
@@ -2427,160 +2537,38 @@ Status: {status['message']}"""
                 f"An error occurred while starting binding generation:\n\n{e}",
             )
 
-    def _on_binding_generation_finished(self, result_obj, output_dir):
+    def _on_sync_generated_bindings_finished(self, result, output_dir):
         """
-        UI-thread handler for the binding-generation-worker's finished
-        signal. Renders the same success/failure result the synchronous
-        version used to render, then re-enables the Generate button so
-        the user can kick off another run.
+        UI-thread handler for sync_generated_bindings' on_finished callback,
+        used by the "Generate Bindings" button. Renders the same
+        success/failure dialogs the old two-stage handler chain used to,
+        then re-enables the Generate button.
         """
-        # Re-enable the Generate button before doing anything that can
-        # raise; otherwise an exception in the render path would leave
-        # the UI stuck on "Generating...".
         if hasattr(self, "generate_btn") and self.generate_btn is not None:
             self.generate_btn.setEnabled(True)
         self._binding_worker = None
 
-        result = result_obj
-        if result is None:
-            self._log("Binding worker returned no result.", "ERROR")
-            self.binding_status_label.setText("Error: worker returned no result")
-            return
-
-        if result.success:
-            self._log("========== Binding Generation Complete ==========", "SUCCESS")
-            self._log(f"Classes generated: {result.classes_generated}", "SUCCESS")
-            self._log(f"EBuses generated: {result.ebuses_generated}", "SUCCESS")
-            self._log(f"Files written: {result.files_written}", "SUCCESS")
-            if result.processed_gems:
-                self._log(f"Processed gems: {', '.join(result.processed_gems[:8])}", "INFO")
-                if len(result.processed_gems) > 8:
-                    self._log(f"  ... and {len(result.processed_gems) - 8} more", "INFO")
-            self._log(f"Output directory: {output_dir}", "INFO")
-            for w in (result.warnings or []):
-                self._log(f"Warning: {w}", "WARNING")
-
+        if result["success"]:
             self.binding_status_label.setText(
-                f"Generated {result.classes_generated} classes, "
-                f"{result.ebuses_generated} EBuses"
-            )
-
-            # Phase 18-D: chain into auto-build so the generated
-            # wrappers are actually usable as soon as generation
-            # finishes. Generated .g.cs files are useless on their own -
-            # they need to land in a deployed DLL for Coral to load.
-            # We walk the output directory looking for emitted .csproj
-            # files (one per gem bucket from ReflectionBindingGenerator)
-            # and shell out `dotnet build` on each.
-            #
-            # The csproj's DeployToBinScripts MSBuild target copies the
-            # output DLL + PDB into <Project>/Bin/Scripts/ - where the
-            # CSharpAssemblyWatcher (Phase 13a) is listening with a
-            # FileSystemWatcher. Its OnFileChanged hook fires the
-            # O3DESharpHotReloadNotificationBus, which CSharpScriptComponent
-            # subscribes to and which triggers Coral's AssemblyLoadContext
-            # unload+reload. End result: user clicks "Generate Bindings",
-            # gets working wrappers live in the running editor, no
-            # restart needed.
-            self._start_auto_build_after_generation(output_dir, result)
-        else:
-            self._log(f"Binding generation failed: {result.error_message}", "ERROR")
-            self.binding_status_label.setText(f"Error: {result.error_message}")
-            QMessageBox.warning(
-                self,
-                "Binding Generation Failed",
-                f"Failed to generate bindings:\n\n{result.error_message}",
-            )
-
-    def _start_auto_build_after_generation(self, output_dir, generation_result):
-        """
-        Walk output_dir for emitted .csproj files and dotnet-build each.
-        Runs on a worker QThread so the UI stays responsive; each line
-        of MSBuild output streams to the log view via signals.
-
-        Skip the auto-build if there are no csprojs (the ClangSharp
-        backend emits per-gem projects too, but a misconfigured output
-        directory could produce just .cs files - in that case the user
-        is doing something manual and we shouldn't second-guess them).
-        """
-        import glob
-        csprojs = sorted(glob.glob(str(output_dir) + "/**/*.csproj", recursive=True))
-        if not csprojs:
-            self._log(
-                "No .csproj files emitted under the output directory; skipping auto-build. "
-                "Manually run `dotnet build` on your binding csproj when ready.",
-                "WARNING")
-            # Still show the generation-success dialog so the user knows
-            # the cs files are there even though we didn't auto-build.
+                f"Generated {result['classes_generated']} classes, {result['ebuses_generated']} EBuses")
             QMessageBox.information(
                 self,
-                "Binding Generation Complete",
-                f"Successfully generated C# bindings:\n\n"
-                f"• Classes: {generation_result.classes_generated}\n"
-                f"• EBuses: {generation_result.ebuses_generated}\n"
-                f"• Files: {generation_result.files_written}\n\n"
-                f"Output: {output_dir}\n\n"
-                f"No .csproj was emitted; build manually to use the wrappers.",
-            )
-            return
-
-        self._log(
-            f"Auto-building {len(csprojs)} binding csproj(s) so Coral can hot-reload "
-            f"the wrappers without an editor restart...", "INFO")
-
-        # Disable the Generate button while the build runs - re-enabled
-        # when the build worker finishes. Same UX as the generation
-        # phase, so the user doesn't kick off a second regen mid-build
-        # (which would race with the DLL deploy).
-        if hasattr(self, "generate_btn") and self.generate_btn is not None:
-            self.generate_btn.setEnabled(False)
-
-        self._binding_build_worker = _BindingBuildWorker(csprojs)
-        _track_worker(self._binding_build_worker)
-        self._binding_build_worker.log_line.connect(
-            lambda line: self._log(line, "INFO"))
-        self._binding_build_worker.finished_signal.connect(
-            lambda success, failed_csprojs: self._on_binding_build_finished(
-                success, failed_csprojs, generation_result, output_dir))
-        self._binding_build_worker.start()
-
-    def _on_binding_build_finished(self, success, failed_csprojs, generation_result, output_dir):
-        """Done-handler for the post-generation auto-build."""
-        if hasattr(self, "generate_btn") and self.generate_btn is not None:
-            self.generate_btn.setEnabled(True)
-        self._binding_build_worker = None
-
-        if success:
-            self._log("========== Binding Auto-Build Complete ==========", "SUCCESS")
-            self._log(
-                "DLLs deployed to Bin/Scripts/. The CSharpAssemblyWatcher should fire "
-                "the hot-reload bus and Coral will pick up the new wrappers within a few "
-                "seconds - no editor restart needed.", "SUCCESS")
-            QMessageBox.information(
-                self,
-                "Binding Generation + Build Complete",
-                f"Successfully generated and built C# bindings:\n\n"
-                f"• Classes: {generation_result.classes_generated}\n"
-                f"• EBuses: {generation_result.ebuses_generated}\n"
-                f"• Files: {generation_result.files_written}\n\n"
-                f"Output: {output_dir}\n\n"
-                f"DLLs deployed to Bin/Scripts/. Hot-reload will pick up the changes.",
+                "Binding Generation Complete" if result["stage"] == "generate" else "Binding Generation + Build Complete",
+                f"Successfully processed C# bindings:\n\n"
+                f"• Classes: {result['classes_generated']}\n"
+                f"• EBuses: {result['ebuses_generated']}\n"
+                f"• Files: {result['files_written']}\n\n"
+                f"Output: {output_dir}\n\n{result['message']}",
             )
         else:
-            failed_list = "\n".join(f"  • {Path(p).name}" for p in failed_csprojs)
-            self._log(
-                f"{len(failed_csprojs)} binding csproj(s) failed to build:\n{failed_list}",
-                "ERROR")
+            self.binding_status_label.setText(f"Error: {result['message']}")
+            failed_list = "\n".join(f"  • {Path(p).name}" for p in result["failed_csprojs"])
             QMessageBox.warning(
                 self,
-                "Binding Auto-Build Failed",
-                f"Generation succeeded, but {len(failed_csprojs)} csproj(s) failed to build:\n\n"
-                f"{failed_list}\n\n"
-                f"Check the log for MSBuild output. The generated .g.cs files are still in "
-                f"{output_dir} - inspect them, fix any issue (or report a generator bug), "
-                f"and manually run `dotnet build` to retry.",
+                "Binding Generation Failed" if result["stage"] == "generate" else "Binding Auto-Build Failed",
+                f"{result['message']}" + (f"\n\n{failed_list}" if failed_list else ""),
             )
-    
+
     # ==================== End Binding Generation Methods ====================
     
     def _browse_managed_assembly(self):
