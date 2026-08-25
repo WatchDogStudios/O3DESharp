@@ -619,6 +619,10 @@ has **two backends**, selected with `--source`:
 > That generator is deprecated. The Python files under `Editor/Scripts/` that
 > remain are thin orchestrators that shell out to the C# tool.
 
+### Zero-Config Automatic Workflow (Reflection Backend)
+
+As of this release, the reflection backend's output is **fully automatic end-to-end**: enable a gem, launch the Editor, and bindings for that gem are automatically generated, built into `O3DESharp.GeneratedBindings.dll`, deployed to `Bin/Scripts/`, and referenced in new C# script projects — no manual `dotnet` commands, no `.csproj` editing, no `binding_config.json` required. To exclude a specific gem, see the denylist configuration in [`GENERATED_BINDINGS_GUIDE.md`](GENERATED_BINDINGS_GUIDE.md#1b-zero-config-automatic-workflow-reflection-backend).
+
 ### Quick start
 
 ```powershell

@@ -55,6 +55,31 @@ produces:
 
 ---
 
+## 1b. Zero-Config Automatic Workflow (Reflection Backend)
+
+The reflection backend (the default, `--source reflection`) is fully zero-config:
+
+- **Automatic generation, build, and deployment**: Enable a gem, launch the O3DE Editor once (or again if already enabled), and the gem's C# bindings are automatically:
+  1. Generated from `reflection_data.json`
+  2. Built into a single consolidated `O3DESharp.GeneratedBindings.dll`
+  3. Deployed to `Bin/Scripts/` alongside `O3DE.Core.dll`
+
+- **Automatic referencing**: Any new C# script project created via the Editor's "Create C# Project…" flow automatically gets a `<Reference Include="O3DESharp.GeneratedBindings">` — no manual `.csproj` editing needed.
+
+- **Optional: Exclude specific gems**: To exclude a gem's bindings, create or edit `binding_config.json` in your project root with:
+  ```json
+  {
+    "reflectionBackendExcludedGems": ["GemName1", "GemName2"]
+  }
+  ```
+  If the file doesn't exist at all, all enabled gems are included (no config needed). The reflection backend reads `reflectionBackendExcludedGems` only when passed `--config <path>` to the `generate` command (or via the Editor's auto-sync on startup).
+
+- **CMake build target**: For CI builds or non-Editor environments, the `${gem_name}.BuildGeneratedBindings` CMake target runs the same generate → build → deploy pipeline from whatever `reflection_data.json` is already on disk.
+
+**Note on per-gem DLLs**: The per-gem `.csproj` instructions in this guide (one DLL per gem) describe the **`--source clang` backend**, which is unchanged and still generates one `.csproj` per gem. The reflection backend (`--source reflection`) always generates a single consolidated project instead.
+
+---
+
 ## 2. Running the Binding Generator
 
 ### Prerequisites
