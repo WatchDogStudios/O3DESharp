@@ -22,6 +22,7 @@ namespace O3DE.Core.Tests;
 /// The editor path is unchanged, so these assertions are conditional: in Coral
 /// mode the calls go through as they always have.
 /// </summary>
+[Collection("GlobalScriptState")]
 public class StaticDispatchRoutingTests
 {
     [Fact]
@@ -97,8 +98,14 @@ public class StaticDispatchRoutingTests
     {
 #if O3DE_HOST_NATIVEAOT
         var instance = new NativeObject("NoSuchClass", 1234);
-        GC.SuppressFinalize(instance); // fake handle; the real object's finalizer would
-                                        // re-enter DestroyInstance and re-throw off the GC thread.
+        // The guard throws before Invalidate() runs, so the instance stays
+        // "valid" and its finalizer would re-enter DestroyInstance. That is no
+        // longer a crash (DestroyInstance logs and skips - see
+        // UnknownTypeName_FinalizerDoesNotEscapeAnException), but it would drop
+        // a warning into the shared InternalCalls log at an unpredictable time
+        // and upset the tests that assert on that log. Suppress it here; the
+        // finalizer path has its own dedicated test.
+        GC.SuppressFinalize(instance);
         var act = () => NativeReflection.InvokeInstanceMethod(instance, "NoSuchMethod");
         act.Should().Throw<NotSupportedException>();
 #else
@@ -134,7 +141,14 @@ public class StaticDispatchRoutingTests
     {
 #if O3DE_HOST_NATIVEAOT
         var instance = new NativeObject("NoSuchClass", 1234);
-        GC.SuppressFinalize(instance); // see InvokeInstanceMethod test above.
+        // The guard throws before Invalidate() runs, so the instance stays
+        // "valid" and its finalizer would re-enter DestroyInstance. That is no
+        // longer a crash (DestroyInstance logs and skips - see
+        // UnknownTypeName_FinalizerDoesNotEscapeAnException), but it would drop
+        // a warning into the shared InternalCalls log at an unpredictable time
+        // and upset the tests that assert on that log. Suppress it here; the
+        // finalizer path has its own dedicated test.
+        GC.SuppressFinalize(instance);
         var act = () => NativeReflection.GetProperty<int>(instance, "NoSuchProperty");
         act.Should().Throw<NotSupportedException>();
 #else
@@ -147,7 +161,14 @@ public class StaticDispatchRoutingTests
     {
 #if O3DE_HOST_NATIVEAOT
         var instance = new NativeObject("NoSuchClass", 1234);
-        GC.SuppressFinalize(instance); // see InvokeInstanceMethod test above.
+        // The guard throws before Invalidate() runs, so the instance stays
+        // "valid" and its finalizer would re-enter DestroyInstance. That is no
+        // longer a crash (DestroyInstance logs and skips - see
+        // UnknownTypeName_FinalizerDoesNotEscapeAnException), but it would drop
+        // a warning into the shared InternalCalls log at an unpredictable time
+        // and upset the tests that assert on that log. Suppress it here; the
+        // finalizer path has its own dedicated test.
+        GC.SuppressFinalize(instance);
         var act = () => NativeReflection.SetProperty(instance, "NoSuchProperty", 42);
         act.Should().Throw<NotSupportedException>();
 #else
@@ -193,23 +214,67 @@ public class StaticDispatchRoutingTests
     }
 
     [Fact]
-    public void DestroyInstance_UnknownTypeName_ThrowsUnderNativeAot()
+    public void DestroyInstance_UnknownTypeName_WarnsAndSkipsRatherThanThrowing()
     {
         // Defense-in-depth only (not analyzer-covered): in practice
         // instance.TypeName is always in the table because the instance had
         // to be created first, but this must never silently fall through to
         // the unassigned native call either.
+        //
+        // Unlike the other guards this one does NOT throw: DestroyInstance is
+        // reachable from ~NativeObject(), and an exception on the finalizer
+        // thread takes the process down. It logs and skips the native call
+        // instead - same safety property, no crash.
 #if O3DE_HOST_NATIVEAOT
+        InternalCalls.WarningLogs.Clear();
+
         var instance = new NativeObject("NoSuchClass", 1234);
-        GC.SuppressFinalize(instance); // the guard throws before Invalidate() runs, so the
-                                        // instance is still "valid"; without this the finalizer
-                                        // would re-enter DestroyInstance and re-throw off the GC thread.
         var act = () => NativeReflection.DestroyInstance(instance);
-        act.Should().Throw<NotSupportedException>();
+
+        act.Should().NotThrow();
+        InternalCalls.WarningLogs.Should().ContainSingle()
+            .Which.Should().Contain("NoSuchClass");
+
+        // Skipping the native call leaves the instance valid, so its finalizer
+        // would log a second time later, in someone else's test window.
+        GC.SuppressFinalize(instance);
 #else
         typeof(NativeReflection).Should().NotBeNull();
 #endif
     }
+
+    [Fact]
+    public void UnknownTypeName_FinalizerDoesNotEscapeAnException()
+    {
+        // ~NativeObject() -> Dispose(false) -> NativeReflection.DestroyInstance.
+        // If the guard threw there, this test would not fail - the process
+        // would die on the finalizer thread and take the whole run with it.
+        // Reaching the assertion at all IS the assertion.
+#if O3DE_HOST_NATIVEAOT
+        InternalCalls.WarningLogs.Clear();
+
+        AbandonUnknownNativeObject();
+        GC.Collect();
+        GC.WaitForPendingFinalizers();
+        GC.Collect();
+
+        InternalCalls.WarningLogs.Should().ContainSingle(
+            "the finalizer must have reached the guard, logged, and returned normally");
+#else
+        typeof(NativeReflection).Should().NotBeNull();
+#endif
+    }
+
+#if O3DE_HOST_NATIVEAOT
+    // NoInlining so the local really goes out of scope (and out of the frame's
+    // GC roots) before the caller collects.
+    [System.Runtime.CompilerServices.MethodImpl(
+        System.Runtime.CompilerServices.MethodImplOptions.NoInlining)]
+    private static void AbandonUnknownNativeObject()
+    {
+        _ = new NativeObject("NoSuchClass", 1234);
+    }
+#endif
 
     [Fact]
     public void DestroyInstance_InvalidInstance_DoesNotGuardOrThrow()

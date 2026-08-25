@@ -17,6 +17,7 @@ namespace O3DE.Core.Tests;
 /// re-running a full native EBus broadcast. It now calls Entity_GetChildCount
 /// once and Entity_GetChildren once, regardless of child count.
 /// </summary>
+[Collection("GlobalScriptState")]
 public class EntityGetChildrenTests
 {
     public EntityGetChildrenTests()

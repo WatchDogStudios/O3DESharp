@@ -22,6 +22,7 @@ namespace O3DE.Core.Tests;
 /// through the same shared SafeFormat helper as Log - Log's coverage already exercises
 /// that logic.
 /// </summary>
+[Collection("GlobalScriptState")]
 public class DebugTests
 {
     public DebugTests()

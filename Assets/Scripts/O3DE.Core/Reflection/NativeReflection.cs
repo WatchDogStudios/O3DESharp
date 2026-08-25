@@ -674,12 +674,33 @@ namespace O3DE.Reflection
         /// <param name="instance">The object to destroy</param>
         public static void DestroyInstance(NativeObject instance)
         {
-            if (instance != null && instance.IsValid)
+            if (instance == null || !instance.IsValid)
             {
-                EnsureClassIsStaticallyDispatchable("DestroyInstance", instance.TypeName);
-                unsafe { ReflectionInternalCalls.Reflection_DestroyInstance(instance.TypeName, instance.Handle); }
-                instance.Invalidate();
+                return;
             }
+
+#if O3DE_HOST_NATIVEAOT
+            // Defense-in-depth only: unlike the other guards this one has no
+            // O3DESHARP1001 counterpart (DestroyInstance takes no name-shaped
+            // call-site argument), and it is reachable from ~NativeObject() ->
+            // Dispose(false), i.e. the finalizer thread - where an unhandled
+            // exception terminates the process with no useful context. So a
+            // miss degrades to a warning and skips the native call rather than
+            // throwing: the "never call through an unknown type's function
+            // pointer" property is preserved either way.
+            if (!StaticReflectionDispatch.ClassExists(instance.TypeName))
+            {
+                Debug.LogWarning(
+                    $"DestroyInstance '{instance.TypeName}' is not in this NativeAOT image's static " +
+                    "dispatch table, built from reflection_data.json. Skipping the native destroy - " +
+                    "the native instance leaks. Regenerate reflection_data.json if the class is new, " +
+                    "or ship the Mono backend.");
+                return;
+            }
+#endif
+
+            unsafe { ReflectionInternalCalls.Reflection_DestroyInstance(instance.TypeName, instance.Handle); }
+            instance.Invalidate();
         }
 
         #endregion
