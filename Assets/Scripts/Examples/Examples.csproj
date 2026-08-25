@@ -1,0 +1,44 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    The sample game's scripts. These files already existed as loose .cs with no
+    project; giving them one makes them a publishable artifact so M4's exit
+    criteria - a sample game's scripts running in a desktop NativeAOT launcher -
+    has something concrete to point at.
+
+    Deliberately does NOT set the host-exports emission flag O3DE.Core sets:
+    ManagedExports lives in O3DE.Core alone, and a second copy here would make
+    the type name ambiguous the moment both assemblies were referenced together.
+  -->
+  <PropertyGroup>
+    <TargetFramework>net9.0</TargetFramework>
+    <ImplicitUsings>disable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <LangVersion>latest</LangVersion>
+
+    <Configurations>Debug;Profile;Release</Configurations>
+    <Platforms>AnyCPU</Platforms>
+
+    <AssemblyName>Examples</AssemblyName>
+    <RootNamespace>Examples</RootNamespace>
+    <OutputType>Library</OutputType>
+    <IsPackable>false</IsPackable>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\O3DE.Core\O3DE.Core.csproj">
+      <Private>false</Private>
+    </ProjectReference>
+    <!--
+      The analyzer is referenced separately from O3DE.Core's own analyzer
+      reference: O3DE.Core marks it ReferenceOutputAssembly=false, which does
+      not flow to consumers. Without this line the closed-world diagnostic never
+      runs on game code, which is the only place it matters.
+    -->
+    <ProjectReference Include="..\..\..\Code\Tools\SourceGenerators\O3DESharp.SourceGenerators.csproj"
+                      OutputItemType="Analyzer"
+                      ReferenceOutputAssembly="false" />
+  </ItemGroup>
+
+</Project>

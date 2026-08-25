@@ -6,6 +6,7 @@
  *
  */
 
+using System;
 using O3DE;
 
 namespace Examples
