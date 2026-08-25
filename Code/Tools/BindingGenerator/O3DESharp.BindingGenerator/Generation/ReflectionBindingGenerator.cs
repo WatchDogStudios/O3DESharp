@@ -67,8 +67,9 @@ namespace O3DESharp.BindingGenerator.Generation
         /// <param name="outputDir">Absolute path to the output directory.</param>
         /// <param name="includeGems">If non-empty, only generate wrappers for
         /// types whose source_gem_name is in this set. Empty = all gems.</param>
+        /// <param name="excludeGems">Gem names to exclude from generation. Reflection-backend only.</param>
         /// <returns>Counts of what was generated.</returns>
-        public ReflectionGenerationResult Generate(string jsonPath, string outputDir, ISet<string>? includeGems = null)
+        public ReflectionGenerationResult Generate(string jsonPath, string outputDir, ISet<string>? includeGems = null, ISet<string>? excludeGems = null)
         {
             if (!File.Exists(jsonPath))
             {
@@ -110,23 +111,37 @@ namespace O3DESharp.BindingGenerator.Generation
             string GemBucket(string sourceGemName) =>
                 string.IsNullOrWhiteSpace(sourceGemName) ? "Core" : sourceGemName;
 
+            bool Included(string sourceGemName)
+            {
+                var bucket = GemBucket(sourceGemName);
+                if (includeGems != null && includeGems.Count > 0 && !includeGems.Contains(bucket))
+                {
+                    return false;
+                }
+                if (excludeGems != null && excludeGems.Contains(bucket))
+                {
+                    return false;
+                }
+                return true;
+            }
+
             var classesByGem = doc.Classes
-                .Where(c => includeGems == null || includeGems.Count == 0 || includeGems.Contains(GemBucket(c.SourceGemName)))
+                .Where(c => Included(c.SourceGemName))
                 .GroupBy(c => GemBucket(c.SourceGemName));
 
             var busesByGem = doc.EBuses
-                .Where(b => includeGems == null || includeGems.Count == 0 || includeGems.Contains(GemBucket(b.SourceGemName)))
+                .Where(b => Included(b.SourceGemName))
                 .GroupBy(b => GemBucket(b.SourceGemName));
 
             // Globals come in two flavors (methods + properties). Group
             // each separately by gem, then union the keys for the emit
             // loop. Avoids the tuple-with-nullable-fields awkwardness.
             var methodsByGem = doc.GlobalMethods
-                .Where(m => includeGems == null || includeGems.Count == 0 || includeGems.Contains(GemBucket(m.SourceGemName)))
+                .Where(m => Included(m.SourceGemName))
                 .GroupBy(m => GemBucket(m.SourceGemName))
                 .ToDictionary(g => g.Key, g => g.ToList());
             var propsByGem = doc.GlobalProperties
-                .Where(p => includeGems == null || includeGems.Count == 0 || includeGems.Contains(GemBucket(p.SourceGemName)))
+                .Where(p => Included(p.SourceGemName))
                 .GroupBy(p => GemBucket(p.SourceGemName))
                 .ToDictionary(g => g.Key, g => g.ToList());
             var globalsGemKeys = new HashSet<string>(methodsByGem.Keys);

@@ -10,6 +10,7 @@ using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using System.Text.RegularExpressions;
+using FluentAssertions;
 using O3DESharp.BindingGenerator.Configuration;
 using O3DESharp.BindingGenerator.Generation;
 
@@ -370,6 +371,29 @@ public class ReflectionGeneratorTests : IDisposable
             "Debug config must use full PDB for managed-debugger attach");
         csprojA.Should().Contain("DeployToBinScripts",
             "csproj must wire the deploy-to-Bin/Scripts post-build target");
+    }
+
+    [Fact]
+    public void Generate_ExcludeGems_OmitsDeniedGemFromOutput()
+    {
+        var json = """
+        {
+            "classes": [
+                { "name": "ClassA", "type_id": "{aaaa2222-0000-0000-0000-000000000000}", "source_gem_name": "GemA", "methods": [], "properties": [] },
+                { "name": "ClassB", "type_id": "{bbbb2222-0000-0000-0000-000000000000}", "source_gem_name": "GemB", "methods": [], "properties": [] }
+            ],
+            "ebuses": [], "global_methods": [], "global_properties": []
+        }
+        """;
+        var jsonPath = Path.Combine(_outputDir, "reflection_data.json");
+        File.WriteAllText(jsonPath, json);
+
+        var gen = new ReflectionBindingGenerator(rootNamespace: "O3DE.Generated", verbose: false);
+        var result = gen.Generate(jsonPath, _outputDir, includeGems: null, excludeGems: new HashSet<string> { "GemB" });
+
+        result.Success.Should().BeTrue();
+        File.Exists(Path.Combine(_outputDir, "GemA", "Classes", "ClassA.g.cs")).Should().BeTrue();
+        Directory.Exists(Path.Combine(_outputDir, "GemB")).Should().BeFalse("GemB is denylisted and must produce no output at all");
     }
 
     [Fact]

@@ -178,7 +178,7 @@ namespace O3DESharp.BindingGenerator
                 var reflectionData = context.ParseResult.GetValueForOption(reflectionDataOption);
                 if (string.Equals(source, "reflection", StringComparison.OrdinalIgnoreCase))
                 {
-                    context.ExitCode = GenerateBindingsFromReflection(project, gems, verbose, csharpOutput, reflectionData);
+                    context.ExitCode = GenerateBindingsFromReflection(project, gems, verbose, csharpOutput, reflectionData, config);
                 }
                 else
                 {
@@ -272,7 +272,7 @@ namespace O3DESharp.BindingGenerator
                 var reflectionData = context.ParseResult.GetValueForOption(reflectionDataOption);
                 if (string.Equals(source, "reflection", StringComparison.OrdinalIgnoreCase))
                 {
-                    context.ExitCode = GenerateBindingsFromReflection(project, gems, verbose, csharpOutput, reflectionData);
+                    context.ExitCode = GenerateBindingsFromReflection(project, gems, verbose, csharpOutput, reflectionData, config);
                 }
                 else
                 {
@@ -325,7 +325,7 @@ namespace O3DESharp.BindingGenerator
         /// wrappers that dispatch through NativeReflection. No header
         /// parsing, no MSVC compat, no cross-gem include walking.
         /// </summary>
-        static int GenerateBindingsFromReflection(string projectPath, string[] specificGems, bool verbose, string? csharpOutputDir, string? reflectionDataOverride)
+        static int GenerateBindingsFromReflection(string projectPath, string[] specificGems, bool verbose, string? csharpOutputDir, string? reflectionDataOverride, string configPath)
         {
             try
             {
@@ -375,8 +375,17 @@ namespace O3DESharp.BindingGenerator
                         StringComparer.OrdinalIgnoreCase);
                 }
 
+                var bindingConfig = BindingConfigLoader.Load(configPath);
+                ISet<string>? excludeGems = bindingConfig.ReflectionBackendExcludedGems.Count > 0
+                    ? new HashSet<string>(bindingConfig.ReflectionBackendExcludedGems, StringComparer.OrdinalIgnoreCase)
+                    : null;
+                if (excludeGems != null && excludeGems.Count > 0)
+                {
+                    Console.WriteLine($"Excluded gems:  {string.Join(", ", excludeGems)}");
+                }
+
                 var generator = new ReflectionBindingGenerator(rootNamespace: "O3DE.Generated", verbose: verbose);
-                var result = generator.Generate(reflectionPath, outputDir, gemFilter);
+                var result = generator.Generate(reflectionPath, outputDir, gemFilter, excludeGems);
 
                 if (!result.Success)
                 {
