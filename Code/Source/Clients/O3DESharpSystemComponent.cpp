@@ -26,6 +26,7 @@
 
 #include <Render/O3DESharpFeatureProcessor.h>
 #include <Scripting/CoralHostManager.h>
+#include <Scripting/CoralHost.h>
 #include <Scripting/ScriptBindings.h>
 #include <Scripting/CSharpScriptComponent.h>
 #include <Scripting/Reflection/BehaviorContextReflector.h>
@@ -677,6 +678,41 @@ namespace O3DESharp
         config.coralDirectory = coralDir.c_str();
         m_coralDirectory = config.coralDirectory;
 
+        // M2: a private, self-contained .NET runtime deployed next to the
+        // scripts (Bin/Scripts/dotnet, produced by the opt-in
+        // O3DESHARP_BUNDLE_DOTNET_RUNTIME CMake target) lets a shipped game run
+        // on a machine with no .NET installed at all.
+        //
+        // The override is set ONLY when the bundle is actually present on disk.
+        // Absent is the normal case and means "fall back to the machine-wide
+        // install" - i.e. exactly the behaviour before M2 - so a build without
+        // the bundle is unaffected rather than broken.
+        AZ::IO::FixedMaxPath dotnetRootDir = projectPath / "Bin" / "Scripts" / "dotnet";
+
+        if (auto settingsRegistry = AZ::SettingsRegistry::Get())
+        {
+            AZStd::string dotnetRootSetting;
+            if (settingsRegistry->Get(dotnetRootSetting, "/O3DE/O3DESharp/DotnetRootOverride"))
+            {
+                dotnetRootDir = AZ::IO::FixedMaxPath(dotnetRootSetting.c_str());
+            }
+        }
+
+        if (auto fileIO = AZ::IO::FileIOBase::GetInstance();
+            fileIO != nullptr && fileIO->IsDirectory(dotnetRootDir.c_str()))
+        {
+            config.dotnetRootOverride = dotnetRootDir.c_str();
+            AZLOG_INFO(
+                "O3DESharp: bundled .NET runtime found at %s - preferring it over the machine install",
+                dotnetRootDir.c_str());
+        }
+        else
+        {
+            AZLOG_INFO(
+                "O3DESharp: no bundled .NET runtime at %s - using the machine-wide .NET install",
+                dotnetRootDir.c_str());
+        }
+
         // Core API assembly path - O3DE.Core.
         // TODO(Mikael A.): Multiplatform.....
         AZ::IO::FixedMaxPath coreApiPath = projectPath / "Bin" / "Scripts" / "O3DE.Core.dll";
@@ -772,17 +808,34 @@ namespace O3DESharp
         }
         AZLOG_INFO("  Hot Reload: %s", config.enableHotReload ? "Enabled" : "Disabled");
 
-        // Initialize the Coral host
-        CoralHostStatus status = m_coralHostManager->Initialize(config);
+        // M3: initialise THROUGH the IManagedHost seam rather than calling the
+        // manager directly, so the editor exercises the same entry point
+        // NativeAotHost will. CoralHost::Initialize forwards to the manager's
+        // own Initialize(config) internally - the manager is still the owner
+        // of CLR bring-up and nothing about that path changed.
+        m_managedHost = AZStd::make_unique<CoralHost>(*m_coralHostManager, config);
+
+        const Abi::NativeImports imports = ScriptBindings::MakeNativeImports();
+        CoralHostStatus status = m_managedHost->Initialize(imports);
 
         switch (status)
         {
         case CoralHostStatus::Success:
             AZLOG_INFO("O3DESharpSystemComponent: Coral host initialized successfully");
-            
+
             // Register the interface so other systems can access the host
             CoralHostManagerInterface::Register(m_coralHostManager.get());
-            
+
+            // M3: register the ABI seam alongside it. Both are live on purpose -
+            // existing consumers keep using ICoralHostManager unchanged, while
+            // anything written against the frozen ABI resolves IManagedHost and
+            // works identically under NativeAotHost later.
+            ManagedHostInterface::Register(m_managedHost.get());
+            AZLOG_INFO(
+                "O3DESharpSystemComponent: IManagedHost registered (ABI v%u, hot-reload %s)",
+                Abi::HostAbiVersion,
+                m_managedHost->SupportsHotReload() ? "supported" : "unsupported");
+
             // Register internal calls (C++ functions exposed to C#)
             RegisterScriptBindings();
             break;
@@ -819,6 +872,19 @@ namespace O3DESharp
 
     void O3DESharpSystemComponent::ShutdownCoralHost()
     {
+        // M3: tear the seam down FIRST. The adapter holds a reference to the
+        // manager, so it must stop being reachable before the manager goes
+        // away - and any consumer holding a ManagedExports pointer must lose
+        // the interface before the ALC those pointers live in is unloaded.
+        if (m_managedHost)
+        {
+            if (ManagedHostInterface::Get() == m_managedHost.get())
+            {
+                ManagedHostInterface::Unregister(m_managedHost.get());
+            }
+            m_managedHost->InvalidateExports();
+        }
+
         if (m_coralHostManager)
         {
             // Unregister the interface first
@@ -829,9 +895,11 @@ namespace O3DESharp
 
             // Shutdown the Coral host
             m_coralHostManager->Shutdown();
-            
+
             AZLOG_INFO("O3DESharpSystemComponent: Coral host shutdown complete");
         }
+
+        m_managedHost.reset();
     }
 
     void O3DESharpSystemComponent::RegisterScriptBindings()
@@ -916,6 +984,9 @@ namespace O3DESharp
         }
 
         // Create the output path: <ProjectPath>/Generated/reflection_data.json
+        // This must stay in sync with ReflectionDataPathResolver's default in
+        // O3DESharp.BindingGenerator - that's where the CLI's reflection
+        // backend looks for this file when --reflection-data isn't passed.
         AZ::IO::Path outputPath = AZ::IO::Path(projectPath) / "Generated" / "reflection_data.json";
 
         // Ensure the directory exists

@@ -16,6 +16,7 @@
 #include <AzCore/Memory/SystemAllocator.h>
 #include <AzCore/RTTI/RTTI.h>
 #include <AzCore/Interface/Interface.h>
+#include <AzCore/IO/Path/Path.h>
 
 #include <filesystem>
 
@@ -23,6 +24,8 @@
 #include <Coral/Assembly.hpp>
 #include <Coral/Type.hpp>
 #include <Coral/ManagedObject.hpp>
+
+#include <Scripting/HostAbi.h>
 
 namespace O3DESharp
 {
@@ -37,22 +40,24 @@ namespace O3DESharp
                                                 // present in userAssemblyPaths it will be appended.
         AZStd::vector<AZStd::string> userAssemblyPaths;  // Paths to all user game assemblies to load
         AZStd::string coreApiAssemblyPath;      // Path to O3DE.Core.dll (our API)
+
+        // M2: absolute path to a private, self-contained .NET runtime deployed
+        // with the game (a directory containing host/fxr/<version>/hostfxr).
+        // When set, Coral searches it BEFORE the machine-wide install, which
+        // lets a shipped game run on a machine with no .NET installed.
+        //
+        // Empty (the default) preserves framework-dependent behaviour exactly:
+        // only the machine-wide install locations are searched. Populated by
+        // O3DESharpSystemComponent only when the bundle is actually present on
+        // disk, so an absent bundle is a silent fall-back, not an error.
+        AZStd::string dotnetRootOverride;
+
         bool enableHotReload = true;            // Enable assembly hot-reloading
     };
 
-    /**
-     * Result of host initialization
-     */
-    enum class CoralHostStatus
-    {
-        Success,
-        NotInitialized,
-        CoralManagedNotFound,
-        CoralInitError,
-        DotNetNotFound,
-        AssemblyLoadFailed,
-        AlreadyInitialized
-    };
+    // CoralHostStatus now lives in HostAbi.h (included above) so that
+    // IManagedHost.h can see it without pulling in Coral headers. Kept as a
+    // single definition - see HostAbi.h for the enum and the rationale.
 
     /**
      * Interface for the Coral Host Manager - allows other systems to interact with C# scripting
@@ -124,6 +129,22 @@ namespace O3DESharp
          * Get the user game assembly
          */
         virtual Coral::ManagedAssembly* GetUserAssembly() = 0;
+
+        /**
+         * Get the raw Coral host instance backing this manager. Used by
+         * CoralNativeThunkHost (SP-1a) to resolve [UnmanagedCallersOnly]
+         * managed statics to pinned function pointers; nullptr before the
+         * host has been constructed.
+         */
+        virtual Coral::HostInstance* GetHostInstance() = 0;
+
+        /**
+         * Get the directory managed assemblies are deployed to - the
+         * directory containing O3DE.Core.dll. Empty until the core assembly
+         * path has been resolved (i.e. after LoadCoreAssembly has run at
+         * least once during Initialize/ReloadUserAssemblies).
+         */
+        virtual AZ::IO::Path GetScriptsDirectory() const = 0;
     };
 
     using CoralHostManagerInterface = AZ::Interface<ICoralHostManager>;
@@ -159,6 +180,8 @@ namespace O3DESharp
         Coral::ManagedObject CreateInstance(Coral::Type& type) override;
         Coral::ManagedAssembly* GetCoreAssembly() override;
         Coral::ManagedAssembly* GetUserAssembly() override;
+        Coral::HostInstance* GetHostInstance() override;
+        AZ::IO::Path GetScriptsDirectory() const override;
 
     private:
         // Coral message callback for logging

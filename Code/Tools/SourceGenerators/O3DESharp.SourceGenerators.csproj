@@ -19,6 +19,35 @@
   -->
 
   <PropertyGroup>
+    <!--
+      Restore inherits PublishAot/RuntimeIdentifier from whichever project is
+      being NativeAOT-published (O3DE.Core.csproj's M4 publish path): MSBuild's
+      restore-graph walk (NuGet.targets' _GenerateRestoreProjectPathWalk)
+      propagates the command line's global properties to EVERY project reached
+      via ProjectReference, including this Analyzer-only one
+      (ReferenceOutputAssembly=false does not exempt it - that only stops the
+      output assembly from being linked, not the restore walk). Left alone,
+      Microsoft.NET.Publish.targets infers _RequiresILLinkPack=true purely from
+      the inherited PublishAot=true, which makes ProcessFrameworkReferences run
+      here too and fail restore with NETSDK1207 ("AOT compilation is not
+      supported for the target framework") - this project targets
+      netstandard2.0 because Roslyn analyzers require it, and is never itself
+      AOT-published. Pinning this false (a plain, non-global property) is not
+      overridden by the SDK's own conditional default further down: that
+      default lives inside a target guarded by Condition="'$(_RequiresILLinkPack)'
+      == ''", evaluated at build time, and _RequiresILLinkPack itself is never
+      a global property (unlike PublishAot, which arrives as a genuinely
+      global property and would beat any project-level override of the same
+      name - setting PublishAot=false here would NOT have worked).
+
+      Safe only while this project stays netstandard2.0 - the SDK's
+      analyzer-inference rules that would otherwise need _RequiresILLinkPack
+      are all gated on TargetFrameworkIdentifier == .NETCoreApp. If this
+      project is ever retargeted to a .NETCoreApp TFM with IsAotCompatible /
+      IsTrimmable set, this pin would silently suppress the ILLink pack with
+      no diagnostic - revisit then.
+    -->
+    <_RequiresILLinkPack>false</_RequiresILLinkPack>
     <TargetFramework>netstandard2.0</TargetFramework>
     <ImplicitUsings>disable</ImplicitUsings>
     <Nullable>enable</Nullable>
@@ -57,6 +86,32 @@
     -->
     <PackageReference Include="Microsoft.CodeAnalysis.CSharp" Version="4.4.0" PrivateAssets="all" />
     <PackageReference Include="Microsoft.CodeAnalysis.Analyzers" Version="3.3.4" PrivateAssets="all" />
+
+    <!--
+      StaticDispatchGenerator reads reflection_data.json. GeneratePathProperty +
+      the analyzer packaging below is the standard way to make a dependency
+      available INSIDE the compiler process - a plain PackageReference would be
+      resolved for the consumer, not for the analyzer host.
+    -->
+    <PackageReference Include="System.Text.Json" Version="8.0.5" GeneratePathProperty="true" PrivateAssets="all" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <None Include="$(PkgSystem_Text_Json)\lib\netstandard2.0\System.Text.Json.dll"
+          Pack="true" PackagePath="analyzers/dotnet/cs" Visible="false" />
+    <None Include="$(PkgSystem_Text_Json)\lib\netstandard2.0\System.Text.Json.dll"
+          CopyToOutputDirectory="PreserveNewest" Visible="false" />
+  </ItemGroup>
+
+  <!--
+    Analyzer release tracking (RS2008, enforced by EnforceExtendedAnalyzerRules
+    above). DynamicDispatchAnalyzer is the first plain DiagnosticAnalyzer in
+    this project - the existing generators don't carry SupportedDiagnostics,
+    so this pair of files wasn't needed until now.
+  -->
+  <ItemGroup>
+    <AdditionalFiles Include="AnalyzerReleases.Shipped.md" />
+    <AdditionalFiles Include="AnalyzerReleases.Unshipped.md" />
   </ItemGroup>
 
 </Project>

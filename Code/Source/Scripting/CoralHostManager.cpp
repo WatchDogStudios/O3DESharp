@@ -162,6 +162,20 @@ namespace O3DESharp
         // Setup Coral host settings
         Coral::HostSettings settings;
         settings.CoralDirectory = std::string(m_config.coralDirectory.c_str());
+
+        // M2: prefer a bundled private runtime when one was deployed alongside
+        // the game. Coral searches this before the machine-wide install, so the
+        // game runs against the runtime it shipped with rather than whatever
+        // happens to be on the user's machine - and runs at all on a machine
+        // with no .NET installed. Empty => unchanged machine-wide behaviour.
+        if (!m_config.dotnetRootOverride.empty())
+        {
+            settings.DotnetRootOverride = std::string(m_config.dotnetRootOverride.c_str());
+            AZLOG_INFO(
+                "CoralHostManager: using bundled .NET runtime at %s (machine-wide install not required)",
+                m_config.dotnetRootOverride.c_str());
+        }
+
         settings.MessageCallback = &CoralHostManager::CoralMessageCallback;
         settings.MessageFilter = Coral::MessageLevel::All;
         settings.ExceptionCallback = &CoralHostManager::CoralExceptionCallback;
@@ -502,6 +516,26 @@ namespace O3DESharp
     Coral::ManagedAssembly* CoralHostManager::GetUserAssembly()
     {
         return m_userAssembly;
+    }
+
+    Coral::HostInstance* CoralHostManager::GetHostInstance()
+    {
+        return m_hostInstance.get();
+    }
+
+    AZ::IO::Path CoralHostManager::GetScriptsDirectory() const
+    {
+        // m_config.coreApiAssemblyPath is populated by LoadCoreAssembly (either
+        // from explicit config or the default <ProjectPath>/Bin/Scripts/O3DE.Core.dll
+        // derivation) - see LoadCoreAssembly below. Its parent directory is where
+        // every managed assembly (O3DE.Core.dll and user assemblies alike) is
+        // deployed, so the thunk host resolves other assemblies relative to it too.
+        if (m_config.coreApiAssemblyPath.empty())
+        {
+            return {};
+        }
+
+        return AZ::IO::Path(m_config.coreApiAssemblyPath.c_str()).ParentPath();
     }
 
     bool CoralHostManager::LoadCoreAssembly()

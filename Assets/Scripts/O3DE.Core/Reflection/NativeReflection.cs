@@ -12,6 +12,8 @@ using System.Runtime.CompilerServices;
 using System.Text.Json;
 using Coral.Managed.Interop;
 
+[assembly: System.Runtime.CompilerServices.InternalsVisibleTo("O3DE.Core.Tests")]
+
 namespace O3DE.Reflection
 {
     /// <summary>
@@ -224,15 +226,10 @@ namespace O3DE.Reflection
         /// <returns>The result as a dynamic object, or null for void methods</returns>
         public static object? InvokeStaticMethod(string className, string methodName, params object[] args)
         {
-            // The native dispatcher (GenericDispatcher::Reflection_InvokeStaticMethod)
-            // currently returns {"error":"Not fully implemented"} unconditionally.
-            // Throwing here makes the gap obvious instead of letting callers parse a
-            // success-shaped JSON envelope that never arrives.
-            throw new NotImplementedException(
-                "NativeReflection.InvokeStaticMethod is not yet implemented in the native " +
-                "dispatcher (see Code/Source/Scripting/Reflection/GenericDispatcher.cpp). " +
-                "Use direct API methods (e.g. Entity / Transform / Physics) for now, or " +
-                "extend the dispatcher to parse argsJson and call BehaviorMethod::Call.");
+            string argsJson = SerializeArguments(args);
+            string resultJson;
+            unsafe { resultJson = ReflectionInternalCalls.Reflection_InvokeStaticMethod(className, methodName, argsJson); }
+            return DeserializeResult(resultJson);
         }
 
         /// <summary>
@@ -244,10 +241,21 @@ namespace O3DE.Reflection
         /// <returns>The result as a dynamic object, or null for void methods</returns>
         public static object? InvokeInstanceMethod(NativeObject instance, string methodName, params object[] args)
         {
-            // Native dispatcher stub returns "Not fully implemented". See InvokeStaticMethod above.
-            throw new NotImplementedException(
-                "NativeReflection.InvokeInstanceMethod is not yet implemented in the native dispatcher. " +
-                "Use direct API methods for now.");
+            if (instance == null) { throw new ArgumentNullException(nameof(instance)); }
+            if (!instance.IsValid)
+            {
+                throw new InvalidOperationException(
+                    $"Cannot invoke '{methodName}' on an invalid NativeObject ({instance.TypeName}).");
+            }
+
+            string argsJson = SerializeArguments(args);
+            string resultJson;
+            unsafe
+            {
+                resultJson = ReflectionInternalCalls.Reflection_InvokeInstanceMethod(
+                    instance.TypeName, methodName, instance.Handle, argsJson);
+            }
+            return DeserializeResult(resultJson);
         }
 
         /// <summary>
@@ -258,10 +266,10 @@ namespace O3DE.Reflection
         /// <returns>The result as a dynamic object, or null for void methods</returns>
         public static object? InvokeGlobalMethod(string methodName, params object[] args)
         {
-            // Native dispatcher stub returns "Not fully implemented". See InvokeStaticMethod above.
-            throw new NotImplementedException(
-                "NativeReflection.InvokeGlobalMethod is not yet implemented in the native dispatcher. " +
-                "Use direct API methods for now.");
+            string argsJson = SerializeArguments(args);
+            string resultJson;
+            unsafe { resultJson = ReflectionInternalCalls.Reflection_InvokeGlobalMethod(methodName, argsJson); }
+            return DeserializeResult(resultJson);
         }
 
         #endregion
@@ -277,10 +285,21 @@ namespace O3DE.Reflection
         /// <returns>The property value</returns>
         public static T? GetProperty<T>(NativeObject instance, string propertyName)
         {
-            // Native dispatcher stub. See InvokeStaticMethod above.
-            throw new NotImplementedException(
-                "NativeReflection.GetProperty is not yet implemented in the native dispatcher. " +
-                "Use direct API methods for now.");
+            if (instance == null) { throw new ArgumentNullException(nameof(instance)); }
+            if (!instance.IsValid)
+            {
+                throw new InvalidOperationException(
+                    $"Cannot get property '{propertyName}' on an invalid NativeObject ({instance.TypeName}).");
+            }
+
+            string resultJson;
+            unsafe
+            {
+                resultJson = ReflectionInternalCalls.Reflection_GetProperty(
+                    instance.TypeName, propertyName, instance.Handle);
+            }
+            object? raw = DeserializeResult(resultJson);
+            return CoerceEBusResult<T>(raw, "GetProperty", instance.TypeName, propertyName, /*busId*/ null);
         }
 
         /// <summary>
@@ -291,10 +310,30 @@ namespace O3DE.Reflection
         /// <param name="value">The value to set</param>
         public static void SetProperty(NativeObject instance, string propertyName, object value)
         {
-            // Native dispatcher stub. See InvokeStaticMethod above.
-            throw new NotImplementedException(
-                "NativeReflection.SetProperty is not yet implemented in the native dispatcher. " +
-                "Use direct API methods for now.");
+            if (instance == null) { throw new ArgumentNullException(nameof(instance)); }
+            if (!instance.IsValid)
+            {
+                throw new InvalidOperationException(
+                    $"Cannot set property '{propertyName}' on an invalid NativeObject ({instance.TypeName}).");
+            }
+
+            // Reflection_SetProperty (GenericDispatcher::SetProperty) parses valueJson
+            // as a single bare JSON value - not a single-element array - and marshals it
+            // directly against the setter's one value parameter. Use SerializeValue
+            // (bare), not SerializeArguments (wraps in an array).
+            string valueJson = SerializeValue(value);
+            bool ok;
+            unsafe
+            {
+                ok = ReflectionInternalCalls.Reflection_SetProperty(
+                    instance.TypeName, propertyName, instance.Handle, valueJson);
+            }
+            if (!ok)
+            {
+                throw new InvalidOperationException(
+                    $"Failed to set property '{instance.TypeName}.{propertyName}' " +
+                    "(native dispatcher rejected the call - see the native log for details).");
+            }
         }
 
         /// <summary>
@@ -305,9 +344,10 @@ namespace O3DE.Reflection
         /// <returns>The property value</returns>
         public static T? GetGlobalProperty<T>(string propertyName)
         {
-            // Native dispatcher stub. See InvokeStaticMethod above.
-            throw new NotImplementedException(
-                "NativeReflection.GetGlobalProperty is not yet implemented in the native dispatcher.");
+            string resultJson;
+            unsafe { resultJson = ReflectionInternalCalls.Reflection_GetGlobalProperty(propertyName); }
+            object? raw = DeserializeResult(resultJson);
+            return CoerceEBusResult<T>(raw, "GetGlobalProperty", "(global)", propertyName, /*busId*/ null);
         }
 
         /// <summary>
@@ -317,14 +357,65 @@ namespace O3DE.Reflection
         /// <param name="value">The value to set</param>
         public static void SetGlobalProperty(string propertyName, object value)
         {
-            // Native dispatcher stub. See InvokeStaticMethod above.
-            throw new NotImplementedException(
-                "NativeReflection.SetGlobalProperty is not yet implemented in the native dispatcher.");
+            // Reflection_SetGlobalProperty (GenericDispatcher::SetGlobalProperty) wraps
+            // valueJson into a single-element array itself before dispatching through
+            // the setter's BehaviorMethod - the value handed across the wire must be
+            // bare, same as SetProperty above.
+            string valueJson = SerializeValue(value);
+            bool ok;
+            unsafe { ok = ReflectionInternalCalls.Reflection_SetGlobalProperty(propertyName, valueJson); }
+            if (!ok)
+            {
+                throw new InvalidOperationException(
+                    $"Failed to set global property '{propertyName}' " +
+                    "(native dispatcher rejected the call - see the native log for details).");
+            }
         }
 
         #endregion
 
         #region EBus
+
+        /// <summary>
+        /// Closed-world gate for the shipping NativeAOT build.
+        ///
+        /// Desktop NativeAOT supports only dispatch the generator could see at
+        /// compile time. A pair that is not in the generated table has no
+        /// validated argument shape, and handing an unvalidated argument blob to
+        /// BehaviorContext is memory-unsafe rather than merely wrong - so this
+        /// throws before the native call, never after.
+        ///
+        /// Throwing rather than returning null is the point: a null return is
+        /// indistinguishable from "no handlers were listening", which is exactly
+        /// the silent degrade the design rules out. The message names the site
+        /// and points at the build warning that predicted it.
+        ///
+        /// Compiled out entirely in the editor build.
+        /// </summary>
+        [System.Diagnostics.Conditional("O3DE_HOST_NATIVEAOT")]
+        private static void EnsureStaticallyDispatchable(string busName, string eventName, int argCount)
+        {
+#if O3DE_HOST_NATIVEAOT
+            if (!StaticEBusDispatch.TryGetShape(busName, eventName, out int arity, out _))
+            {
+                throw new NotSupportedException(
+                    $"EBus dispatch '{busName}.{eventName}' is not in this NativeAOT image's static " +
+                    $"dispatch table ({StaticEBusDispatch.EntryCount} entries, built from " +
+                    "reflection_data.json). Desktop NativeAOT supports closed-world dispatch only; " +
+                    "the build reported O3DESHARP1001 for any call site whose bus or event name is " +
+                    "not a compile-time constant. Constant-fold the name, regenerate " +
+                    "reflection_data.json if the bus is new, or ship the Mono backend.");
+            }
+
+            if (argCount != arity)
+            {
+                throw new NotSupportedException(
+                    $"EBus dispatch '{busName}.{eventName}' expects {arity} argument(s) but was " +
+                    $"given {argCount}. This NativeAOT image was built against a reflection_data.json " +
+                    "in which the event had a different signature; regenerate it and republish.");
+            }
+#endif
+        }
 
         /// <summary>
         /// Broadcast an event on an EBus (sends to all handlers).
@@ -335,6 +426,7 @@ namespace O3DE.Reflection
         /// <returns>The result if the event has a return value</returns>
         public static object? BroadcastEBusEvent(string busName, string eventName, params object[] args)
         {
+            EnsureStaticallyDispatchable(busName, eventName, args?.Length ?? 0);
             string argsJson = SerializeArguments(args);
             string resultJson;
             unsafe { resultJson = ReflectionInternalCalls.Reflection_BroadcastEBusEvent(busName, eventName, argsJson); }
@@ -422,6 +514,7 @@ namespace O3DE.Reflection
         /// <returns>The result if the event has a return value</returns>
         public static object? SendEBusEvent(string busName, string eventName, ulong entityId, params object[] args)
         {
+            EnsureStaticallyDispatchable(busName, eventName, args?.Length ?? 0);
             string argsJson = SerializeArguments(args);
             string resultJson;
             unsafe { resultJson = ReflectionInternalCalls.Reflection_SendEBusEvent(busName, eventName, (long)entityId, argsJson); }
@@ -539,8 +632,17 @@ namespace O3DE.Reflection
                 elements.Add(SerializeArgumentToObject(arg));
             }
 
-            return JsonSerializer.Serialize(elements);
+            return JsonSerializer.Serialize(elements, NativeReflectionJsonContext.Default.ListObject);
         }
+
+        /// <summary>
+        /// Test seam over <c>SerializeArguments</c>. The wire format is a
+        /// contract with the C++ marshaler
+        /// (O3DESharp::Marshaling::JsonValueToBehaviorParameter) and a change
+        /// to it breaks every EBus call silently at runtime, so it is asserted
+        /// directly rather than inferred from a round trip.
+        /// </summary>
+        internal static string SerializeArgumentsForTest(object[] args) => SerializeArguments(args);
 
         private static object? SerializeArgumentToObject(object arg)
         {
@@ -580,8 +682,21 @@ namespace O3DE.Reflection
 
         private static string SerializeValue(object value)
         {
-            return JsonSerializer.Serialize(SerializeArgumentToObject(value));
+            // Wrapped in a single-element list so the one registered
+            // List<object?> type info covers both call sites; the context does
+            // not need a second bare-object entry point.
+            var single = new List<object?> { SerializeArgumentToObject(value) };
+            string json = JsonSerializer.Serialize(single, NativeReflectionJsonContext.Default.ListObject);
+            // Strip the wrapping brackets to preserve the previous bare-value shape.
+            return json.Substring(1, json.Length - 2);
         }
+
+        /// <summary>
+        /// Test seam over <c>SerializeValue</c>. Verifies that the
+        /// wrap-serialize-substring logic correctly preserves JSON escaping
+        /// of strings containing literal bracket characters.
+        /// </summary>
+        internal static string SerializeValueForTest(object value) => SerializeValue(value);
 
         /// <summary>
         /// Deserialize the JSON result envelope produced by Phase 18-A's

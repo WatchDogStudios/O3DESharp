@@ -35,6 +35,8 @@ from PySide2.QtGui import QFont, QIcon
 import azlmbr.bus as bus
 import azlmbr.editor as editor
 
+from csharp_platform_utils import resolve_dotnet, open_in_default_app
+
 # Import with fallback for different contexts
 try:
     from .csharp_project_manager import CSharpProjectManager, get_project_manager
@@ -554,11 +556,8 @@ class ScriptBrowserDialog(QDialog):
         try:
             _sp.Popen(["code", script_path])
         except Exception:
-            try:
-                import os
-                os.startfile(script_path)
-            except Exception as e:
-                QMessageBox.warning(self, "Error", f"Could not open script: {e}")
+            if not open_in_default_app(script_path):
+                QMessageBox.warning(self, "Error", f"Could not open script: {script_path}")
     
     def _build_selected_project(self):
         """Build the project containing the selected item."""
@@ -1019,11 +1018,8 @@ class ScriptClassPickerDialog(QDialog):
             try:
                 _sp.Popen(["code", data["path"]])
             except Exception:
-                try:
-                    import os
-                    os.startfile(data["path"])
-                except Exception as e:
-                    QMessageBox.warning(self, "Error", f"Could not open file: {e}")
+                if not open_in_default_app(data["path"]):
+                    QMessageBox.warning(self, "Error", f"Could not open file: {data['path']}")
     
     def _create_new_script(self):
         """Open the Create Script dialog and optionally select the newly created class."""
@@ -1288,7 +1284,7 @@ class _BindingBuildWorker(QThread):
                 # Use Popen + line-streaming so the log scrolls in
                 # real time (same trick the generator wrapper uses).
                 proc = subprocess.Popen(
-                    ["dotnet", "build", csproj, "-c", "Debug", "--nologo"],
+                    [resolve_dotnet(), "build", csproj, "-c", "Debug", "--nologo"],
                     stdout=subprocess.PIPE,
                     stderr=subprocess.STDOUT,
                     text=True,
@@ -1857,25 +1853,15 @@ class CSharpProjectManagerWindow(QDialog):
     
     def _open_log_file(self):
         """Open the persistent log file location."""
-        import subprocess
-        import sys
-        
         log_file = self._get_log_file_path()
         log_file.parent.mkdir(parents=True, exist_ok=True)
-        
+
         # Create the file if it doesn't exist
         if not log_file.exists():
             log_file.touch()
-        
-        try:
-            if sys.platform == "win32":
-                # Open in default text editor on Windows
-                import os
-                os.startfile(str(log_file))
-            else:
-                subprocess.Popen(["xdg-open", str(log_file)])
-        except Exception as e:
-            QMessageBox.warning(self, "Error", f"Failed to open log file: {e}")
+
+        if not open_in_default_app(str(log_file)):
+            QMessageBox.warning(self, "Error", f"Failed to open log file: {log_file}")
     
     # ==================== End Log Methods ====================
         
@@ -2171,21 +2157,14 @@ Status: {status['message']}"""
         script = item.data(Qt.UserRole)
         if script and isinstance(script, dict) and "path" in script:
             import subprocess
-            import sys
-            
+
             # Try to open with VS Code first, then default editor
             script_path = script["path"]
             try:
                 subprocess.Popen(["code", script_path])
-            except:
-                try:
-                    if sys.platform == "win32":
-                        import os
-                        os.startfile(script_path)
-                    else:
-                        subprocess.Popen(["xdg-open", script_path])
-                except Exception as e:
-                    QMessageBox.warning(self, "Warning", f"Could not open script: {e}")
+            except Exception:
+                if not open_in_default_app(script_path):
+                    QMessageBox.warning(self, "Warning", f"Could not open script: {script_path}")
                     
     def _build_project(self):
         if getattr(self, "_project_build_worker", None) is not None and self._project_build_worker.isRunning():
@@ -2913,13 +2892,9 @@ class CSharpEditorToolsHandler:
                     file_path = cls['filePath']
                     if file_path and Path(file_path).exists():
                         # Open in default editor
-                        import subprocess
-                        if os.name == 'nt':
-                            os.startfile(file_path)
-                        elif os.name == 'posix':
-                            subprocess.run(['xdg-open', file_path])
-                        else:
-                            subprocess.run(['open', file_path])
+                        if not open_in_default_app(file_path):
+                            print(f"[O3DESharp] Failed to open script: {file_path}")
+                            return False
                         print(f"[O3DESharp] Opened script: {file_path}")
                         return True
             

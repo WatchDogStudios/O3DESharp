@@ -57,6 +57,7 @@ from csharp_binding_generator import (
     BindingGeneratorResult,
     ClangSharpInvoker,
 )
+from csharp_platform_utils import resolve_dotnet
 from gem_dependency_resolver import GemDependencyResolver, GemResolutionResult
 
 # Set up logging
@@ -598,7 +599,7 @@ def main() -> int:
                 logger.info(f"Building {gem_name} from {csproj_path} ...")
                 try:
                     proc = subprocess.run(
-                        ["dotnet", "build", str(csproj_path), "-c", "Release", "--nologo"],
+                        [resolve_dotnet(), "build", str(csproj_path), "-c", "Release", "--nologo"],
                         capture_output=True,
                         text=True,
                         timeout=120,

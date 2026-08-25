@@ -17,6 +17,7 @@
 namespace O3DESharp
 {
     class CoralHostManager;
+    class CoralHost;
     class BehaviorContextReflector;
     class GenericDispatcher;
 
@@ -138,6 +139,11 @@ namespace O3DESharp
     private:
         // The Coral host manager instance - manages .NET runtime lifecycle
         AZStd::unique_ptr<CoralHostManager> m_coralHostManager;
+
+        // M3: the IManagedHost adapter over m_coralHostManager. Owns nothing;
+        // the manager above stays the owner of the CLR. Declared AFTER the
+        // manager so it is destroyed BEFORE it - the adapter holds a reference.
+        AZStd::unique_ptr<CoralHost> m_managedHost;
 
         // The BehaviorContext reflector - extracts type information from O3DE
         AZStd::unique_ptr<BehaviorContextReflector> m_reflector;

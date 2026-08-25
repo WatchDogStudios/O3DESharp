@@ -6,6 +6,18 @@
  *
  */
 
+// Hot-reload is editor-only by design. This whole file is Assembly.GetType +
+// Activator.CreateInstance + field reflection over types loaded at runtime -
+// precisely what a NativeAOT image cannot see through - and a shipping AOT
+// build has no AssemblyLoadContext to reload into anyway, so there is nothing
+// here for it to do.
+//
+// Guarding the file out rather than annotating it is deliberate: annotating
+// machinery that must never run in the shipping artifact would be work with no
+// consumer. Editor/Tests/test_hotreload_excluded_from_aot.py asserts this file
+// still has no callers, because the moment one appears it needs guarding too.
+#if !O3DE_HOST_NATIVEAOT
+
 using System;
 using System.Collections.Generic;
 using System.IO;
@@ -395,3 +407,4 @@ namespace O3DE.Core.HotReload
         }
     }
 }
+#endif

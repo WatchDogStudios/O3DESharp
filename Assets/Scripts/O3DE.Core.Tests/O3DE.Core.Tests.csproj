@@ -40,7 +40,15 @@
     <Compile Include="..\O3DE.Core\Debugger.cs" Link="O3DE.Core\Debugger.cs" />
     <Compile Include="..\O3DE.Core\Debug.cs" Link="O3DE.Core\Debug.cs" />
     <Compile Include="..\O3DE.Core\Reflection\NativeReflection.cs" Link="O3DE.Core\Reflection\NativeReflection.cs" />
+    <Compile Include="..\O3DE.Core\Reflection\NativeReflectionJsonContext.cs" Link="O3DE.Core\Reflection\NativeReflectionJsonContext.cs" />
     <Compile Include="..\O3DE.Core\Entity.cs" Link="O3DE.Core\Entity.cs" />
+    <Compile Include="..\O3DE.Core\ExposedProperty.cs" Link="O3DE.Core\ExposedProperty.cs" />
+    <Compile Include="..\O3DE.Core\ScriptComponent.cs" Link="O3DE.Core\ScriptComponent.cs" />
+    <Compile Include="..\O3DE.Core\Interop\ScriptComponentBridge.cs" Link="O3DE.Core\Interop\ScriptComponentBridge.cs" />
+    <Compile Include="..\O3DE.Core\Interop\HostAbi.cs" Link="O3DE.Core\Interop\HostAbi.cs" />
+    <Compile Include="..\O3DE.Core\Interop\ScriptTypeRegistry.cs" Link="O3DE.Core\Interop\ScriptTypeRegistry.cs" />
+    <Compile Include="..\O3DE.Core\Interop\ManagedExportsImpl.cs" Link="O3DE.Core\Interop\ManagedExportsImpl.cs" />
+    <Compile Include="..\O3DE.Core\Reflection\EBusHandlerRegistry.cs" Link="O3DE.Core\Reflection\EBusHandlerRegistry.cs" />
   </ItemGroup>
 
   <ItemGroup>

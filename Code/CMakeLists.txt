@@ -29,6 +29,20 @@ endif()
 # Sets DOTNET_EXECUTABLE in this scope, used by binding generator and C# test custom targets below.
 o3de_sharp_netverify()
 
+# Coral's own cmake/CMakeLists.txt does an independent
+# find_program(DOTNET_EXE NAMES dotnet REQUIRED) rather than accepting our
+# resolved DOTNET_EXECUTABLE. That's fine when a system-wide dotnet is on
+# PATH, but o3de_sharp_netverify() can instead auto-download a private copy
+# under ${CMAKE_BINARY_DIR}/.dotnet when none is found (the common case on a
+# bare Linux CI image) - a location Coral's raw find_program() call has no
+# way to see, so its configure fails with "dotnet not found" even though we
+# just resolved one. Prepending its directory to CMAKE_PROGRAM_PATH before
+# FetchContent_MakeAvailable(Coral) below lets Coral's own find_program()
+# pick up the same dotnet we already verified.
+get_filename_component(_o3desharp_dotnet_dir "${DOTNET_EXECUTABLE}" DIRECTORY)
+list(PREPEND CMAKE_PROGRAM_PATH "${_o3desharp_dotnet_dir}")
+unset(_o3desharp_dotnet_dir)
+
 # CORAL CLONE INFO
 # ===========================
 # NOTE(Mikael A.): Stay on main, do not change to internal coral branch!
@@ -180,6 +194,17 @@ if(TARGET Coral.Managed)
     # traces from there land as `<unknown source>`. The PDB is small
     # (a few hundred KB) and shipping it has zero cost for users who
     # never debug into Coral.
+    # BYPRODUCTS is load-bearing on Ninja (WatchDogStudios/O3DESharp#3): without
+    # it, these four staged paths have no declared producing rule anywhere in
+    # the build graph. ly_add_target_files() below asks for them again by exact
+    # path (not by target) to deploy them to the launchers, and on a fresh
+    # clone - where they don't exist on disk yet - Ninja can't resolve that
+    # request ("no known rule to make it") even though this target's COMMAND
+    # does write them; add_custom_target()'s commands have no declared outputs
+    # on their own. A pre-packaged release tree never hits this because the
+    # files are already present, so there's nothing for Ninja to need a rule
+    # for. Same pattern already used below for the O3DE.Core custom target's
+    # BYPRODUCTS, for the identical reason.
     add_custom_target(${gem_name}.StageCoral ALL
         COMMENT "O3DESharp: Staging Coral.Managed files for deployment"
         COMMAND ${CMAKE_COMMAND} -E make_directory "${CORAL_STAGING_DIR}"
@@ -194,6 +219,11 @@ if(TARGET Coral.Managed)
             "${CORAL_STAGING_DIR}/Coral.Managed.runtimeconfig.json"
         COMMAND ${CMAKE_COMMAND} -E copy_if_different
             "${CORAL_MANAGED_OUTPUT}/Coral.Managed.deps.json"
+            "${CORAL_STAGING_DIR}/Coral.Managed.deps.json"
+        BYPRODUCTS
+            "${CORAL_STAGING_DIR}/Coral.Managed.dll"
+            "${CORAL_STAGING_DIR}/Coral.Managed.pdb"
+            "${CORAL_STAGING_DIR}/Coral.Managed.runtimeconfig.json"
             "${CORAL_STAGING_DIR}/Coral.Managed.deps.json"
         DEPENDS Coral.Managed
     )
@@ -224,36 +254,45 @@ set(O3DE_CORE_BUILD_OUTPUT_DEBUG "${O3DE_CORE_SCRIPTS_DIR}/bin/Debug/net9.0")
 # For C# projects, we typically want Release for deployment
 set(O3DE_CORE_BUILD_OUTPUT "${O3DE_CORE_BUILD_OUTPUT_RELEASE}")
 
-if(EXISTS "${O3DE_CORE_BUILD_OUTPUT}/O3DE.Core.dll")
+# Define the staging target when O3DE.Core will exist: either the C# source is
+# present (so the MSVC msproject / non-MSVC dotnet target below builds the DLL and
+# the consolidated wiring block adds the StageO3DECore -> O3DE.Core dependency), or
+# a pre-built DLL is already on disk. In an install/redistribution tree that ships
+# Code/ but not the C# source (no csproj, no DLL), neither holds - fall through to
+# the graceful message instead of staging a DLL that will never be produced (the
+# primary DLL copy is not absence-tolerant, unlike the PDB/deps.json copies).
+if(EXISTS "${O3DE_CORE_SCRIPTS_DIR}/O3DE.Core.csproj" OR EXISTS "${O3DE_CORE_BUILD_OUTPUT}/O3DE.Core.dll")
     # Create custom target to stage O3DE.Core files. Includes the
     # portable PDB so external debuggers (vsdbg / Rider / VS) can bind
     # source-level breakpoints in O3DE.Core methods - without the PDB
     # next to the DLL, attach succeeds but stepping into framework
     # code shows up as `<unknown source>`.
+    # BYPRODUCTS is load-bearing on Ninja, same reasoning and same reported
+    # failure as StageCoral above (WatchDogStudios/O3DESharp#3) - without it,
+    # a fresh clone hits "no known rule to make it" for O3DE.Core.dll at the
+    # launchers' runtime-dependency step instead of Coral.Managed.dll's, the
+    # next file ly_add_target_files() asks for by path below.
     add_custom_target(${gem_name}.StageO3DECore ALL
         COMMENT "O3DESharp: Staging O3DE.Core files for deployment"
         COMMAND ${CMAKE_COMMAND} -E make_directory "${O3DE_CORE_STAGING_DIR}"
         COMMAND ${CMAKE_COMMAND} -E copy_if_different
             "${O3DE_CORE_BUILD_OUTPUT}/O3DE.Core.dll"
             "${O3DE_CORE_STAGING_DIR}/O3DE.Core.dll"
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "${O3DE_CORE_BUILD_OUTPUT}/O3DE.Core.pdb"
+        # PDB/deps.json may or may not be emitted depending on config; copy
+        # them only if present so a Release build without a PDB doesn't fail.
+        COMMAND ${CMAKE_COMMAND} -DSRC=${O3DE_CORE_BUILD_OUTPUT}/O3DE.Core.pdb -DDST=${O3DE_CORE_STAGING_DIR}/O3DE.Core.pdb -P "${CMAKE_CURRENT_LIST_DIR}/o3desharp_copy_if_exists.cmake"
+        COMMAND ${CMAKE_COMMAND} -DSRC=${O3DE_CORE_BUILD_OUTPUT}/O3DE.Core.deps.json -DDST=${O3DE_CORE_STAGING_DIR}/O3DE.Core.deps.json -P "${CMAKE_CURRENT_LIST_DIR}/o3desharp_copy_if_exists.cmake"
+        BYPRODUCTS
+            "${O3DE_CORE_STAGING_DIR}/O3DE.Core.dll"
             "${O3DE_CORE_STAGING_DIR}/O3DE.Core.pdb"
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "${O3DE_CORE_BUILD_OUTPUT}/O3DE.Core.deps.json"
             "${O3DE_CORE_STAGING_DIR}/O3DE.Core.deps.json"
     )
-    
-    # Add dependency on O3DE.Core C# project if it exists as a target
-    if(TARGET O3DE.Core)
-        add_dependencies(${gem_name}.StageO3DECore O3DE.Core)
-    endif()
-    
-    # Also ensure Coral.Managed is staged first since O3DE.Core depends on it
-    if(TARGET ${gem_name}.StageCoral)
-        add_dependencies(${gem_name}.StageO3DECore ${gem_name}.StageCoral)
-    endif()
-    
+
+    # NOTE: build-ordering dependencies (O3DE.Core, StageCoral) are wired in a
+    # consolidated block AFTER the O3DE.Core target is created (see the
+    # if(MSVC)/else() block further down). They cannot be wired here because
+    # CMake evaluates if(TARGET ...) in single-pass order and O3DE.Core does
+    # not exist yet at this point in the file.
     set_property(TARGET ${gem_name}.StageO3DECore PROPERTY FOLDER "${relative_o3desharp_gem_root}/Deploy")
 
     message(STATUS "O3DESharp: O3DE.Core will be staged to ${O3DE_CORE_STAGING_DIR}")
@@ -270,6 +309,33 @@ endif()
 
 # Option to control automatic binding generation
 option(O3DESHARP_AUTO_GENERATE_BINDINGS "Automatically generate C# bindings during build" ON)
+
+# Bundle a private .NET runtime so shipped games don't require a machine-wide
+# .NET install (M2, experimental). OFF keeps the framework-dependent default.
+option(O3DESHARP_BUNDLE_DOTNET_RUNTIME
+    "Bundle a private self-contained .NET runtime for shipping (experimental)" OFF)
+
+if(O3DESHARP_BUNDLE_DOTNET_RUNTIME)
+    include(o3desharp_runtime_bundle.cmake)
+    o3de_sharp_stage_runtime_bundle(O3DESHARP_RUNTIME_BUNDLE_DIR)
+    if(TARGET ${gem_name}.StageRuntimeBundle)
+        message(STATUS "O3DESharp: runtime bundle -> ${O3DESHARP_RUNTIME_BUNDLE_DIR}")
+    endif()
+endif()
+
+# Publish O3DE.Core as a NativeAOT shared library for the shipping desktop build
+# (M4, experimental). OFF keeps the Coral/CoreCLR path as the only artifact.
+# The two are mutually exclusive per launcher, never a runtime switch.
+option(O3DESHARP_PUBLISH_NATIVEAOT
+    "Publish O3DE.Core as a NativeAOT shared library for shipping (experimental)" OFF)
+
+if(O3DESHARP_PUBLISH_NATIVEAOT)
+    include(o3desharp_nativeaot_publish.cmake)
+    o3de_sharp_publish_nativeaot(O3DESHARP_NATIVEAOT_DIR)
+    if(TARGET ${gem_name}.PublishNativeAot)
+        message(STATUS "O3DESharp: NativeAOT image -> ${O3DESHARP_NATIVEAOT_DIR}")
+    endif()
+endif()
 
 get_property(gem_root_for_bindings GLOBAL PROPERTY "@GEMROOT:${gem_name}@")
 set(BINDING_GENERATOR_SOURCE_DIR "${gem_root_for_bindings}/Code/Tools/BindingGenerator")
@@ -393,6 +459,17 @@ set_property(DIRECTORY APPEND PROPERTY O3DE_SUBDIRECTORY_INSTALL_CODE [[
         ly_target_include_system_directories(TARGET o3desharp::${coralLibrary}
             INTERFACE
                 "${LY_ROOT_FOLDER}/include/Coral")
+
+        # Same dl/pthread requirement as the dev-side FetchContent build above
+        # (HostInstance.cpp dlopen()s hostfxr and uses threads; Coral never links
+        # these itself) - an exported installer build linking this IMPORTED lib
+        # on an older-glibc Linux (dl/pthread not yet folded into libc) needs it
+        # declared here too, since installer trees don't have the dev-side fixup.
+        if(UNIX AND NOT APPLE)
+            find_package(Threads REQUIRED)
+            set_property(TARGET o3desharp::${coralLibrary} APPEND PROPERTY
+                INTERFACE_LINK_LIBRARIES ${CMAKE_DL_LIBS} Threads::Threads)
+        endif()
     endforeach()
 ]]
 )
@@ -425,6 +502,14 @@ foreach(coralLibrary ${coralLibraries})
                     /wd4146  # Suppress C4146 in code that includes Coral headers
                     /wd4459  # Suppress C4459 - Coral's global typedefs conflict with AzCore template params
             )
+        elseif(UNIX AND NOT APPLE)
+            # HostInstance.cpp dlopen()s hostfxr and spins up threads; Coral's own
+            # cmake/CMakeLists.txt never links dl/pthread for it (premake5-native.lua
+            # doesn't either - no Linux filter block exists there). Harmless no-op on
+            # glibc >= 2.34 (dl/pthread folded into libc) but required on older glibc
+            # (Ubuntu 20.04, Debian 11, etc.) where they're still separate shared objects.
+            find_package(Threads REQUIRED)
+            target_link_libraries(${coralLibrary} PUBLIC ${CMAKE_DL_LIBS} Threads::Threads)
         endif()
     else()
         message(WARNING "O3DESharp: Coral target '${coralLibrary}' not found. Check if the Coral repository structure has changed.")
@@ -553,6 +638,59 @@ if(TARGET ${gem_name}.StageO3DECore)
         OUTPUT_SUBDIRECTORY "Bin/Scripts"
     )
     message(STATUS "O3DESharp: O3DE.Core will be deployed to Bin/Scripts/ for runtime and export")
+endif()
+
+# Deploy the private .NET runtime bundle (M2, opt-in via
+# O3DESHARP_BUNDLE_DOTNET_RUNTIME) alongside Coral/O3DE.Core, into a "dotnet"
+# subfolder next to the scripts so CoralHostManager can find it at a stable
+# relative path. Unlike the two blocks above, the runtime bundle's file list
+# isn't a small fixed set of known names - it's whatever `dotnet publish
+# --self-contained` harvests for the RID (189 files for win-x64, verified
+# empirically; see o3desharp_runtime_bundle.cmake). ly_add_target_files()
+# requires an explicit FILES list, so the staged bundle directory is globbed
+# instead of naming files.
+# CAVEAT: on the first configure after turning the option on, the bundle
+# directory does not exist yet (StageRuntimeBundle only produces it at BUILD
+# time), so the glob below is empty and nothing is queued for deploy that
+# configure. Build ${gem_name}.StageRuntimeBundle once, then re-run CMake
+# configure to pick up the produced files. See README.md "Shipping without
+# requiring .NET (experimental)".
+if(O3DESHARP_BUNDLE_DOTNET_RUNTIME AND TARGET ${gem_name}.StageRuntimeBundle)
+    file(GLOB O3DESHARP_RUNTIME_BUNDLE_FILES "${O3DESHARP_RUNTIME_BUNDLE_DIR}/*")
+    if(O3DESHARP_RUNTIME_BUNDLE_FILES)
+        ly_add_target_files(
+            TARGETS ${gem_name}.Clients ${gem_name}.Servers ${gem_name}.Unified
+            FILES ${O3DESHARP_RUNTIME_BUNDLE_FILES}
+            OUTPUT_SUBDIRECTORY "Bin/Scripts/dotnet"
+        )
+        message(STATUS "O3DESharp: private .NET runtime bundle will be deployed to Bin/Scripts/dotnet/ for runtime and export")
+    else()
+        message(STATUS "O3DESharp: runtime bundle not yet built at ${O3DESHARP_RUNTIME_BUNDLE_DIR} - build ${gem_name}.StageRuntimeBundle then re-run CMake configure to deploy it")
+    endif()
+endif()
+
+# Deploy the NativeAOT scripting image (M4, opt-in via
+# O3DESHARP_PUBLISH_NATIVEAOT) into Bin/Scripts/aot - deliberately NOT
+# Bin/Scripts, where the managed O3DE.Core.dll lives. The native image has the
+# same filename, and a launcher that loaded the wrong one would fail in a way
+# that reads as an unrelated bug. Keeping them in sibling directories makes the
+# artifact a launcher uses an explicit choice.
+#
+# Same first-configure caveat as the runtime bundle: PublishNativeAot only
+# produces the directory at BUILD time, so build that target once and re-run
+# CMake configure for the glob to pick it up.
+if(O3DESHARP_PUBLISH_NATIVEAOT AND TARGET ${gem_name}.PublishNativeAot)
+    file(GLOB O3DESHARP_NATIVEAOT_FILES "${O3DESHARP_NATIVEAOT_DIR}/*")
+    if(O3DESHARP_NATIVEAOT_FILES)
+        ly_add_target_files(
+            TARGETS ${gem_name}.Clients ${gem_name}.Servers ${gem_name}.Unified
+            FILES ${O3DESHARP_NATIVEAOT_FILES}
+            OUTPUT_SUBDIRECTORY "Bin/Scripts/aot"
+        )
+        message(STATUS "O3DESharp: NativeAOT scripting image will be deployed to Bin/Scripts/aot/")
+    else()
+        message(STATUS "O3DESharp: NativeAOT image not yet built at ${O3DESHARP_NATIVEAOT_DIR} - build ${gem_name}.PublishNativeAot then re-run CMake configure to deploy it")
+    endif()
 endif()
 
 # Add in CMake dependencies for each gem dependency listed in this gem's gem.json file
@@ -839,8 +977,9 @@ endif()
 
 if(MSVC)
     # Get the gem root for proper folder organization
-    get_property(gem_root GLOBAL PROPERTY "@GEMROOT:${gem_name}@")
-    
+    get_property(gem_root_for_core_build GLOBAL PROPERTY "@GEMROOT:${gem_name}@")
+    set(gem_root ${gem_root_for_core_build})
+
     # Define paths to C# projects
     set(O3DESHARP_CSHARP_SCRIPTS_DIR "${gem_root}/Assets/Scripts")
     
@@ -870,4 +1009,45 @@ if(MSVC)
     endif()
     
     message(STATUS "O3DESharp: C# projects integrated into Visual Studio solution")
+else()
+    # Non-MSVC generators (Ninja/Make on Linux/macOS) don't consume
+    # include_external_msproject, so build O3DE.Core with the dotnet CLI
+    # directly - same mechanism as the binding generator above. The output
+    # lands where StageO3DECore expects it (bin/Release/net9.0).
+    get_property(gem_root_for_core_build GLOBAL PROPERTY "@GEMROOT:${gem_name}@")
+    set(O3DE_CORE_CSPROJ "${gem_root_for_core_build}/Assets/Scripts/O3DE.Core/O3DE.Core.csproj")
+    if(NOT TARGET O3DE.Core AND EXISTS "${O3DE_CORE_CSPROJ}")
+        set(O3DE_CORE_DOTNET_CONFIG "Release")
+        add_custom_target(O3DE.Core ALL
+            COMMENT "O3DESharp: Building O3DE.Core (dotnet build -c ${O3DE_CORE_DOTNET_CONFIG})"
+            COMMAND ${DOTNET_EXECUTABLE} build "${O3DE_CORE_CSPROJ}"
+                -c ${O3DE_CORE_DOTNET_CONFIG}
+                --nologo
+            BYPRODUCTS "${O3DE_CORE_SCRIPTS_DIR}/bin/${O3DE_CORE_DOTNET_CONFIG}/net9.0/O3DE.Core.dll"
+            VERBATIM
+        )
+        if(TARGET Coral.Managed)
+            add_dependencies(O3DE.Core Coral.Managed)
+        endif()
+        # The O3DE.Core csproj references Coral via HintPath into the staged
+        # bin/Coral/Coral.Managed.dll (produced by StageCoral), so the dotnet
+        # build must run after Coral is staged, not just after it is built.
+        if(TARGET ${gem_name}.StageCoral)
+            add_dependencies(O3DE.Core ${gem_name}.StageCoral)
+        endif()
+        message(STATUS "O3DESharp: O3DE.Core will be built via dotnet (non-MSVC generator)")
+    endif()
+endif()
+
+# Wire StageO3DECore's build-ordering dependencies HERE, after the O3DE.Core
+# and StageCoral targets actually exist. CMake evaluates if(TARGET ...) against
+# targets defined so far in single-pass order, so this must come after target
+# creation - not up in the StageO3DECore block where O3DE.Core does not yet exist.
+if(TARGET ${gem_name}.StageO3DECore)
+    if(TARGET O3DE.Core)
+        add_dependencies(${gem_name}.StageO3DECore O3DE.Core)
+    endif()
+    if(TARGET ${gem_name}.StageCoral)
+        add_dependencies(${gem_name}.StageO3DECore ${gem_name}.StageCoral)
+    endif()
 endif()

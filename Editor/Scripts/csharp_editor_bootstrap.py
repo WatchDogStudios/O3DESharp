@@ -21,6 +21,8 @@ _SCRIPT_DIR = Path(__file__).parent.resolve()
 if str(_SCRIPT_DIR) not in sys.path:
     sys.path.insert(0, str(_SCRIPT_DIR))
 
+from csharp_platform_utils import resolve_dotnet
+
 # Try to import PySide if available
 try:
     from PySide2 import QtWidgets
@@ -594,8 +596,13 @@ def _find_rider_executable():
     # 2. JetBrains Toolbox (per-user)
     home = Path.home()
     toolbox_candidates = [
+        # Windows
         home / "AppData" / "Local" / "Programs" / "Rider" / "bin" / exe_name,
         home / "AppData" / "Local" / "JetBrains" / "Toolbox" / "apps",
+        # Linux (Toolbox default)
+        home / ".local" / "share" / "JetBrains" / "Toolbox" / "apps",
+        # macOS (Toolbox default)
+        home / "Library" / "Application Support" / "JetBrains" / "Toolbox" / "apps",
     ]
     for c in toolbox_candidates:
         if c.is_file():
@@ -1292,7 +1299,7 @@ def run_binding_tests():
         if csharp_tests_dir.exists():
             try:
                 result = subprocess.run(
-                    ["dotnet", "test", str(csharp_tests_dir / "BindingGenerator.Tests.csproj"), "--verbosity", "normal"],
+                    [resolve_dotnet(), "test", str(csharp_tests_dir / "BindingGenerator.Tests.csproj"), "--verbosity", "normal"],
                     capture_output=True,
                     text=True,
                     timeout=120,
@@ -1305,7 +1312,7 @@ def run_binding_tests():
                     general.log(f"✗ C# tests FAILED (exit code: {result.returncode})")
                     general.log(result.stderr)
             except FileNotFoundError:
-                general.log("⚠ dotnet not found - install .NET 8.0 SDK")
+                general.log("⚠ dotnet not found - install .NET 9.0 SDK")
             except Exception as e:
                 general.log(f"✗ C# tests failed to run: {e}")
         else:

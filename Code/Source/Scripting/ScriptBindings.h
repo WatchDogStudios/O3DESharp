@@ -17,6 +17,8 @@
 
 #include <Coral/String.hpp>
 
+#include <Scripting/HostAbi.h>
+
 namespace Coral
 {
     class ManagedAssembly;
@@ -77,6 +79,18 @@ namespace O3DESharp
          * @param assembly The core API assembly (O3DE.Core.dll)
          */
         static void RegisterAll(Coral::ManagedAssembly* assembly);
+
+        /**
+         * Build the frozen NativeImports table from the same function pointers
+         * RegisterAll uploads.
+         *
+         * Under Coral this struct is DESCRIPTIVE - the transport is still
+         * AddInternalCall + UploadInternalCalls and nothing about that changes.
+         * Building it anyway is what proves the C++ and managed ends agree on
+         * the frozen field ORDER, which is the half sizeof() cannot see. Under
+         * NativeAotHost it is the sole transport.
+         */
+        static Abi::NativeImports MakeNativeImports();
 
     private:
         // ============================================================

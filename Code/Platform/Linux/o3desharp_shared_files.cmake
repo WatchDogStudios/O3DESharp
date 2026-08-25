@@ -6,10 +6,10 @@
 #
 #
 
-# Platform specific files for Linux
-# i.e. ../Source/Linux/O3DESharpLinux.cpp
-#      ../Source/Linux/O3DESharpLinux.h
-#      ../Include/Linux/O3DESharpLinux.h
+# Platform specific shared (module) files for Linux.
+# No Linux-only C++ sources today; the list is intentionally empty so the
+# unconditional include() in Code/CMakeLists.txt succeeds, matching the
+# Windows/Mac/Android/iOS stubs.
 
 set(FILES
 )

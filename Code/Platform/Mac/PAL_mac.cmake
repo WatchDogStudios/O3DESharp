@@ -6,6 +6,11 @@
 #
 #
 
-set(PAL_TRAIT_O3DESHARP_SUPPORTED TRUE)
+# Not yet a claimed target (see gem.json). Coral hosts desktop CoreCLR, so
+# Mac desktop is re-enabled in the desktop-AOT milestone once tested; Android/iOS
+# come with the Mono milestone. Keeping this FALSE makes the support gate in
+# Code/CMakeLists.txt cleanly skip the gem here instead of attempting an
+# unsupported build.
+set(PAL_TRAIT_O3DESHARP_SUPPORTED FALSE)
 set(PAL_TRAIT_O3DESHARP_TEST_SUPPORTED FALSE)
 set(PAL_TRAIT_O3DESHARP_EDITOR_TEST_SUPPORTED FALSE)

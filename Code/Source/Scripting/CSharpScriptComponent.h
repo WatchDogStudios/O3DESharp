@@ -245,6 +245,31 @@ namespace O3DESharp
         // Set after an unhandled exception in a lifecycle hook. Once true the
         // component stops dispatching to the managed instance.
         bool m_disabledByException = false;
+
+        //! Signature of ScriptComponentBridge.Invoke (see O3DE.Core's
+        //! Interop/ScriptComponentBridge.cs). Returns 1 if dispatched, 0 if
+        //! the handle was dead. Must match that method exactly.
+        using BridgeInvokeFn = int (*)(int handle, int lifecycleId, float arg);
+
+        //! Native handle for this component's managed instance, obtained from
+        //! ScriptComponentBridge.Register. 0 means "not registered".
+        int m_bridgeHandle = 0;
+
+        //! Resolved once; nullptr means "no thunk available, use InvokeMethod".
+        BridgeInvokeFn m_bridgeInvoke = nullptr;
+
+        //! Lifecycle ids - must match O3DE.Interop.LifecycleId exactly.
+        enum class LifecycleId : int
+        {
+            OnCreate = 1,
+            OnDestroy = 2,
+            Tick = 3,
+            OnTransformChanged = 4,
+        };
+
+        //! Try the pinned-thunk path. Returns false if unavailable, in which
+        //! case the caller MUST fall back to SafeInvokeMethod.
+        bool TryInvokeViaThunk(LifecycleId id, float arg) noexcept;
     };
 
     // Template implementations

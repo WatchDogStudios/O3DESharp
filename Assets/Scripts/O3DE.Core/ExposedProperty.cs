@@ -8,6 +8,7 @@
 
 using System;
 using System.Collections.Generic;
+using System.Diagnostics.CodeAnalysis;
 using System.Globalization;
 using System.Reflection;
 
@@ -80,15 +81,50 @@ namespace O3DE
         /// public auto-property declared on <paramref name="instance"/>'s type
         /// (and its base types up to but not including <see cref="ScriptComponent"/>).
         /// </summary>
+        [UnconditionalSuppressMessage(
+            "Trimming", "IL2072",
+            Justification =
+                "instance.GetType() is unannotated by definition, and this walk is over user " +
+                "script types the trimmer never sees the construction of anyway. The annotated " +
+                "Type overload below is the one a future trim pass constrains; shipping AOT " +
+                "images reach these types through generated ScriptTypeRegistry factories " +
+                "(direct new T()), which keeps their members rooted.")]
         public static IEnumerable<ExposedMember> Enumerate(object instance)
         {
-            if (instance is null) yield break;
+            if (instance is null) return System.Linq.Enumerable.Empty<ExposedMember>();
+            return Enumerate(instance.GetType(), instance);
+        }
+
+        /// <summary>
+        /// Type-explicit form of <see cref="Enumerate(object)"/>. The annotation
+        /// is what tells the trim/AOT analyzer which members this walk needs; an
+        /// unannotated GetFields call is its cue that anything may be removed.
+        /// </summary>
+        [UnconditionalSuppressMessage(
+            "Trimming", "IL2075",
+            Justification =
+                "The base-type walk cannot be annotated - Type.BaseType carries no " +
+                "DynamicallyAccessedMembers in any .NET version, so the analyzer cannot " +
+                "propagate the parameter's annotation up the hierarchy. Shipping AOT is " +
+                "published without an explicit trim pass and script types are rooted by " +
+                "generated new T() factories, so base members are present. Enabling trimming " +
+                "later must revisit this exact suppression.")]
+        public static IEnumerable<ExposedMember> Enumerate(
+            [DynamicallyAccessedMembers(
+                DynamicallyAccessedMemberTypes.PublicFields |
+                DynamicallyAccessedMemberTypes.NonPublicFields |
+                DynamicallyAccessedMemberTypes.PublicProperties |
+                DynamicallyAccessedMemberTypes.NonPublicProperties)]
+            Type type,
+            object instance)
+        {
+            if (type is null || instance is null) yield break;
 
             const BindingFlags flags = BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic;
-            var type = instance.GetType();
-            while (type != null && type != typeof(object))
+            Type? current = type;
+            while (current != null && current != typeof(object))
             {
-                foreach (var field in type.GetFields(flags | BindingFlags.DeclaredOnly))
+                foreach (var field in current.GetFields(flags | BindingFlags.DeclaredOnly))
                 {
                     var attr = field.GetCustomAttribute<ExposedPropertyAttribute>(inherit: true);
                     if (attr != null && !field.IsStatic)
@@ -96,7 +132,7 @@ namespace O3DE
                         yield return new ExposedMember(field, attr);
                     }
                 }
-                foreach (var prop in type.GetProperties(flags | BindingFlags.DeclaredOnly))
+                foreach (var prop in current.GetProperties(flags | BindingFlags.DeclaredOnly))
                 {
                     var attr = prop.GetCustomAttribute<ExposedPropertyAttribute>(inherit: true);
                     if (attr != null && prop.CanRead && prop.CanWrite)
@@ -104,7 +140,7 @@ namespace O3DE
                         yield return new ExposedMember(prop, attr);
                     }
                 }
-                type = type.BaseType;
+                current = current.BaseType;
             }
         }
 

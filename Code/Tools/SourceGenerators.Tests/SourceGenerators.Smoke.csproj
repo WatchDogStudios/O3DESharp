@@ -35,6 +35,14 @@
     <CompilerGeneratedFilesOutputPath>$(MSBuildThisFileDirectory)generated</CompilerGeneratedFilesOutputPath>
 
     <Configurations>Debug;Profile;Release</Configurations>
+
+    <!--
+      Deliberately NOT opting into host-exports emission (the flag that only
+      O3DE.Core.csproj sets). This project references O3DE.Core, which
+      already carries ManagedExportsThunks; a second copy here would make
+      the type name resolve ambiguously. Editor/Tests/test_host_build_modes.py
+      pins that only O3DE.Core opts in.
+    -->
   </PropertyGroup>
 
   <ItemGroup>

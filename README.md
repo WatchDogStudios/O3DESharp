@@ -2,6 +2,8 @@
 
 O3DESharp is a Gem that adds C# scripting support to the Open 3D Engine (O3DE) using the [Coral](https://github.com/WatchDogStudios/Coral) .NET host library (a fork of [StudioCherno/Coral](https://github.com/StudioCherno/Coral) with WD-Studios-specific fixes).
 
+> **Full documentation lives in the [GitHub Wiki](https://github.com/WatchDogStudios/O3DESharp/wiki)** - this README covers the essentials; the wiki has the in-depth [Scripting Guide](https://github.com/WatchDogStudios/O3DESharp/wiki/Scripting-Guide), [Generated Bindings Guide](https://github.com/WatchDogStudios/O3DESharp/wiki/Generated-Bindings-Guide) / [Generating Bindings](https://github.com/WatchDogStudios/O3DESharp/wiki/Generating-Bindings) quick start, [NativeAOT Desktop Shipping](https://github.com/WatchDogStudios/O3DESharp/wiki/NativeAOT-Desktop-Shipping), and [Advanced Features](https://github.com/WatchDogStudios/O3DESharp/wiki/Advanced-Features).
+
 ## Overview
 
 O3DESharp enables game developers to write gameplay logic in C# instead of (or alongside) C++ and Lua. It provides:
@@ -71,6 +73,38 @@ the tool dir into the install location.
 > require NativeAOT-friendly bindings and platform-specific Coral hosting that
 > are not in this gem yet. `gem.json` currently declares only Linux and Windows
 > as supported.
+
+### Building on Linux
+
+O3DESharp supports Linux (editor + runtime) with the same C# authoring, build,
+hot-reload, and run workflow as Windows.
+
+Prerequisites:
+- .NET 9.0 SDK. If it isn't on your `PATH`, either add it, set `DOTNET_ROOT`,
+  or set `O3DESHARP_DOTNET_EXECUTABLE` to the `dotnet` binary — the editor
+  tooling checks all three (plus common install locations) before giving up.
+- CMake will auto-install a .NET 9 SDK into `<build>/.dotnet` if none is found
+  (see `Code/o3desharp_netverify.cmake`); export `DOTNET_ROOT=<build>/.dotnet`
+  so the editor picks up that copy.
+
+The managed `O3DE.Core` API builds via the `dotnet` CLI on Ninja/Make
+generators (no Visual Studio required).
+### How this gem is consumed (do not vendor it)
+
+O3DESharp lives at its own checkout and is consumed by reference. Register it once:
+
+```bash
+o3de register --gem-path /path/to/O3DESharp
+```
+
+Then enable it in your project as normal. The engine references the gem; it never contains a copy.
+
+**The gem must never be copied into an engine tree.** This is a deliberate, rejected practice, not
+an oversight. A vendored copy previously drifted 109 commits behind the source of record while
+accumulating ~2,700 lines of work that existed in no repository at all — recoverable from no clone,
+one `git clean` from destruction. Referencing a single checkout makes that class of drift
+structurally impossible. If you need reproducible builds pinned to a gem version, pin a published
+release from the gem repository rather than copying files into the engine.
 
 ## Installation
 
@@ -551,6 +585,8 @@ To disable auto-reload for a session: Tools → C# Scripting → uncheck
 
 See the gems [Technical Design Document (In Progress).](https://hackmd.io/@MWD09WiVQ1O6VGcMVslq8w/rJHN3HjNZg/edit)
 
+See also the wiki's [NativeAOT Desktop Shipping](https://github.com/WatchDogStudios/O3DESharp/wiki/NativeAOT-Desktop-Shipping) page for the ABI seam, closed-world dispatch, and current NativeAOT status in more depth than fits below.
+
 ## C# Binding Generation Workflow
 
 The binding generator (`Code/Tools/BindingGenerator/O3DESharp.BindingGenerator/`)
@@ -806,6 +842,111 @@ The exported launcher package includes all C# runtime files in the correct locat
         ├── MyGame.dll              # Your user assemblies
         └── MyGame.deps.json
 ```
+
+### Shipping without requiring .NET (experimental)
+
+By default, O3DESharp is **framework-dependent**: Coral resolves a machine-wide
+.NET 9 runtime install on the player's machine at startup (`hostfxr` →
+`hostpolicy`, `rollForward: LatestMinor`). That's the supported path today and
+is unchanged by everything below.
+
+M2 adds an **opt-in, experimental** alternative: bundling a private,
+self-contained CoreCLR next to the launcher so a shipped game can run C#
+scripts on a machine with **no .NET installed at all**.
+
+```bash
+cmake -S . -B build -DO3DESHARP_BUNDLE_DOTNET_RUNTIME=ON
+cmake --build build --target O3DESharp.StageRuntimeBundle
+# Re-run configure once more so the produced bundle gets queued for deploy
+# (its file list isn't known until the publish above has actually run):
+cmake -S . -B build
+```
+
+What this does:
+- Publishes `Code/Tools/RuntimeBundle/probe/probe.csproj` with `dotnet publish
+  -c Release -r <rid> --self-contained true` for the desktop RID matching the
+  host platform (`win-x64`, `linux-x64`, `osx-x64`, or `osx-arm64`), which
+  harvests the private CoreCLR + hostfxr runtime pack for that RID.
+- Stages the harvested runtime into the build tree and deploys it to
+  `Bin/Scripts/dotnet/` alongside the existing `Bin/Scripts/Coral/` and
+  `Bin/Scripts/O3DE.Core.dll` deployment.
+
+Known limitations:
+- **Per-RID.** Only desktop RIDs are in scope (no console/mobile).
+- **Untrimmed.** The bundle is a full, untrimmed runtime (~70-200 MB); the
+  reflection/JSON-based dispatch Coral uses fights the .NET trimmer, so
+  trimming is out of scope for now.
+- **Needs the Coral fork's `DotnetRootOverride` support.** Pointing Coral's
+  hostfxr resolution at the bundled runtime instead of the machine-wide one
+  requires a small change in the `WatchDogStudios/Coral` fork
+  (`HostInstance::Initialize` honoring a `dotnet_root` override). That change
+  is tracked separately and is **not yet landed**, so as of this writing the
+  bundle is produced and deployed, but Coral does not yet consume it - the
+  default framework-dependent resolution still runs even with the option on.
+- **Experimental / not configure-verified in every environment.** The CMake
+  step was verified by actually running the `dotnet publish` command it
+  wraps (confirms `hostfxr`/`coreclr`/`System.Private.CoreLib.dll` are
+  produced), but has not been exercised through a full `cmake --configure`
+  against the O3DE engine SDK in every environment. Treat it as
+  experimental until you've verified it in your own build.
+
+The default (`O3DESHARP_BUNDLE_DOTNET_RUNTIME=OFF`) keeps today's
+framework-dependent behavior: players still need .NET 9 installed.
+
+### Shipping with NativeAOT (experimental)
+
+M4 adds an **opt-in, experimental** second alternative: publishing O3DE.Core as a
+NativeAOT shared library, so a shipped desktop game can run C# scripts with **no
+CoreCLR or Coral dependency at all**, only the compiled native image and the
+launcher's native host.
+
+```bash
+cmake -S . -B build -DO3DESHARP_PUBLISH_NATIVEAOT=ON
+cmake --build build --target O3DESharp.PublishNativeAot
+# Re-run configure once more so the produced image gets queued for deploy
+# (its file list isn't known until the publish above has actually run):
+cmake -S . -B build
+```
+
+What this does:
+- Publishes `Assets/Scripts/O3DE.Core/O3DE.Core.csproj` with `dotnet publish -c Release
+  -r <rid> -p:PublishAot=true -p:NativeLib=Shared` for the desktop RID matching the host
+  platform (`win-x64`, `linux-x64`, `osx-x64`, or `osx-arm64`), which compiles O3DE's
+  scripting surface to native code with no interpreter.
+- Stages the compiled image into the build tree and deploys it to `Bin/Scripts/aot/`,
+  deliberately separate from `Bin/Scripts/` — the native O3DE.Core and the managed
+  one share a filename, and a launcher loading the wrong one fails in a way that reads
+  as an unrelated bug.
+
+**Windows command-line builds:** ILCompiler's native link step shells out to
+`vswhere.exe`. Ensure `C:\Program Files (x86)\Microsoft Visual Studio\Installer` is
+on your `PATH`; builds without it fail with `MSB3073` exit code 123. CMake's Visual
+Studio generator inherits a developer environment and is not affected.
+
+**Key restrictions and limitations of NativeAOT builds:**
+- **Managed-side pipeline verified end-to-end; C++ side is not.** The ABI seam, publish
+  pipeline, closed-world diagnostic, and the `NativeImports` → `O3DE.InternalCalls` wiring
+  are all built and verified: a real NativeAOT publish produces an image whose
+  `O3DESharp_GetManagedExports` entry point, when called, populates `InternalCalls`'
+  function pointers field-for-field from the struct it receives (cross-checked against
+  `InternalCalls.cs` by name and cast type, plus a real `dotnet build` compiling every
+  cast). What remains unverified is the C++ side (`NativeAotHost`, `CoralHost`) and a real
+  engine run — there is no O3DE engine SDK in the environment this was built in, so nothing
+  here has actually driven a script through a running O3DE Editor/launcher yet. See the
+  plan's maintainer-verification checklist before relying on this in a shipped game.
+- **No hot-reload.** `NativeAotHost::SupportsHotReload()` returns false unconditionally.
+  AOT images are editor-only by design; use the Coral path (the default) for iteration.
+- **Closed-world dispatch only.** `O3DESHARP1001` at build time for any non-constant
+  bus or event name; `NotSupportedException` at runtime if such a call is reached. To
+  add a bus dynamically, constant-fold its name in the dispatch call, regenerate
+  `reflection_data.json` if the bus is new, or stay on the Coral artifact.
+- **Mutually exclusive per launcher.** `O3DESHARP_BUNDLE_DOTNET_RUNTIME` (M2, CoreCLR +
+  Coral) and `O3DESHARP_PUBLISH_NATIVEAOT` (M4) target different launchers and are
+  never both active for the same game build.
+- **Platform verification.** `win-x64` is verified; `linux-x64` is authored but not
+  verified. macOS and consoles are not in scope for M4.
+
+The default (`O3DESHARP_PUBLISH_NATIVEAOT=OFF`) keeps today's Coral/CoreCLR behavior.
 
 ### Development Workflow vs Export
 
