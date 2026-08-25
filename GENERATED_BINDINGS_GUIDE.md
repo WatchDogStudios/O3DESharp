@@ -72,9 +72,17 @@ The reflection backend (the default, `--source reflection`) is fully zero-config
     "reflectionBackendExcludedGems": ["GemName1", "GemName2"]
   }
   ```
-  If the file doesn't exist at all, all enabled gems are included (no config needed). The reflection backend reads `reflectionBackendExcludedGems` only when passed `--config <path>` to the `generate` command (or via the Editor's auto-sync on startup).
+  If the file doesn't exist at all, all enabled gems are included (no config needed). The reflection backend only reads `reflectionBackendExcludedGems` when the `generate` command is passed `--config <path>`; both entry points now pass it explicitly — the Editor's startup auto-sync looks for `binding_config.json` in the project root first, then in the O3DESharp gem root, and the CMake targets pass the gem-root copy.
 
-- **CMake build target**: For CI builds or non-Editor environments, the `${gem_name}.BuildGeneratedBindings` CMake target runs the same generate → build → deploy pipeline from whatever `reflection_data.json` is already on disk.
+- **CMake build target**: For CI builds or non-Editor environments, the `${gem_name}.BuildGeneratedBindings` CMake target runs the same generate → build → deploy pipeline from whatever `reflection_data.json` is already on disk. It shares the Editor path's output directory, `<project>/Generated/CSharp/`.
+
+- **Migrating from per-gem binding DLLs**: Before consolidation, the reflection backend emitted one project and one `O3DE.Generated.<GemName>.dll` per gem. Those assemblies are no longer produced under any name, and the first regeneration deletes their stale output. If you hand-added `<Reference Include="O3DE.Generated.SomeGem">` entries to a script `.csproj`, delete all of them and add a single reference instead:
+  ```xml
+  <Reference Include="O3DESharp.GeneratedBindings">
+    <HintPath>$(MSBuildProjectDirectory)\..\..\Bin\Scripts\O3DESharp.GeneratedBindings.dll</HintPath>
+  </Reference>
+  ```
+  (Adjust the relative path to reach `<project>/Bin/Scripts/O3DESharp.GeneratedBindings.dll` from wherever your `.csproj` lives.) Projects created by the Editor after this change already have it.
 
 **Note on per-gem DLLs**: The per-gem `.csproj` instructions in this guide (one DLL per gem) describe the **`--source clang` backend**, which is unchanged and still generates one `.csproj` per gem. The reflection backend (`--source reflection`) always generates a single consolidated project instead.
 

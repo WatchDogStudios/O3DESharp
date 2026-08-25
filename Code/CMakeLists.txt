@@ -379,7 +379,18 @@ if(EXISTS "${BINDING_GENERATOR_SOURCE_DIR}/O3DESharp.BindingGenerator/O3DESharp.
     # The ClangSharp tool has built-in incremental build support via file hash caching.
     
     if(O3DESHARP_AUTO_GENERATE_BINDINGS)
-        set(BINDINGS_OUTPUT_DIR "${CMAKE_BINARY_DIR}/Gems/O3DESharp/Generated/Bindings")
+        # <project>/Generated/CSharp, NOT a build-tree path: the
+        # consolidated O3DESharp.GeneratedBindings.csproj the generator
+        # emits here hardcodes its O3DE.Core HintPath and O3DEDeployPath as
+        # $(MSBuildProjectDirectory)\..\..\Bin\Scripts, i.e. it assumes it
+        # sits exactly two directories below the O3DE project root. Under
+        # CMAKE_BINARY_DIR that arithmetic lands nowhere and dotnet build
+        # dies with a wall of CS0246. This is also the exact directory the
+        # Editor-startup auto-sync uses, so both entry points now share one
+        # output location instead of diverging.
+        # CMAKE_SOURCE_DIR is the O3DE project root here - the same value
+        # this file already passes to the generator as --project below.
+        set(BINDINGS_OUTPUT_DIR "${CMAKE_SOURCE_DIR}/Generated/CSharp")
         set(BINDINGS_MARKER_FILE "${CMAKE_BINARY_DIR}/.o3desharp_bindings_generated")
         set(BINDING_CONFIG_FILE "${gem_root_for_bindings}/binding_config.json")
         
@@ -393,6 +404,12 @@ if(EXISTS "${BINDING_GENERATOR_SOURCE_DIR}/O3DESharp.BindingGenerator/O3DESharp.
                 -- generate
                 --project "${CMAKE_SOURCE_DIR}"
                 --output "${BINDINGS_OUTPUT_DIR}"
+                # Explicit, not inherited from WORKING_DIRECTORY - the CLI
+                # otherwise resolves the literal "binding_config.json"
+                # against its own cwd, which is how the
+                # reflectionBackendExcludedGems denylist gets silently
+                # dropped anywhere that cwd isn't the gem root.
+                --config "${BINDING_CONFIG_FILE}"
                 --incremental
             COMMAND ${CMAKE_COMMAND} -E touch "${BINDINGS_MARKER_FILE}"
             DEPENDS O3DESharp.BindingGenerator
@@ -434,11 +451,11 @@ if(EXISTS "${BINDING_GENERATOR_SOURCE_DIR}/O3DESharp.BindingGenerator/O3DESharp.
             # csproj won't exist yet. Don't fail configure/build over an
             # empty-by-construction state - just skip the build this pass.
             COMMAND ${CMAKE_COMMAND} -E echo "Checking for ${GENERATED_BINDINGS_CSPROJ}..."
-            COMMAND ${CMAKE_COMMAND} -DCSPROJ=${GENERATED_BINDINGS_CSPROJ} -DDOTNET=${DOTNET_EXECUTABLE}
+            COMMAND ${CMAKE_COMMAND} "-DCSPROJ=${GENERATED_BINDINGS_CSPROJ}" "-DDOTNET=${DOTNET_EXECUTABLE}"
                 -P "${CMAKE_CURRENT_LIST_DIR}/o3desharp_build_if_exists.cmake"
-            COMMAND ${CMAKE_COMMAND} -DSRC=${GENERATED_BINDINGS_BUILD_OUTPUT}/O3DESharp.GeneratedBindings.dll -DDST=${GENERATED_BINDINGS_STAGING_DIR}/O3DESharp.GeneratedBindings.dll -P "${CMAKE_CURRENT_LIST_DIR}/o3desharp_copy_if_exists.cmake"
-            COMMAND ${CMAKE_COMMAND} -DSRC=${GENERATED_BINDINGS_BUILD_OUTPUT}/O3DESharp.GeneratedBindings.pdb -DDST=${GENERATED_BINDINGS_STAGING_DIR}/O3DESharp.GeneratedBindings.pdb -P "${CMAKE_CURRENT_LIST_DIR}/o3desharp_copy_if_exists.cmake"
-            COMMAND ${CMAKE_COMMAND} -DSRC=${GENERATED_BINDINGS_BUILD_OUTPUT}/O3DESharp.GeneratedBindings.deps.json -DDST=${GENERATED_BINDINGS_STAGING_DIR}/O3DESharp.GeneratedBindings.deps.json -P "${CMAKE_CURRENT_LIST_DIR}/o3desharp_copy_if_exists.cmake"
+            COMMAND ${CMAKE_COMMAND} "-DSRC=${GENERATED_BINDINGS_BUILD_OUTPUT}/O3DESharp.GeneratedBindings.dll" "-DDST=${GENERATED_BINDINGS_STAGING_DIR}/O3DESharp.GeneratedBindings.dll" -P "${CMAKE_CURRENT_LIST_DIR}/o3desharp_copy_if_exists.cmake"
+            COMMAND ${CMAKE_COMMAND} "-DSRC=${GENERATED_BINDINGS_BUILD_OUTPUT}/O3DESharp.GeneratedBindings.pdb" "-DDST=${GENERATED_BINDINGS_STAGING_DIR}/O3DESharp.GeneratedBindings.pdb" -P "${CMAKE_CURRENT_LIST_DIR}/o3desharp_copy_if_exists.cmake"
+            COMMAND ${CMAKE_COMMAND} "-DSRC=${GENERATED_BINDINGS_BUILD_OUTPUT}/O3DESharp.GeneratedBindings.deps.json" "-DDST=${GENERATED_BINDINGS_STAGING_DIR}/O3DESharp.GeneratedBindings.deps.json" -P "${CMAKE_CURRENT_LIST_DIR}/o3desharp_copy_if_exists.cmake"
             # BYPRODUCTS is load-bearing on Ninja (WatchDogStudios/O3DESharp#3) -
             # same reasoning as StageCoral/StageO3DECore below.
             BYPRODUCTS
@@ -446,6 +463,7 @@ if(EXISTS "${BINDING_GENERATOR_SOURCE_DIR}/O3DESharp.BindingGenerator/O3DESharp.
                 "${GENERATED_BINDINGS_STAGING_DIR}/O3DESharp.GeneratedBindings.pdb"
                 "${GENERATED_BINDINGS_STAGING_DIR}/O3DESharp.GeneratedBindings.deps.json"
             DEPENDS ${gem_name}.GenerateBindings
+            VERBATIM
         )
         set_property(TARGET ${gem_name}.BuildGeneratedBindings PROPERTY FOLDER "${relative_o3desharp_gem_root}/Bindings")
     else()
