@@ -1,70 +1,166 @@
-# O3DESharp v1.3.0 — Release Notes (EXPERIMENTAL)
+# O3DESharp v1.3.0 — Release Notes
 
-**Date:** 2026-07-15
-**Status:** ⚠️ **Experimental pre-release.** Ships the Linux-support foundation
-(M0 + M1) for community testing. The Linux paths have **not** been verified on a
-real Linux O3DE build by the maintainers — please test and report. Windows is
-unaffected and remains stable. `main` stays on v1.2.0; this is a pre-release off
-`development`.
+**Date:** 2026-08-25
+**Branch:** development → main
+**Compatibility:** O3DE main (tested against profile + debug; the
+release config has pre-existing /WX breaks unrelated to this release).
+**Status:** Stable. Supersedes the `v1.3.0-experimental.1` pre-release.
+Windows is the most battle-tested platform, as with every prior release.
+**Linux support is new in this release** — the CMake/tooling work below is
+complete and the Coral build itself has been verified with a real
+`linux-x64` build, but it has not yet had a full O3DE Editor/launcher run on
+Linux by the maintainers. Please report Linux issues.
 
-This release is the first milestone of the **Linux + dual-mode AOT** effort
-(design: `docs/superpowers/specs/2026-07-02-linux-aot-support-design.md`). It is
-Linux-portability plumbing only — no BehaviorContext, AOT, or dispatch changes.
+This is the largest release since v1.0.0: Linux platform support, two new
+opt-in shipping paths (a self-contained runtime bundle and a NativeAOT
+desktop build with no CoreCLR at all), pinned native/managed dispatch
+thunks, and a full documentation migration to the GitHub Wiki.
 
-## Highlights (experimental)
+## Highlights
 
-### Linux editor + runtime parity (M0 + M1)
+### Linux platform support (M0 + M1)
 
-- **Configure unblock (M0):** added the missing
+- **Configure unblock:** added the missing
   `Code/Platform/Linux/o3desharp_shared_files.cmake` stub whose absence was a
-  fatal CMake `include()` error on Linux, and made the PAL support traits honest
-  — Windows + Linux `TRUE`; Mac/Android/iOS `FALSE` to match `gem.json` (they
-  were all `TRUE`, which would have attempted unsupported builds).
-- **Portable editor tooling (M1):** a new `Editor/Scripts/csharp_platform_utils.py`
-  (stdlib-only) centralizes the previously Windows-hardcoded bits:
-  - `resolve_dotnet()` — finds `dotnet` via `$O3DESHARP_DOTNET_EXECUTABLE` →
-    `PATH` → `$DOTNET_ROOT` → well-known per-OS locations, so an editor launched
-    without the user's login `PATH` (common on Linux) still builds C#.
-  - `open_in_default_app()` — `xdg-open` / `open` / `os.startfile` instead of the
-    Windows-only `os.startfile`.
-  - `render_vscode_launch_json()` — host-aware `launch.json` (`build/linux`, no
-    `.exe`) instead of a hardcoded Windows launcher path.
-- **Non-MSVC `O3DE.Core` build:** on Ninja/Make generators, `O3DE.Core.dll` is
-  now built via `dotnet` (previously only the MSVC `include_external_msproject`
-  path built it), with staging hardened for install/redistribution trees.
-- **Rider discovery** on Linux/macOS JetBrains Toolbox layouts; corrected stale
-  ".NET 8.0 SDK" prompts to 9.0.
+  fatal CMake `include()` error on Linux, and made the PAL support traits
+  honest — Windows + Linux `TRUE`; Mac/Android/iOS `FALSE` to match
+  `gem.json` (they were all `TRUE`, which would have attempted unsupported
+  builds).
+- **Portable editor tooling:** a new `Editor/Scripts/csharp_platform_utils.py`
+  (stdlib-only) centralizes the previously Windows-hardcoded bits —
+  `resolve_dotnet()` (checks `$O3DESHARP_DOTNET_EXECUTABLE` → `PATH` →
+  `$DOTNET_ROOT` → well-known per-OS locations), `open_in_default_app()`
+  (`xdg-open` / `open` / `os.startfile`), and a host-aware
+  `render_vscode_launch_json()` (`build/linux`, no `.exe`).
+- **Non-MSVC `O3DE.Core` build:** on Ninja/Make generators, `O3DE.Core.dll`
+  is now built via `dotnet` (previously only the MSVC
+  `include_external_msproject` path built it), with staging hardened for
+  install/redistribution trees.
+- **Rider discovery** on Linux/macOS JetBrains Toolbox layouts; corrected
+  stale ".NET 8.0 SDK" prompts to 9.0.
+- **Coral's own Linux build verified this release**, beyond the M0/M1
+  tooling: fixed a gap where Coral's `find_program(DOTNET_EXE)` couldn't see
+  a CMake-auto-downloaded dotnet, and added the `dl`/`pthread` linkage
+  Coral's `dlopen`-based hostfxr loading needs on older-glibc distros
+  (Ubuntu 20.04, Debian 11) — neither Coral's premake build nor its
+  CMakeLists.txt provided it. Validated against a real `linux-x64` Coral
+  build (WSL/Ubuntu, clang) with the same `CORAL_EXAMPLE=OFF`/
+  `CORAL_TESTING=OFF` settings this repo uses.
 
-## Tooling / tests
+### NativeAOT desktop shipping — M3 (ABI seam) + M4 (shipping build)
 
-- New `csharp_platform_utils` unit tests plus stub-free AST guards (no bare
-  `["dotnet", ...]` literals; every helper is imported where it's called;
-  PAL-trait ↔ `gem.json` parity; host-aware `launch.json`). The Linux/macOS
-  code branches are directly covered. **88 Python tests pass** on the existing
-  Windows + Linux CI agents.
-- Verified the M2 groundwork mechanism: a self-contained `linux-x64` publish
-  produces a private `libcoreclr.so` + `libhostfxr.so` runtime (no machine-wide
-  .NET) — see the M2 plan below.
+An experimental, opt-in second shipping path: publish `O3DE.Core` as a
+NativeAOT shared library with **no CoreCLR or Coral dependency at all**.
+See the wiki's [NativeAOT Desktop Shipping](https://github.com/WatchDogStudios/O3DESharp/wiki/NativeAOT-Desktop-Shipping)
+page for the full picture; summary:
+
+- **Frozen C ABI seam (M3):** a versioned `NativeImports`/`ManagedExports`
+  struct pair crosses the native/managed boundary in one call, behind a new
+  `IManagedHost` C++ interface. `CoralHost` (the existing Coral/CoreCLR path)
+  and the new `NativeAotHost` (`dlopen`/`LoadLibrary`, no Coral) both
+  implement it.
+- **Closed-world EBus dispatch (M4):** a Roslyn analyzer
+  (`O3DESHARP1001`) flags any EBus call whose bus/event name isn't a
+  compile-time constant — a build warning under Coral, a hard
+  `NotSupportedException` if actually reached in a NativeAOT image. A
+  companion generator (`StaticDispatchGenerator`) emits a compile-time
+  dispatch table from `reflection_data.json` for every constant-name call
+  site it can see.
+- **`O3DESharp.PublishNativeAot` CMake target** (opt-in via
+  `O3DESHARP_PUBLISH_NATIVEAOT=ON`) publishes the NativeAOT image to
+  `Bin/Scripts/aot/`, kept separate from the managed `O3DE.Core.dll` in
+  `Bin/Scripts/` since both share a filename.
+- **`NativeImports` → `O3DE.InternalCalls` wiring** — the piece that closes
+  the loop end to end. Under Coral, `InternalCalls`' function pointers are
+  wired by `AddInternalCall`/`UploadInternalCalls`; under NativeAOT there is
+  no Coral to do that, so a hand-written `NativeImportsWiring.Apply(...)` is
+  now the thing that assigns all 47 function-pointer fields from the struct
+  the host hands over on load. Without this a NativeAOT image would crash on
+  its first native call — this was the one gap flagged by the final design
+  review and is now closed and tested.
+- **`Examples.csproj` + `AotSampleComponent`** — a small, real sample project
+  proving the whole chain: a constructible `ScriptComponent` the AOT
+  registry can find, a normal per-frame broadcast that dispatches statically
+  and stays silent, and one deliberately dynamic call that proves
+  `O3DESHARP1001` fires on real game code.
+
+### Self-contained deployment (M2) — ship without a machine-wide .NET install
+
+A second, independent opt-in shipping path (`O3DESHARP_BUNDLE_DOTNET_RUNTIME=ON`):
+stages a private, self-contained CoreCLR runtime next to the launcher so a
+shipped game can run C# scripts via Coral on a machine with no .NET
+installed at all. Mutually exclusive per launcher with the NativeAOT path
+above — pick one artifact per launcher, never both.
+
+### Pinned native/managed dispatch thunks (SP-1a)
+
+Lifecycle calls (`Tick` and friends) now route through cached function-pointer
+thunks obtained once via Coral's `GetFunctionPointer`, instead of a fresh
+lookup on every call.
+
+### Native binding manifest — offline half (SP-1b-1)
+
+A new CLI verb produces a joined manifest of native bindings and their call
+sites with a conservative classifier, and restores the libclang-backed
+call-site parser (with fixture tests) that an earlier refactor had dropped.
+
+### Reflection dispatch and marshaling fixes
+
+- `NativeReflection`'s dispatch methods are now wired to the real
+  implemented native calls (previously several were stubs).
+- `Vector2`, `Vector4`, and `Color` are now correctly classified by the
+  reflection exporter, with a new bidirectional test asserting the exporter
+  and the generator agree on every marshal-type mapping.
+
+## Bug fixes
+
+### Ninja "no known rule to make it" on a fresh clone ([#3](https://github.com/WatchDogStudios/O3DESharp/issues/3))
+
+`StageCoral` and `StageO3DECore` are `add_custom_target()`s whose `COMMAND`
+lines have no declared outputs of their own; `ly_add_target_files()`
+downstream asks for the staged files by exact path, and on a fresh clone —
+where those files don't exist yet — Ninja had no rule to satisfy that
+request. Fixed by adding `BYPRODUCTS` to both targets, registering the
+staged paths as real build outputs.
+
+## Documentation
+
+Full documentation moved to the [GitHub Wiki](https://github.com/WatchDogStudios/O3DESharp/wiki):
+README, Scripting Guide, Advanced Features, and Generated Bindings Guide are
+mirrored there, plus two new pages — [NativeAOT Desktop Shipping](https://github.com/WatchDogStudios/O3DESharp/wiki/NativeAOT-Desktop-Shipping)
+and [Generating Bindings](https://github.com/WatchDogStudios/O3DESharp/wiki/Generating-Bindings)
+(a quick-start companion to the full Generated Bindings Guide). The README
+now points to the wiki for anything beyond the essentials.
 
 ## Known limitations
 
-- **Linux is unverified by the maintainers.** The non-MSVC CMake build, the
-  Coral fork's Linux CLR hosting (`libcoreclr.so`/hostfxr), and the end-to-end
-  author→build→hot-reload→run loop need validation on a real Linux O3DE
-  checkout. That is exactly what this experimental release asks testers to
-  exercise (see the checklist in PR #14).
-- **Coral desktop-only.** Consoles/mobile are not supported (that is the later
+- **Linux has not had a full O3DE Editor/launcher run by the maintainers.**
+  The CMake/tooling work and Coral's own Linux build are both verified; the
+  end-to-end author→build→hot-reload→run loop on a real Linux O3DE checkout
+  is not. Please test and report.
+- **NativeAOT: managed-side pipeline verified end-to-end; the C++ side and a
+  real engine run are not.** See the wiki's NativeAOT Desktop Shipping page
+  for the exact boundary of what's been verified.
+- **NativeAOT has no hot reload** and **no per-game script registration**
+  yet (`GeneratedScriptTypes.RegisterAll()` only covers `ScriptComponent`
+  subclasses in `O3DE.Core`'s own compilation) — both by design for this
+  milestone, see the wiki page.
+- **Coral desktop-only.** Consoles/mobile are not supported (a later
   Mono-AOT milestone).
-- **No "ship without installing .NET" yet.** Players still need .NET 9 installed.
-  That is **M2 (self-contained deployment)**, planned and pre-validated:
-  `docs/superpowers/plans/2026-07-15-m2-self-contained-deploy.md`.
+- **Managed-defined bus contracts** (Phase 18-C): a C#
+  `[EBus] interface IMyBus { ... }` that other C++, Lua, ScriptCanvas, or C#
+  can implement and broadcast on. Not yet implemented; tracked in
+  `PHASE_18_EBUS.md` §3.C.
+- **macOS / iOS / Android / consoles**: `gem.json` declares Linux + Windows
+  only.
 
 ## Upgrade notes
 
-- No breaking changes for existing Windows users; the Linux work is additive.
-- Building on Linux: see the new "Building on Linux" section in `README.md`
-  (.NET 9 SDK on `PATH` / `DOTNET_ROOT` / `O3DESHARP_DOTNET_EXECUTABLE`, or the
-  CMake auto-install into `<build>/.dotnet`).
+- No breaking changes for existing Windows users — the Linux, NativeAOT, and
+  self-contained-deploy work is all additive and off by default.
+- Building on Linux: see the "Building on Linux" section in `README.md`
+  (.NET 9 SDK on `PATH` / `DOTNET_ROOT` / `O3DESHARP_DOTNET_EXECUTABLE`, or
+  the CMake auto-install into `<build>/.dotnet`).
 
 ## Acknowledgements
 
