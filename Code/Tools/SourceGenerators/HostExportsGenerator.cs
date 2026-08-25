@@ -241,6 +241,13 @@ namespace O3DESharp.SourceGenerators
             sb.AppendLine("            }");
             sb.AppendLine();
             sb.AppendLine("            NativeImportsStore.Imports = *imports;");
+            sb.AppendLine("#if O3DE_HOST_NATIVEAOT");
+            sb.AppendLine("            // Under Coral, InternalCalls is populated by AddInternalCall/");
+            sb.AppendLine("            // UploadInternalCalls and NativeImportsStore is descriptive only.");
+            sb.AppendLine("            // Under NativeAOT there is no Coral to do that, so this is the");
+            sb.AppendLine("            // only thing that ever assigns InternalCalls' function pointers.");
+            sb.AppendLine("            NativeImportsWiring.Apply(in NativeImportsStore.Imports);");
+            sb.AppendLine("#endif");
             sb.AppendLine("            GeneratedScriptTypes.RegisterAll();");
             sb.AppendLine();
             sb.AppendLine("            exports->Version = HostAbi.Version;");
@@ -257,7 +264,8 @@ namespace O3DESharp.SourceGenerators
             sb.AppendLine("    /// Holds the NativeImports handed over at init. Under Coral this is");
             sb.AppendLine("    /// descriptive only - InternalCalls is still populated by Coral's own");
             sb.AppendLine("    /// AddInternalCall/UploadInternalCalls and nothing about that path");
-            sb.AppendLine("    /// changes. Under NativeAOT it is the sole source of the pointers.");
+            sb.AppendLine("    /// changes. Under NativeAOT it is the sole source of the pointers,");
+            sb.AppendLine("    /// consumed by NativeImportsWiring.Apply immediately after this is set.");
             sb.AppendLine("    /// </summary>");
             sb.AppendLine("    public static class NativeImportsStore");
             sb.AppendLine("    {");
