@@ -20,20 +20,29 @@ import pytest
 
 GEM_ROOT = Path(__file__).resolve().parents[2]
 CORE_CSPROJ = GEM_ROOT / "Assets" / "Scripts" / "O3DE.Core" / "O3DE.Core.csproj"
+CORE_TESTS_CSPROJ = GEM_ROOT / "Assets" / "Scripts" / "O3DE.Core.Tests" / "O3DE.Core.Tests.csproj"
+
+# O3DE.Core.Tests mirrors O3DE.Core's DefineConstants wiring so
+# -p:O3DESharpHostMode=NativeAot actually compiles in the #if
+# O3DE_HOST_NATIVEAOT guard-test bodies instead of silently reducing them
+# to no-ops. Pin both projects so a future edit to one alone can't
+# reopen that trap unnoticed.
+HOST_MODE_CSPROJS = (CORE_CSPROJ, CORE_TESTS_CSPROJ)
 
 
-def _text():
-    return CORE_CSPROJ.read_text(encoding="utf-8")
+def _text(path=CORE_CSPROJ):
+    return path.read_text(encoding="utf-8")
 
 
 @pytest.mark.unit
-def test_host_mode_defaults_to_coral():
-    text = _text()
+@pytest.mark.parametrize("csproj", HOST_MODE_CSPROJS, ids=lambda p: p.stem)
+def test_host_mode_defaults_to_coral(csproj):
+    text = _text(csproj)
     m = re.search(
         r"<O3DESharpHostMode\s+Condition=\"'\$\(O3DESharpHostMode\)'\s*==\s*''\">(\w+)</O3DESharpHostMode>",
         text,
     )
-    assert m, "O3DE.Core.csproj must default O3DESharpHostMode when it is unset."
+    assert m, f"{csproj.name} must default O3DESharpHostMode when it is unset."
     assert m.group(1) == "Coral", (
         "The default MUST be Coral. Defaulting to NativeAot would silently strip "
         "hot-reload out of every editor build."
@@ -41,8 +50,9 @@ def test_host_mode_defaults_to_coral():
 
 
 @pytest.mark.unit
-def test_exactly_one_host_symbol_is_defined_per_mode():
-    text = _text()
+@pytest.mark.parametrize("csproj", HOST_MODE_CSPROJS, ids=lambda p: p.stem)
+def test_exactly_one_host_symbol_is_defined_per_mode(csproj):
+    text = _text(csproj)
     assert "O3DE_HOST_CORAL" in text and "O3DE_HOST_NATIVEAOT" in text
     coral = re.search(
         r"Condition=\"'\$\(O3DESharpHostMode\)'\s*==\s*'NativeAot'\"[^>]*>\s*"
