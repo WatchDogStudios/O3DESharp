@@ -57,6 +57,26 @@ namespace O3DESharp.SourceGenerators
 
         private const string NativeReflectionFullName = "O3DE.Reflection.NativeReflection";
 
+        // Types whose own members forward a caller-supplied name straight into
+        // a watched NativeReflection method. Those forwarding calls are
+        // implementation plumbing, never a game call site the closed-world
+        // generator sees, and their name argument is a method parameter by
+        // construction - so they would warn unconditionally, carrying no
+        // signal about whether the real outer call was safe. NativeObject's
+        // InvokeMethod / GetProperty<T> / SetProperty wrappers are the second
+        // case, alongside NativeReflection's own Result-suffixed wrappers.
+        //
+        // This is deliberately type-granular, not method-granular: keying the
+        // watch table by (type, method) so NativeObject.GetProperty is
+        // distinguishable from NativeReflection.GetProperty is the real fix
+        // and is a larger change. Consequence of the coarser version: a
+        // genuinely dynamic call written *inside* NativeObject would not warn.
+        private static readonly HashSet<string> s_selfCallExemptTypes = new()
+        {
+            NativeReflectionFullName,
+            "O3DE.Reflection.NativeObject",
+        };
+
         // Method name -> the call-site argument position(s) that must be
         // constant, and the human-readable name for each (used in the
         // diagnostic message as "non-constant {kind} name"). Not every
@@ -129,17 +149,11 @@ namespace O3DESharp.SourceGenerators
                 return;
             }
 
-            // NativeReflection's own Result-suffixed wrappers forward their
-            // (necessarily non-constant, they're just method parameters) bus
-            // and event names to the plain Broadcast/Send methods internally
-            // - e.g. BroadcastResultEBusEvent calls BroadcastEBusEvent(busName,
-            // eventName, args). That's implementation plumbing inside
-            // NativeReflection itself, not a game call site the closed-world
-            // generator ever sees, and it would otherwise warn unconditionally
-            // on every use of the Result variants regardless of what the real
-            // caller passed. Skip it; the outer call (if reached from game
+            // Forwarding call inside one of the wrapper types? Skip it - see
+            // s_selfCallExemptTypes. The outer call (if reached from game
             // code) is what actually gets analyzed.
-            if (context.ContainingSymbol?.ContainingType?.ToDisplayString() == NativeReflectionFullName)
+            string? containingType = context.ContainingSymbol?.ContainingType?.ToDisplayString();
+            if (containingType is not null && s_selfCallExemptTypes.Contains(containingType))
             {
                 return;
             }
