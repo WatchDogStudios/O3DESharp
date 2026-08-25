@@ -70,4 +70,167 @@ public class StaticDispatchRoutingTests
         typeof(NativeReflection).Should().NotBeNull();
 #endif
     }
+
+    // ----------------------------------------------------------------
+    // Task 6: the non-EBus dispatch call sites get the same closed-world
+    // gate. StaticReflectionDispatchStub is deliberately empty (like
+    // StaticEBusDispatchStub above), so every name here is a miss and every
+    // guarded call site must throw before it ever reaches the unassigned
+    // ReflectionInternalCalls function pointer - a real native call under
+    // this stub would crash the test process, not just fail an assertion.
+    // ----------------------------------------------------------------
+
+    [Fact]
+    public void InvokeStaticMethod_UnknownClassOrMethod_ThrowsUnderNativeAot()
+    {
+#if O3DE_HOST_NATIVEAOT
+        var act = () => NativeReflection.InvokeStaticMethod("NoSuchClass", "NoSuchMethod");
+        act.Should().Throw<NotSupportedException>()
+            .Which.Message.Should().Contain("NoSuchClass").And.Contain("NoSuchMethod");
+#else
+        typeof(NativeReflection).Should().NotBeNull();
+#endif
+    }
+
+    [Fact]
+    public void InvokeInstanceMethod_UnknownTypeName_ThrowsUnderNativeAot()
+    {
+#if O3DE_HOST_NATIVEAOT
+        var instance = new NativeObject("NoSuchClass", 1234);
+        GC.SuppressFinalize(instance); // fake handle; the real object's finalizer would
+                                        // re-enter DestroyInstance and re-throw off the GC thread.
+        var act = () => NativeReflection.InvokeInstanceMethod(instance, "NoSuchMethod");
+        act.Should().Throw<NotSupportedException>();
+#else
+        typeof(NativeReflection).Should().NotBeNull();
+#endif
+    }
+
+    [Fact]
+    public void InvokeInstanceMethod_NullInstance_StillThrowsArgumentNullFirst()
+    {
+        // Existing exception-ordering must survive the new guard: a null
+        // instance throws ArgumentNullException regardless of host mode,
+        // because the guard needs instance.TypeName and must run after this
+        // check, not before it.
+        var act = () => NativeReflection.InvokeInstanceMethod(null!, "AnyMethod");
+        act.Should().Throw<ArgumentNullException>();
+    }
+
+    [Fact]
+    public void InvokeGlobalMethod_UnknownMethod_ThrowsUnderNativeAot()
+    {
+#if O3DE_HOST_NATIVEAOT
+        var act = () => NativeReflection.InvokeGlobalMethod("NoSuchGlobalMethod");
+        act.Should().Throw<NotSupportedException>()
+            .Which.Message.Should().Contain("NoSuchGlobalMethod");
+#else
+        typeof(NativeReflection).Should().NotBeNull();
+#endif
+    }
+
+    [Fact]
+    public void GetProperty_UnknownTypeName_ThrowsUnderNativeAot()
+    {
+#if O3DE_HOST_NATIVEAOT
+        var instance = new NativeObject("NoSuchClass", 1234);
+        GC.SuppressFinalize(instance); // see InvokeInstanceMethod test above.
+        var act = () => NativeReflection.GetProperty<int>(instance, "NoSuchProperty");
+        act.Should().Throw<NotSupportedException>();
+#else
+        typeof(NativeReflection).Should().NotBeNull();
+#endif
+    }
+
+    [Fact]
+    public void SetProperty_UnknownTypeName_ThrowsUnderNativeAot()
+    {
+#if O3DE_HOST_NATIVEAOT
+        var instance = new NativeObject("NoSuchClass", 1234);
+        GC.SuppressFinalize(instance); // see InvokeInstanceMethod test above.
+        var act = () => NativeReflection.SetProperty(instance, "NoSuchProperty", 42);
+        act.Should().Throw<NotSupportedException>();
+#else
+        typeof(NativeReflection).Should().NotBeNull();
+#endif
+    }
+
+    [Fact]
+    public void GetGlobalProperty_UnknownProperty_ThrowsUnderNativeAot()
+    {
+#if O3DE_HOST_NATIVEAOT
+        var act = () => NativeReflection.GetGlobalProperty<int>("NoSuchGlobalProperty");
+        act.Should().Throw<NotSupportedException>()
+            .Which.Message.Should().Contain("NoSuchGlobalProperty");
+#else
+        typeof(NativeReflection).Should().NotBeNull();
+#endif
+    }
+
+    [Fact]
+    public void SetGlobalProperty_UnknownProperty_ThrowsUnderNativeAot()
+    {
+#if O3DE_HOST_NATIVEAOT
+        var act = () => NativeReflection.SetGlobalProperty("NoSuchGlobalProperty", 42);
+        act.Should().Throw<NotSupportedException>()
+            .Which.Message.Should().Contain("NoSuchGlobalProperty");
+#else
+        typeof(NativeReflection).Should().NotBeNull();
+#endif
+    }
+
+    [Fact]
+    public void CreateInstance_UnknownClassName_ThrowsUnderNativeAot()
+    {
+        // Mirrors the existing BroadcastEBusEvent_UnknownBus-shaped tests above.
+#if O3DE_HOST_NATIVEAOT
+        var act = () => NativeReflection.CreateInstance("NotInTheStaticTable");
+        act.Should().Throw<NotSupportedException>()
+            .Which.Message.Should().Contain("NotInTheStaticTable");
+#else
+        typeof(NativeReflection).Should().NotBeNull();
+#endif
+    }
+
+    [Fact]
+    public void DestroyInstance_UnknownTypeName_ThrowsUnderNativeAot()
+    {
+        // Defense-in-depth only (not analyzer-covered): in practice
+        // instance.TypeName is always in the table because the instance had
+        // to be created first, but this must never silently fall through to
+        // the unassigned native call either.
+#if O3DE_HOST_NATIVEAOT
+        var instance = new NativeObject("NoSuchClass", 1234);
+        GC.SuppressFinalize(instance); // the guard throws before Invalidate() runs, so the
+                                        // instance is still "valid"; without this the finalizer
+                                        // would re-enter DestroyInstance and re-throw off the GC thread.
+        var act = () => NativeReflection.DestroyInstance(instance);
+        act.Should().Throw<NotSupportedException>();
+#else
+        typeof(NativeReflection).Should().NotBeNull();
+#endif
+    }
+
+    [Fact]
+    public void DestroyInstance_InvalidInstance_DoesNotGuardOrThrow()
+    {
+        // An already-invalidated instance (Handle == 0) must keep skipping the
+        // body entirely, same as before the guard existed - the guard lives
+        // inside the `instance.IsValid` block, not ahead of it.
+        var instance = new NativeObject("NoSuchClass", 0);
+        var act = () => NativeReflection.DestroyInstance(instance);
+        act.Should().NotThrow();
+    }
+
+    [Fact]
+    public void EBusHandlerRegistry_Register_UnknownBus_ThrowsUnderNativeAot()
+    {
+#if O3DE_HOST_NATIVEAOT
+        var act = () => EBusHandlerRegistry.Register(new object(), "NoSuchBus", 0UL, (_, _) => null);
+        act.Should().Throw<NotSupportedException>()
+            .Which.Message.Should().Contain("NoSuchBus");
+#else
+        typeof(EBusHandlerRegistry).Should().NotBeNull();
+#endif
+    }
 }

@@ -226,6 +226,7 @@ namespace O3DE.Reflection
         /// <returns>The result as a dynamic object, or null for void methods</returns>
         public static object? InvokeStaticMethod(string className, string methodName, params object[] args)
         {
+            EnsureMethodIsStaticallyDispatchable("InvokeStaticMethod", className, methodName);
             string argsJson = SerializeArguments(args);
             string resultJson;
             unsafe { resultJson = ReflectionInternalCalls.Reflection_InvokeStaticMethod(className, methodName, argsJson); }
@@ -247,6 +248,7 @@ namespace O3DE.Reflection
                 throw new InvalidOperationException(
                     $"Cannot invoke '{methodName}' on an invalid NativeObject ({instance.TypeName}).");
             }
+            EnsureMethodIsStaticallyDispatchable("InvokeInstanceMethod", instance.TypeName, methodName);
 
             string argsJson = SerializeArguments(args);
             string resultJson;
@@ -266,6 +268,7 @@ namespace O3DE.Reflection
         /// <returns>The result as a dynamic object, or null for void methods</returns>
         public static object? InvokeGlobalMethod(string methodName, params object[] args)
         {
+            EnsureGlobalMethodIsStaticallyDispatchable(methodName);
             string argsJson = SerializeArguments(args);
             string resultJson;
             unsafe { resultJson = ReflectionInternalCalls.Reflection_InvokeGlobalMethod(methodName, argsJson); }
@@ -291,6 +294,7 @@ namespace O3DE.Reflection
                 throw new InvalidOperationException(
                     $"Cannot get property '{propertyName}' on an invalid NativeObject ({instance.TypeName}).");
             }
+            EnsurePropertyIsStaticallyDispatchable("GetProperty", instance.TypeName, propertyName);
 
             string resultJson;
             unsafe
@@ -316,6 +320,7 @@ namespace O3DE.Reflection
                 throw new InvalidOperationException(
                     $"Cannot set property '{propertyName}' on an invalid NativeObject ({instance.TypeName}).");
             }
+            EnsurePropertyIsStaticallyDispatchable("SetProperty", instance.TypeName, propertyName);
 
             // Reflection_SetProperty (GenericDispatcher::SetProperty) parses valueJson
             // as a single bare JSON value - not a single-element array - and marshals it
@@ -344,6 +349,7 @@ namespace O3DE.Reflection
         /// <returns>The property value</returns>
         public static T? GetGlobalProperty<T>(string propertyName)
         {
+            EnsureGlobalPropertyIsStaticallyDispatchable(propertyName);
             string resultJson;
             unsafe { resultJson = ReflectionInternalCalls.Reflection_GetGlobalProperty(propertyName); }
             object? raw = DeserializeResult(resultJson);
@@ -357,6 +363,7 @@ namespace O3DE.Reflection
         /// <param name="value">The value to set</param>
         public static void SetGlobalProperty(string propertyName, object value)
         {
+            EnsureGlobalPropertyIsStaticallyDispatchable(propertyName);
             // Reflection_SetGlobalProperty (GenericDispatcher::SetGlobalProperty) wraps
             // valueJson into a single-element array itself before dispatching through
             // the setter's BehaviorMethod - the value handed across the wire must be
@@ -413,6 +420,108 @@ namespace O3DE.Reflection
                     $"EBus dispatch '{busName}.{eventName}' expects {arity} argument(s) but was " +
                     $"given {argCount}. This NativeAOT image was built against a reflection_data.json " +
                     "in which the event had a different signature; regenerate it and republish.");
+            }
+#endif
+        }
+
+        /// <summary>
+        /// Guards the 8 non-EBus NativeReflection dispatch methods whose
+        /// name argument(s) O3DESHARP1001 checks for compile-time
+        /// constant-ness. Same shape as EnsureStaticallyDispatchable, one
+        /// level less specific (no arity check - method/property arity
+        /// isn't tracked the way EBus event arity is).
+        /// </summary>
+        [System.Diagnostics.Conditional("O3DE_HOST_NATIVEAOT")]
+        private static void EnsureMethodIsStaticallyDispatchable(string siteName, string className, string methodName)
+        {
+#if O3DE_HOST_NATIVEAOT
+            if (!StaticReflectionDispatch.MethodExists(className, methodName))
+            {
+                throw new NotSupportedException(
+                    $"{siteName} '{className}.{methodName}' is not in this NativeAOT image's static " +
+                    "dispatch table, built from reflection_data.json. Desktop NativeAOT supports " +
+                    "closed-world dispatch only; the build reported O3DESHARP1001 for any call site " +
+                    "whose class or method name is not a compile-time constant. Constant-fold the " +
+                    "name, regenerate reflection_data.json if the method is new, or ship the Mono backend.");
+            }
+#endif
+        }
+
+        [System.Diagnostics.Conditional("O3DE_HOST_NATIVEAOT")]
+        private static void EnsurePropertyIsStaticallyDispatchable(string siteName, string className, string propertyName)
+        {
+#if O3DE_HOST_NATIVEAOT
+            if (!StaticReflectionDispatch.PropertyExists(className, propertyName))
+            {
+                throw new NotSupportedException(
+                    $"{siteName} '{className}.{propertyName}' is not in this NativeAOT image's static " +
+                    "dispatch table, built from reflection_data.json. Desktop NativeAOT supports " +
+                    "closed-world dispatch only; the build reported O3DESHARP1001 for any call site " +
+                    "whose class or property name is not a compile-time constant. Constant-fold the " +
+                    "name, regenerate reflection_data.json if the property is new, or ship the Mono backend.");
+            }
+#endif
+        }
+
+        [System.Diagnostics.Conditional("O3DE_HOST_NATIVEAOT")]
+        private static void EnsureGlobalMethodIsStaticallyDispatchable(string methodName)
+        {
+#if O3DE_HOST_NATIVEAOT
+            if (!StaticReflectionDispatch.GlobalMethodExists(methodName))
+            {
+                throw new NotSupportedException(
+                    $"InvokeGlobalMethod '{methodName}' is not in this NativeAOT image's static " +
+                    "dispatch table, built from reflection_data.json. Constant-fold the name, " +
+                    "regenerate reflection_data.json if new, or ship the Mono backend.");
+            }
+#endif
+        }
+
+        [System.Diagnostics.Conditional("O3DE_HOST_NATIVEAOT")]
+        private static void EnsureGlobalPropertyIsStaticallyDispatchable(string propertyName)
+        {
+#if O3DE_HOST_NATIVEAOT
+            if (!StaticReflectionDispatch.GlobalPropertyExists(propertyName))
+            {
+                throw new NotSupportedException(
+                    $"Global property '{propertyName}' is not in this NativeAOT image's static " +
+                    "dispatch table, built from reflection_data.json. Constant-fold the name, " +
+                    "regenerate reflection_data.json if new, or ship the Mono backend.");
+            }
+#endif
+        }
+
+        [System.Diagnostics.Conditional("O3DE_HOST_NATIVEAOT")]
+        private static void EnsureClassIsStaticallyDispatchable(string siteName, string className)
+        {
+#if O3DE_HOST_NATIVEAOT
+            if (!StaticReflectionDispatch.ClassExists(className))
+            {
+                throw new NotSupportedException(
+                    $"{siteName} '{className}' is not in this NativeAOT image's static dispatch " +
+                    "table, built from reflection_data.json. Constant-fold the name, regenerate " +
+                    "reflection_data.json if the class is new, or ship the Mono backend.");
+            }
+#endif
+        }
+
+        /// <summary>
+        /// Guards EBusHandlerRegistry.Register's busName. Internal (not
+        /// private) so EBusHandlerRegistry - same assembly, same namespace -
+        /// can call it directly; it is not part of this class's own dispatch
+        /// surface, only checked via StaticEBusDispatch since a bus is not a
+        /// class/method pair.
+        /// </summary>
+        [System.Diagnostics.Conditional("O3DE_HOST_NATIVEAOT")]
+        internal static void EnsureBusIsStaticallyDispatchable(string busName)
+        {
+#if O3DE_HOST_NATIVEAOT
+            if (!StaticEBusDispatch.BusExists(busName))
+            {
+                throw new NotSupportedException(
+                    $"RegisterEBusHandler '{busName}' is not in this NativeAOT image's static " +
+                    "dispatch table, built from reflection_data.json. Constant-fold the bus name, " +
+                    "regenerate reflection_data.json if the bus is new, or ship the Mono backend.");
             }
 #endif
         }
@@ -546,6 +655,7 @@ namespace O3DE.Reflection
         /// <returns>A NativeObject wrapper for the created instance</returns>
         public static NativeObject CreateInstance(string className, params object[] constructorArgs)
         {
+            EnsureClassIsStaticallyDispatchable("CreateInstance", className);
             string argsJson = SerializeArguments(constructorArgs);
             long handle;
             unsafe { handle = ReflectionInternalCalls.Reflection_CreateInstance(className, argsJson); }
@@ -566,6 +676,7 @@ namespace O3DE.Reflection
         {
             if (instance != null && instance.IsValid)
             {
+                EnsureClassIsStaticallyDispatchable("DestroyInstance", instance.TypeName);
                 unsafe { ReflectionInternalCalls.Reflection_DestroyInstance(instance.TypeName, instance.Handle); }
                 instance.Invalidate();
             }

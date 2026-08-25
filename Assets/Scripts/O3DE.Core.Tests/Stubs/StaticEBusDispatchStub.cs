@@ -27,5 +27,7 @@ namespace O3DE.Reflection
             isBroadcast = false;
             return false;
         }
+
+        internal static bool BusExists(string busName) => false;
     }
 }

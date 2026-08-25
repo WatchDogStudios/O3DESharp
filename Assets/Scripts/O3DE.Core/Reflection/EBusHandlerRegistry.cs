@@ -78,6 +78,7 @@ namespace O3DE.Reflection
             if (instance is null) throw new ArgumentNullException(nameof(instance));
             if (busName is null) throw new ArgumentNullException(nameof(busName));
             if (dispatch is null) throw new ArgumentNullException(nameof(dispatch));
+            NativeReflection.EnsureBusIsStaticallyDispatchable(busName);
 
             // Atomic counter increment; token 0 reserved for "invalid".
             long token = System.Threading.Interlocked.Increment(ref s_nextToken);
