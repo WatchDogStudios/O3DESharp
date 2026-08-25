@@ -920,12 +920,16 @@ on your `PATH`; builds without it fail with `MSB3073` exit code 123. CMake's Vis
 Studio generator inherits a developer environment and is not affected.
 
 **Key restrictions and limitations of NativeAOT builds:**
-- **Not yet end-to-end runnable.** The ABI seam, publish pipeline, and closed-world
-  diagnostic are complete and verified; wiring `NativeImports` into `O3DE.InternalCalls`
-  under `O3DE_HOST_NATIVEAOT` is the remaining step before a published image can actually
-  call back into the engine. The published image loads and exports the ABI entry point
-  correctly, but cannot yet dispatch native calls (e.g., `Debug.Log`, entity/transform
-  APIs). This is unbuilt and required before real games can ship with this artifact.
+- **Managed-side pipeline verified end-to-end; C++ side is not.** The ABI seam, publish
+  pipeline, closed-world diagnostic, and the `NativeImports` → `O3DE.InternalCalls` wiring
+  are all built and verified: a real NativeAOT publish produces an image whose
+  `O3DESharp_GetManagedExports` entry point, when called, populates `InternalCalls`'
+  function pointers field-for-field from the struct it receives (cross-checked against
+  `InternalCalls.cs` by name and cast type, plus a real `dotnet build` compiling every
+  cast). What remains unverified is the C++ side (`NativeAotHost`, `CoralHost`) and a real
+  engine run — there is no O3DE engine SDK in the environment this was built in, so nothing
+  here has actually driven a script through a running O3DE Editor/launcher yet. See the
+  plan's maintainer-verification checklist before relying on this in a shipped game.
 - **No hot-reload.** `NativeAotHost::SupportsHotReload()` returns false unconditionally.
   AOT images are editor-only by design; use the Coral path (the default) for iteration.
 - **Closed-world dispatch only.** `O3DESHARP1001` at build time for any non-constant
