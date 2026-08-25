@@ -70,3 +70,6 @@ Code/Tools/SourceGenerators/obj/
 # Git worktrees used for isolated feature/plan execution (superpowers
 # using-git-worktrees skill)
 .worktrees/
+
+# LLM's 
+docs/
