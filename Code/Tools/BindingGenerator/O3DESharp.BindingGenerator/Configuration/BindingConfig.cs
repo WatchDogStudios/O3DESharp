@@ -26,6 +26,18 @@ namespace O3DESharp.BindingGenerator.Configuration
         public Dictionary<string, GemSettings> Gems { get; set; } = new Dictionary<string, GemSettings>();
 
         /// <summary>
+        /// Reflection backend only. Gem names to exclude from the
+        /// zero-config "generate bindings for every gem" default -
+        /// an opt-out list, never an opt-in one. Clang-backend gem
+        /// enablement (<see cref="Gems"/>'s <c>Enabled</c> flag) is
+        /// deliberately a separate property: that flag is an
+        /// allowlist with the opposite default semantics, and
+        /// reusing it here would give the same JSON key different
+        /// meaning depending on which backend read it.
+        /// </summary>
+        public List<string> ReflectionBackendExcludedGems { get; set; } = new List<string>();
+
+        /// <summary>
         /// Engine-required preprocessor defines that must always be in effect
         /// when libclang parses O3DE headers. These macro suppressions are not
         /// user-controllable: removing them breaks parsing of AZ_RTTI /
