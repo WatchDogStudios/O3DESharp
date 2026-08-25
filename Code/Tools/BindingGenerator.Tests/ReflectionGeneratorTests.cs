@@ -400,6 +400,8 @@ public class ReflectionGeneratorTests : IDisposable
         csproj.Should().Contain("O3DESharp.SourceGenerators.csproj");
         csproj.Should().Contain("OutputItemType=\"Analyzer\"");
         csproj.Should().Contain("ReferenceOutputAssembly=\"false\"");
+        csproj.Should().Contain("SkipGetTargetFrameworkProperties=\"true\"");
+        csproj.Should().Contain("GlobalPropertiesToRemove=\"RuntimeIdentifier;PublishAot;SelfContained;PublishReadyToRun;PublishSingleFile;PublishTrimmed\"");
     }
 
     [Fact]

@@ -441,7 +441,9 @@ namespace O3DESharp.BindingGenerator.Generation
             sb.AppendLine("    </Reference>");
             sb.AppendLine("    <ProjectReference Include=\"..\\..\\Code\\Tools\\SourceGenerators\\O3DESharp.SourceGenerators.csproj\"");
             sb.AppendLine("                      OutputItemType=\"Analyzer\"");
-            sb.AppendLine("                      ReferenceOutputAssembly=\"false\" />");
+            sb.AppendLine("                      ReferenceOutputAssembly=\"false\"");
+            sb.AppendLine("                      SkipGetTargetFrameworkProperties=\"true\"");
+            sb.AppendLine("                      GlobalPropertiesToRemove=\"RuntimeIdentifier;PublishAot;SelfContained;PublishReadyToRun;PublishSingleFile;PublishTrimmed\" />");
             sb.AppendLine("  </ItemGroup>");
             sb.AppendLine();
             sb.AppendLine("  <!-- Auto-deploy after every Build. ContinueOnError prevents a");
