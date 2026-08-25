@@ -1002,3 +1002,13 @@ Contributions are welcome! Please see the main O3DE contributing guidelines.
 ## License
 
 Licensed under Apache-2.0. See the LICENSE files for details.
+
+## LLM Usage
+
+WD Studios Corp. & its employees may possibly use "AI-Powered Tools" or "LLM-Generated Code" within the studios projects. this is authorized within the company, but some users may want to know prior if the product they are using may use the two. 
+
+O3DESharp only uses these tools within the following sections:
+
+- O3DE.BindingGenerator
+- Documentation/Wiki
+- CMakeLists & Utilities
