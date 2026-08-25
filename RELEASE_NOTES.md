@@ -74,7 +74,8 @@ page for the full picture; summary:
   the loop end to end. Under Coral, `InternalCalls`' function pointers are
   wired by `AddInternalCall`/`UploadInternalCalls`; under NativeAOT there is
   no Coral to do that, so a hand-written `NativeImportsWiring.Apply(...)` is
-  now the thing that assigns all 47 function-pointer fields from the struct
+  now the thing that assigns all 67 function-pointer fields (47 from v1, plus
+  the 20 `ReflectionInternalCalls` fields added in ABI v2) from the struct
   the host hands over on load. Without this a NativeAOT image would crash on
   its first native call — this was the one gap flagged by the final design
   review and is now closed and tested.

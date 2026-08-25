@@ -986,7 +986,8 @@ Studio generator inherits a developer environment and is not affected.
 - **No hot-reload.** `NativeAotHost::SupportsHotReload()` returns false unconditionally.
   AOT images are editor-only by design; use the Coral path (the default) for iteration.
 - **Closed-world dispatch only.** `O3DESHARP1001` at build time for any non-constant
-  bus or event name; `NotSupportedException` at runtime if such a call is reached. To
+  bus, event, class, method, property or global name across the 12 `NativeReflection`
+  dispatch methods; `NotSupportedException` at runtime if such a call is reached. To
   add a bus dynamically, constant-fold its name in the dispatch call, regenerate
   `reflection_data.json` if the bus is new, or stay on the Coral artifact.
 - **Mutually exclusive per launcher.** `O3DESHARP_BUNDLE_DOTNET_RUNTIME` (M2, CoreCLR +

@@ -41,9 +41,9 @@ namespace O3DE.Interop
     /// O3DE.InternalCalls (InternalCalls.cs) field-for-field, in declaration
     /// order - that ordering IS the ABI.
     ///
-    /// O3DE.Reflection.ReflectionInternalCalls is registered separately by
-    /// GenericDispatcher and is deliberately NOT part of v1. Adding it is an
-    /// ABI v2 change, which is exactly what the Version field exists for.
+    /// O3DE.Reflection.ReflectionInternalCalls fields were added in v2 (the
+    /// Reflection_* block below) - previously deliberately excluded from v1.
+    /// That addition is exactly what the Version field exists for.
     ///
     /// Fields are IntPtr rather than delegate* unmanaged<...> so this
     /// file stays free of Coral.Managed.Interop types (NativeString, Bool32)
