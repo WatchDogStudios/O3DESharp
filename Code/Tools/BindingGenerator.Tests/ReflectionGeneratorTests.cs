@@ -350,7 +350,7 @@ public class ReflectionGeneratorTests : IDisposable
     // ============================================================
 
     [Fact]
-    public void GenerationEmits_OneCsprojPerGemBucket()
+    public void GenerationEmits_OneConsolidatedCsproj_CoveringAllGemBuckets()
     {
         var json = """
         {
@@ -362,15 +362,25 @@ public class ReflectionGeneratorTests : IDisposable
         }
         """;
         var dir = GenerateFromJson(json);
-        File.Exists(Path.Combine(dir, "GemA", "GemA.csproj")).Should().BeTrue();
-        File.Exists(Path.Combine(dir, "GemB", "GemB.csproj")).Should().BeTrue();
 
-        var csprojA = File.ReadAllText(Path.Combine(dir, "GemA", "GemA.csproj"));
-        csprojA.Should().Contain("<AssemblyName>O3DE.Generated.GemA</AssemblyName>");
-        csprojA.Should().Contain("<DebugType>full</DebugType>",
-            "Debug config must use full PDB for managed-debugger attach");
-        csprojA.Should().Contain("DeployToBinScripts",
-            "csproj must wire the deploy-to-Bin/Scripts post-build target");
+        var csprojPath = Path.Combine(dir, "O3DESharp.GeneratedBindings.csproj");
+        File.Exists(csprojPath).Should().BeTrue("both gems' output must be covered by exactly one project");
+        Directory.GetFiles(dir, "*.csproj", SearchOption.AllDirectories).Should().HaveCount(1,
+            "there must be no per-gem csproj left over - GemA/GemA.csproj and GemB/GemB.csproj no longer get emitted");
+
+        var csproj = File.ReadAllText(csprojPath);
+        csproj.Should().Contain("<AssemblyName>O3DESharp.GeneratedBindings</AssemblyName>");
+        csproj.Should().Contain("<DebugType>full</DebugType>",
+            "Debug config must still use full PDB for managed-debugger attach");
+        csproj.Should().Contain("DeployToBinScripts",
+            "csproj must still wire the deploy-to-Bin/Scripts post-build target");
+
+        // Both gems' generated .cs files must still exist as siblings under
+        // the output root and be picked up by the SDK-style project's
+        // default recursive **/*.cs compile glob - no explicit <Compile>
+        // items are needed for this to work.
+        File.Exists(Path.Combine(dir, "GemA", "Classes", "ClassA.g.cs")).Should().BeTrue();
+        File.Exists(Path.Combine(dir, "GemB", "Classes", "ClassB.g.cs")).Should().BeTrue();
     }
 
     [Fact]
