@@ -411,6 +411,43 @@ if(EXISTS "${BINDING_GENERATOR_SOURCE_DIR}/O3DESharp.BindingGenerator/O3DESharp.
             message(STATUS "O3DESharp: Automatic binding generation DISABLED (binding_config.json not found)")
             message(STATUS "O3DESharp:   Create ${BINDING_CONFIG_FILE} to enable automatic generation")
         endif()
+
+        # ============================================================
+        # Build + Stage the Consolidated Generated Bindings DLL
+        # ============================================================
+        # Zero-config gem bindings (sub-project 1 of the "zero-legwork C# for
+        # gems" effort - see docs/superpowers/specs/2026-08-25-zero-config-
+        # gem-bindings-design.md). GenerateBindings only emits .g.cs + one
+        # consolidated csproj; this target actually builds it and stages the
+        # output where the rest of the gem's deploy machinery expects it,
+        # mirroring StageCoral/StageO3DECore below.
+        set(GENERATED_BINDINGS_CSPROJ "${BINDINGS_OUTPUT_DIR}/O3DESharp.GeneratedBindings.csproj")
+        set(GENERATED_BINDINGS_BUILD_OUTPUT "${BINDINGS_OUTPUT_DIR}/bin/Release/net9.0")
+        get_property(gem_root_for_generated_bindings GLOBAL PROPERTY "@GEMROOT:${gem_name}@")
+        set(GENERATED_BINDINGS_STAGING_DIR "${gem_root_for_generated_bindings}/bin/GeneratedBindings")
+
+        add_custom_target(${gem_name}.BuildGeneratedBindings
+            COMMENT "O3DESharp: Building consolidated generated-bindings DLL"
+            COMMAND ${CMAKE_COMMAND} -E make_directory "${GENERATED_BINDINGS_STAGING_DIR}"
+            # ContinueOnError-equivalent: if GenerateBindings produced no
+            # gems (fresh clone, reflection_data.json not yet written), the
+            # csproj won't exist yet. Don't fail configure/build over an
+            # empty-by-construction state - just skip the build this pass.
+            COMMAND ${CMAKE_COMMAND} -E echo "Checking for ${GENERATED_BINDINGS_CSPROJ}..."
+            COMMAND ${CMAKE_COMMAND} -DCSPROJ=${GENERATED_BINDINGS_CSPROJ} -DDOTNET=${DOTNET_EXECUTABLE}
+                -P "${CMAKE_CURRENT_LIST_DIR}/o3desharp_build_if_exists.cmake"
+            COMMAND ${CMAKE_COMMAND} -DSRC=${GENERATED_BINDINGS_BUILD_OUTPUT}/O3DESharp.GeneratedBindings.dll -DDST=${GENERATED_BINDINGS_STAGING_DIR}/O3DESharp.GeneratedBindings.dll -P "${CMAKE_CURRENT_LIST_DIR}/o3desharp_copy_if_exists.cmake"
+            COMMAND ${CMAKE_COMMAND} -DSRC=${GENERATED_BINDINGS_BUILD_OUTPUT}/O3DESharp.GeneratedBindings.pdb -DDST=${GENERATED_BINDINGS_STAGING_DIR}/O3DESharp.GeneratedBindings.pdb -P "${CMAKE_CURRENT_LIST_DIR}/o3desharp_copy_if_exists.cmake"
+            COMMAND ${CMAKE_COMMAND} -DSRC=${GENERATED_BINDINGS_BUILD_OUTPUT}/O3DESharp.GeneratedBindings.deps.json -DDST=${GENERATED_BINDINGS_STAGING_DIR}/O3DESharp.GeneratedBindings.deps.json -P "${CMAKE_CURRENT_LIST_DIR}/o3desharp_copy_if_exists.cmake"
+            # BYPRODUCTS is load-bearing on Ninja (WatchDogStudios/O3DESharp#3) -
+            # same reasoning as StageCoral/StageO3DECore below.
+            BYPRODUCTS
+                "${GENERATED_BINDINGS_STAGING_DIR}/O3DESharp.GeneratedBindings.dll"
+                "${GENERATED_BINDINGS_STAGING_DIR}/O3DESharp.GeneratedBindings.pdb"
+                "${GENERATED_BINDINGS_STAGING_DIR}/O3DESharp.GeneratedBindings.deps.json"
+            DEPENDS ${gem_name}.GenerateBindings
+        )
+        set_property(TARGET ${gem_name}.BuildGeneratedBindings PROPERTY FOLDER "${relative_o3desharp_gem_root}/Bindings")
     else()
         message(STATUS "O3DESharp: Automatic binding generation DISABLED by user")
         message(STATUS "O3DESharp:   Set O3DESHARP_AUTO_GENERATE_BINDINGS=ON to enable")
@@ -638,6 +675,24 @@ if(TARGET ${gem_name}.StageO3DECore)
         OUTPUT_SUBDIRECTORY "Bin/Scripts"
     )
     message(STATUS "O3DESharp: O3DE.Core will be deployed to Bin/Scripts/ for runtime and export")
+endif()
+
+# Deploy the consolidated generated-bindings DLL if the build target
+# exists. Same first-configure caveat as StageRuntimeBundle/PublishNativeAot:
+# the DLL doesn't exist until BuildGeneratedBindings has actually run once,
+# so this glob can be empty on the very first configure.
+if(TARGET ${gem_name}.BuildGeneratedBindings)
+    file(GLOB O3DESHARP_GENERATED_BINDINGS_FILES "${GENERATED_BINDINGS_STAGING_DIR}/*")
+    if(O3DESHARP_GENERATED_BINDINGS_FILES)
+        ly_add_target_files(
+            TARGETS ${gem_name}.Clients ${gem_name}.Servers ${gem_name}.Unified
+            FILES ${O3DESHARP_GENERATED_BINDINGS_FILES}
+            OUTPUT_SUBDIRECTORY "Bin/Scripts"
+        )
+        message(STATUS "O3DESharp: generated gem bindings will be deployed to Bin/Scripts/")
+    else()
+        message(STATUS "O3DESharp: generated bindings DLL not yet built at ${GENERATED_BINDINGS_STAGING_DIR} - build ${gem_name}.BuildGeneratedBindings then re-run CMake configure to deploy it")
+    endif()
 endif()
 
 # Deploy the private .NET runtime bundle (M2, opt-in via
