@@ -1366,6 +1366,55 @@ def register_menus():
         general.log(f"O3DESharp: Menu registration note: {e}")
 
 
+def auto_sync_generated_bindings():
+    """
+    Zero-config gem bindings: on Editor startup, kick off the same
+    generate -> build -> deploy chain the "Generate Bindings" button
+    triggers, silently (log-only, no dialog) and in the background. See
+    docs/superpowers/specs/2026-08-25-zero-config-gem-bindings-design.md.
+
+    Non-fatal by design (matches warn_unmigrated_csharp_projects' pattern
+    right below this function's only call site): an exception here must
+    never break Editor startup over an experimental convenience feature.
+    """
+    try:
+        csharp_editor_tools = _import_csharp_editor_tools()
+        try:
+            from csharp_binding_generator import BindingGeneratorConfig, ClangSharpInvoker
+        except ImportError:
+            from .csharp_binding_generator import BindingGeneratorConfig, ClangSharpInvoker
+        import azlmbr.paths as _paths
+
+        # Same azlmbr.paths.projectroot resolution already used elsewhere
+        # in this file (e.g. lines 552, 917, 1060) - not a new helper.
+        project_path = str(Path(_paths.projectroot))
+        output_dir = str(Path(project_path) / "Generated" / "CSharp")
+        config = BindingGeneratorConfig(incremental_build=True, verbose=False)
+
+        def _on_log(line, level):
+            if level in ("ERROR", "WARNING"):
+                general.log(f"O3DESharp: [auto-sync bindings] {line}")
+
+        def _on_finished(result):
+            if result["success"]:
+                general.log(
+                    f"O3DESharp: auto-synced gem bindings "
+                    f"({result['classes_generated']} classes, {result['ebuses_generated']} EBuses)")
+            else:
+                general.log(f"O3DESharp: gem-binding auto-sync failed: {result['message']}")
+
+        csharp_editor_tools.sync_generated_bindings(
+            invoker=ClangSharpInvoker(),
+            project_path=project_path,
+            config=config,
+            output_dir=output_dir,
+            on_log=_on_log,
+            on_finished=_on_finished,
+        )
+    except Exception as e:  # noqa: BLE001 - non-fatal background check, same pattern as warn_unmigrated_csharp_projects
+        general.log(f"O3DESharp: gem-binding auto-sync did not start: {e}")
+
+
 def initialize_ebus_handler():
     """
     Initialize and connect the CSharpEditorToolsBus Python handler.
@@ -1389,6 +1438,11 @@ def initialize_ebus_handler():
         # IDE-build auto-reload.
         try:
             warn_unmigrated_csharp_projects()
+        except Exception:  # noqa: BLE001 - non-fatal background check
+            pass
+
+        try:
+            auto_sync_generated_bindings()
         except Exception:  # noqa: BLE001 - non-fatal background check
             pass
 
