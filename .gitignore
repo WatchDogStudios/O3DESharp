@@ -67,6 +67,12 @@ Code/Tools/SourceGenerators.Tests/obj/
 Code/Tools/SourceGenerators/bin/
 Code/Tools/SourceGenerators/obj/
 
+# NOTE: restricted/ (console PAL trees, e.g. Xbox, Prospero) is intentionally NOT
+# blanket-ignored here. A stale **/[Rr]estricted rule in an engine-vendored copy of this
+# gem once silently blackholed the whole restricted/ directory from git history despite
+# real, reviewed PAL content existing on disk under it. Do not re-add a blanket
+# restricted/ ignore rule.
+
 # Git worktrees used for isolated feature/plan execution (superpowers
 # using-git-worktrees skill)
 .worktrees/
