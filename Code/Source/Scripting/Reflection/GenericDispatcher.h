@@ -115,7 +115,7 @@ namespace O3DESharp
         AZ_CLASS_ALLOCATOR(GenericDispatcher, AZ::SystemAllocator);
 
         GenericDispatcher() = default;
-        ~GenericDispatcher() = default;
+        virtual ~GenericDispatcher() = default;
 
         /**
          * Initialize the dispatcher with the reflector

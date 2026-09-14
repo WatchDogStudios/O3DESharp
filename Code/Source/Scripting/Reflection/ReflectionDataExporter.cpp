@@ -691,7 +691,7 @@ namespace O3DESharp
             return false;
         }
 
-        AZLOG_INFO("ReflectionDataExporter: Wrote %zu bytes to %s", bytesWritten, path.c_str());
+        AZLOG_INFO("ReflectionDataExporter: Wrote %zu bytes to %s", static_cast<size_t>(bytesWritten), path.c_str());
         return true;
     }
 

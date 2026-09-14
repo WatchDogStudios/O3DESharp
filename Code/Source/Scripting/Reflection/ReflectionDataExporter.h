@@ -126,7 +126,7 @@ namespace O3DESharp
         AZ_CLASS_ALLOCATOR(ReflectionDataExporter, AZ::SystemAllocator);
 
         ReflectionDataExporter() = default;
-        ~ReflectionDataExporter() = default;
+        virtual ~ReflectionDataExporter() = default;
 
         /**
          * Export reflection data to JSON

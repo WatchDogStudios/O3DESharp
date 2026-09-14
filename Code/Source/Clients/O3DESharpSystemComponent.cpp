@@ -660,8 +660,7 @@ namespace O3DESharp
 
         // Get the project path to locate assemblies
         AZ::IO::FixedMaxPath projectPath = AZ::Utils::GetProjectPath();
-        AZ::IO::FixedMaxPath engineRoot = AZ::Utils::GetEnginePath();
-        
+
         // Coral directory - where Coral.Managed.dll and runtimeconfig are located
         AZ::IO::FixedMaxPath coralDir = projectPath / "Bin" / "Scripts" / "Coral";
         
